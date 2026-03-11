@@ -125,8 +125,30 @@ async def start(message: types.Message):
             "companies": {}
         }
         update_user_data(message.from_user.id, user_data)
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
+    user_data = get_user_data(message.from_user.id)
+    
+    # Если нет workspace, создаём main
+    if not user_data.get("workspaces"):
+        user_data["workspaces"]["main"] = {
+            "chat_id": message.chat.id,
+            "thread_id": None,
+            "mode": "main",
+            "template": ["Создать договор","Выставить счет","Подготовить мебель"],
+            "companies": {}
+        }
+        update_user_data(message.from_user.id, user_data)
+    
     workspace = list(user_data["workspaces"].values())[0]
-    await message.reply("Выберите компанию:", reply_markup=company_keyboard(workspace))
+    
+    if not workspace.get("companies"):  # Если компаний пока нет
+        await message.reply(
+            "У вас пока нет компаний. Добавьте первую через кнопку ➕ Добавить компанию.",
+            reply_markup=company_keyboard(workspace)
+        )
+    else:
+        await message.reply("Выберите компанию:", reply_markup=company_keyboard(workspace))
 
 @dp.message_handler(commands=["thread"])
 async def show_thread(message: types.Message):
