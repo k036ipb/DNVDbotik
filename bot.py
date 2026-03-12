@@ -231,24 +231,30 @@ async def create_company(ws, cname):
 # START
 # -------------------------
 
+# -------------------------
+# /start
+# -------------------------
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
-
     user = get_user(message.from_user.id)
 
-    if not user["workspaces"]:
-
-        user["await_forward"] = True
-        update_user(message.from_user.id, user)
-
-        await message.reply("Перешлите сообщение из треда группы.")
+    # Если есть workspace, показываем выбор
+    if user["workspaces"]:
+        await message.reply(
+            "Выберите рабочую конфигурацию:",
+            reply_markup=workspace_keyboard(user)
+        )
         return
 
-    await message.reply(
-        "Выберите конфу:",
-        reply_markup=workspace_keyboard(user)
-    )
+    # Если workspace нет, предлагаем подключить тред
+    user["await_forward"] = True
+    update_user(message.from_user.id, user)
 
+    await message.reply(
+        "Добавим первую конфигурацию.\n"
+        "Перешлите любое сообщение из нужной темы (треда) группы, "
+        "или напишите команду /connect прямо в этой теме."
+    )
 
 # -------------------------
 # CALLBACKS
@@ -374,16 +380,47 @@ async def callbacks(cq: types.CallbackQuery):
         await cq.message.reply("Отправьте chat_id дубликата")
         return
 
-
 # -------------------------
-# TEXT HANDLER
+# Подключение workspace через сообщение (тред)
 # -------------------------
-
 @dp.message_handler(lambda m: True)
 async def text_handler(message: types.Message):
-
     user = get_user(message.from_user.id)
 
+    # --- Добавление нового workspace ---
+    if user.get("await_forward"):
+
+        # Определяем chat_id и thread_id
+        chat_id = message.forward_from_chat.id if message.forward_from_chat else message.chat.id
+        thread_id = message.message_thread_id or 0  # 0 для обычного чата
+
+        # Формируем уникальный workspace ID
+        ws_id = f"{chat_id}_{thread_id}"
+
+        # Сохраняем workspace
+        user["workspaces"][ws_id] = {
+            "name": message.chat.title or message.chat.first_name or "Без названия",
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "template": [
+                "Создать договор",
+                "Выставить счет",
+                "Подготовить мебель"
+            ],
+            "companies": {}
+        }
+
+        # Теперь workspace выбран
+        user["current_workspace"] = ws_id
+        user.pop("await_forward")
+        update_user(message.from_user.id, user)
+
+        await message.reply(
+            f"Конфа '{user['workspaces'][ws_id]['name']}' добавлена!\n"
+            "Теперь можно создавать компании.",
+            reply_markup=workspace_keyboard(user)
+        )
+        return
 
 # CREATE WORKSPACE
 
