@@ -387,22 +387,37 @@ async def text_handler(message: types.Message):
 
 # CREATE WORKSPACE
 
-    if user.get("await_forward"):
+if user.get("await_forward"):
 
-        if not message.forward_from_chat:
+    if not message.forward_from_chat:
 
-            await message.reply("Это не пересланное сообщение")
-            return
+        await message.reply("Перешлите сообщение именно из группы.")
+        return
 
-        chat = message.forward_from_chat
+    chat = message.forward_from_chat
 
-        ws_id = str(chat.id)
+    thread_id = message.message_thread_id
 
-        user["workspaces"][ws_id] = {
+    if thread_id is None:
+        await message.reply("Перешлите сообщение из темы (треда).")
+        return
 
-            "name": chat.title,
-            "chat_id": chat.id,
-            "thread_id": message.forward_from_message_id,
+    ws_id = f"{chat.id}_{thread_id}"
+
+    user["workspaces"][ws_id] = {
+
+        "name": chat.title,
+        "chat_id": chat.id,
+        "thread_id": thread_id,
+
+        "template": [
+            "Создать договор",
+            "Выставить счет",
+            "Подготовить мебель"
+        ],
+
+        "companies": {}
+    }
 
             "template": [
                 "Создать договор",
