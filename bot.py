@@ -376,175 +376,77 @@ async def callbacks(cq: types.CallbackQuery):
         return
 
 # -------------------------
-# Подключение workspace через сообщение (тред)
+# Подключение workspace и обработка текстовых сообщений
 # -------------------------
 @dp.message_handler(lambda m: True)
 async def text_handler(message: types.Message):
     user = get_user(message.from_user.id)
 
-# --- Добавление нового workspace ---
-if user.get("await_forward"):
+    # --- Добавление нового workspace ---
+    if user.get("await_forward"):
 
-    # Определяем chat_id и thread_id
-    chat_id = message.forward_from_chat.id if message.forward_from_chat else message.chat.id
-    thread_id = message.message_thread_id or 0  # 0 для обычного чата
+        chat_id = message.forward_from_chat.id if message.forward_from_chat else message.chat.id
+        thread_id = message.message_thread_id or 0  # 0 для обычного чата
 
-    # Формируем уникальный workspace ID
-    ws_id = f"{chat_id}_{thread_id}"
+        ws_id = f"{chat_id}_{thread_id}"
 
-    # Сохраняем workspace
-    user["workspaces"][ws_id] = {
-        "name": message.chat.title or message.chat.first_name or "Без названия",
-        "chat_id": chat_id,
-        "thread_id": thread_id,
-        "template": [
-            "Создать договор",
-            "Выставить счет",
-            "Подготовить мебель"
-        ],
-        "companies": {}
-    }
-
-    # Теперь workspace выбран
-    user["current_workspace"] = ws_id
-    user.pop("await_forward")
-    update_user(message.from_user.id, user)
-
-    await message.reply(
-        f"Конфа '{user['workspaces'][ws_id]['name']}' добавлена!\n"
-        "Теперь можно создавать компании.",
-        reply_markup=workspace_keyboard(user)
-    )
-    return
-
-# CREATE WORKSPACE
-
-if user.get("await_forward"):
-
-    if not message.forward_from_chat:
-
-        await message.reply("Перешлите сообщение именно из группы.")
-        return
-
-    chat = message.forward_from_chat
-
-    thread_id = message.message_thread_id
-
-    if thread_id is None:
-        await message.reply("Перешлите сообщение из темы (треда).")
-        return
-
-    ws_id = f"{chat.id}_{thread_id}"
-
-    user["workspaces"][ws_id] = {
-
-        "name": chat.title,
-        "chat_id": chat.id,
-        "thread_id": thread_id,
-
-        "template": [
-            "Создать договор",
-            "Выставить счет",
-            "Подготовить мебель"
-        ],
-
-        "companies": {}
-    }
-
+        user["workspaces"][ws_id] = {
+            "name": message.chat.title or message.chat.first_name or "Без названия",
+            "chat_id": chat_id,
+            "thread_id": thread_id,
             "template": [
                 "Создать договор",
                 "Выставить счет",
                 "Подготовить мебель"
             ],
-
             "companies": {}
         }
 
+        user["current_workspace"] = ws_id
         user.pop("await_forward")
-
         update_user(message.from_user.id, user)
 
         await message.reply(
-            "Конфа добавлена!",
+            f"Конфа '{user['workspaces'][ws_id]['name']}' добавлена!\n"
+            "Теперь можно создавать компании.",
             reply_markup=workspace_keyboard(user)
         )
-
         return
 
-
-# ADD COMPANY
-
+    # --- Добавление компании ---
     if user.get("await_company"):
-
         cname = message.text.strip()
-
         ws = user["workspaces"][user["current_workspace"]]
-
         await create_company(ws, cname)
-
         user.pop("await_company")
-
         update_user(message.from_user.id, user)
-
         await message.reply("Компания создана")
-
         return
 
-
-# ADD TASK
-
+    # --- Добавление задачи ---
     if user.get("await_task"):
-
         cname = user["current_company"]
         ws = user["workspaces"][user["current_workspace"]]
-
         company = ws["companies"][cname]
-
-        company["tasks"].append(
-            {"text": message.text, "done": False}
-        )
-
+        company["tasks"].append({"text": message.text, "done": False})
         user.pop("await_task")
-
         update_user(message.from_user.id, user)
-
         await render_company(ws, cname)
-
         return
 
-
-# ADD DUPLICATE
-
+    # --- Добавление дубликата ---
     if user.get("await_dup"):
-
         cname = user["current_company"]
         ws = user["workspaces"][user["current_workspace"]]
-
         company = ws["companies"][cname]
-
         chat_id = int(message.text)
-
-        msg = await bot.send_message(
-            chat_id,
-            company_text(cname, company)
-        )
-
-        company.setdefault("duplicates", []).append(
-            {
-                "chat_id": chat_id,
-                "message_id": msg.message_id
-            }
-        )
-
+        msg = await bot.send_message(chat_id, company_text(cname, company))
+        company.setdefault("duplicates", []).append({"chat_id": chat_id, "message_id": msg.message_id})
         user.pop("await_dup")
-
         update_user(message.from_user.id, user)
-
         await message.reply("Дубликат создан")
-
         return
-
-
+        
 # -------------------------
 # RUN
 # -------------------------
