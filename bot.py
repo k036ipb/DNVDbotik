@@ -2,16 +2,14 @@ import json, os
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.exceptions import MessageNotModified
 
 TOKEN = "YOUR_BOT_TOKEN_HERE"
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 DATA_FILE = "data.json"
 
 # -------------------------
-# Data functions
+# Data helpers
 # -------------------------
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -26,7 +24,7 @@ def save_data(data):
 def get_user_data(user_id):
     data = load_data()
     if str(user_id) not in data["users"]:
-        data["users"][str(user_id)] = {"workspaces": {}}
+        data["users"][str(user_id)] = {"workspaces": {}, "known_chats": []}
         save_data(data)
     return data["users"][str(user_id)]
 
@@ -36,21 +34,19 @@ def update_user_data(user_id, user_data):
     save_data(data)
 
 # -------------------------
-# Text helpers
-# -------------------------
-def company_text(name, company):
-    text = f"📁 Клиент: {name}\n"
-    for i, task in enumerate(company["tasks"]):
-        check = "✔" if task["done"] else "⬜"
-        text += f"{i+1} {check} {task['text']}\n"
-    return text
-
-# -------------------------
 # Keyboards
 # -------------------------
-def company_keyboard(workspace):
+def chats_keyboard(user_data):
     kb = InlineKeyboardMarkup()
-    for cname in workspace.get("companies", {}):
+    if not user_data.get("known_chats"):
+        return None
+    for chat_id in user_data["known_chats"]:
+        kb.add(InlineKeyboardButton(text=f"Чат {chat_id}", callback_data=f"select_chat:{chat_id}"))
+    return kb
+
+def company_keyboard(ws):
+    kb = InlineKeyboardMarkup()
+    for cname in ws.get("companies", {}):
         kb.add(InlineKeyboardButton(text=cname, callback_data=f"company:{cname}"))
     kb.add(InlineKeyboardButton(text="➕ Добавить компанию", callback_data="add_company"))
     kb.add(InlineKeyboardButton(text="⚙ Редактор шаблона", callback_data="edit_template"))
@@ -86,244 +82,176 @@ def template_keyboard(template):
     return kb
 
 # -------------------------
+# Text helpers
+# -------------------------
+def company_text(name, company):
+    text = f"📁 Клиент: {name}\n"
+    for i, task in enumerate(company["tasks"]):
+        check = "✔" if task["done"] else "⬜"
+        text += f"{i+1} {check} {task['text']}\n"
+    return text
+
+# -------------------------
 # Duplicate functions
 # -------------------------
 async def update_duplicates(company_data, company_name):
     for dup in company_data.get("duplicates", []):
         try:
             text = company_text(company_name, company_data)
-            await bot.edit_message_text(
-                text=text,
-                chat_id=dup["chat_id"],
-                message_id=dup["message_id"]
-            )
+            await bot.edit_message_text(text=text, chat_id=dup["chat_id"], message_id=dup["message_id"])
         except Exception:
             pass
 
 async def add_duplicate_chat(company_data, company_name, duplicate_chat_id):
-    msg = await bot.send_message(
-        chat_id=duplicate_chat_id,
-        text=company_text(company_name, company_data)
-    )
-    company_data["duplicates"].append({
-        "chat_id": duplicate_chat_id,
-        "message_id": msg.message_id
-    })
+    msg = await bot.send_message(chat_id=duplicate_chat_id, text=company_text(company_name, company_data))
+    company_data["duplicates"].append({"chat_id": duplicate_chat_id, "message_id": msg.message_id})
 
 # -------------------------
-# Commands
+# /start handler
 # -------------------------
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     user_data = get_user_data(message.from_user.id)
-    if not user_data.get("workspaces"):
-        user_data["workspaces"]["main"] = {
-            "chat_id": message.chat.id,
-            "thread_id": None,
-            "mode": "main",
-            "template": ["Создать договор","Выставить счет","Подготовить мебель"],
-            "companies": {}
-        }
-        update_user_data(message.from_user.id, user_data)
-@dp.message_handler(commands=["start"])
-async def start(message: types.Message):
-    user_data = get_user_data(message.from_user.id)
-    
-    # Если нет workspace, создаём main
-    if not user_data.get("workspaces"):
-        user_data["workspaces"]["main"] = {
-            "chat_id": message.chat.id,
-            "thread_id": None,
-            "mode": "main",
-            "template": ["Создать договор","Выставить счет","Подготовить мебель"],
-            "companies": {}
-        }
-        update_user_data(message.from_user.id, user_data)
-    
-    workspace = list(user_data["workspaces"].values())[0]
-    
-    if not workspace.get("companies"):  # Если компаний пока нет
-        await message.reply(
-            "У вас пока нет компаний. Добавьте первую через кнопку ➕ Добавить компанию.",
-            reply_markup=company_keyboard(workspace)
-        )
-    else:
-        await message.reply("Выберите компанию:", reply_markup=company_keyboard(workspace))
-
-@dp.message_handler(commands=["thread"])
-async def show_thread(message: types.Message):
-    user_data = get_user_data(message.from_user.id)
-    text = "Ваши рабочие пространства:\n"
-    for ws_id, ws in user_data.get("workspaces", {}).items():
-        text += f"Chat ID: {ws_id}\nThread ID: {ws.get('thread_id')}\nКомпании: {list(ws.get('companies', {}).keys())}\n\n"
-    await message.reply(text or "Нет рабочих пространств.")
-
-# -------------------------
-# Text handler
-# -------------------------
-@dp.message_handler(lambda m: True)
-async def text_handler(message: types.Message):
-    user_data = get_user_data(message.from_user.id)
-    workspace = list(user_data["workspaces"].values())[0]
-
-    # Add company
-    if workspace.get("adding_company"):
-        cname = message.text.strip()
-        if cname in workspace["companies"]:
-            await message.reply("Такая компания уже есть.")
-        else:
-            workspace["companies"][cname] = {
-                "tasks": [{"text": t,"done": False} for t in workspace.get("template", [])],
-                "message_id": None,
-                "duplicates": [],
-                "selected_task": None
-            }
-            update_user_data(message.from_user.id, user_data)
-            kb = task_keyboard(workspace["companies"][cname])
-            msg = await message.reply(company_text(cname, workspace["companies"][cname]), reply_markup=kb)
-            workspace["companies"][cname]["message_id"] = msg.message_id
-            update_user_data(message.from_user.id, user_data)
-        workspace.pop("adding_company")
+    if not user_data.get("known_chats"):
+        await message.reply("Привет! Добавьте бота хотя бы в один чат и перешлите сообщение из него.")
         return
+    kb = chats_keyboard(user_data)
+    await message.reply("Выберите чат для привязки треда:", reply_markup=kb)
 
-    # Add task
-    if workspace.get("adding_task"):
-        cname = workspace["adding_task"]
-        tname = message.text.strip()
-        workspace["companies"][cname]["tasks"].append({"text": tname,"done": False})
-        update_user_data(message.from_user.id, user_data)
-        kb = task_keyboard(workspace["companies"][cname])
-        try:
-            await bot.edit_message_text(company_text(cname, workspace["companies"][cname]),
-                                        chat_id=workspace["chat_id"],
-                                        message_id=workspace["companies"][cname]["message_id"],
-                                        reply_markup=kb)
-        except MessageNotModified:
-            pass
-        await update_duplicates(workspace["companies"][cname], cname)
-        workspace.pop("adding_task")
+@dp.callback_query_handler(lambda c: True)
+async def callbacks(cq: types.CallbackQuery):
+    user_data = get_user_data(cq.from_user.id)
+    ws = next(iter(user_data["workspaces"].values()), None)
+    if not ws:
+        await cq.answer("Нет workspace.")
         return
+    data = cq.data
 
-    # Add template task
-    if workspace.get("adding_template_task"):
-        tname = message.text.strip()
-        workspace["template"].append(tname)
-        update_user_data(message.from_user.id, user_data)
-        await message.reply(f"Задача '{tname}' добавлена в шаблон.", reply_markup=template_keyboard(workspace["template"]))
-        workspace.pop("adding_template_task")
-        return
-
-# -------------------------
-# Callback handler
-# -------------------------
-@dp.callback_query_handler(lambda c: c.data)
-async def callback_handler(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    user_data = get_user_data(user_id)
-    workspace = list(user_data["workspaces"].values())[0]
-    data = callback_query.data
-
-    if data == "back_to_companies":
-        await callback_query.message.edit_text("Выберите компанию:", reply_markup=company_keyboard(workspace))
-        return
+    # ---------- Companies ----------
     if data == "add_company":
-        workspace["adding_company"] = True
-        update_user_data(user_id, user_data)
-        await callback_query.message.answer("Введите название новой компании:")
+        await cq.message.reply("Отправьте название новой компании:")
+        user_data["awaiting_company_name"] = True
+        update_user_data(cq.from_user.id, user_data)
         return
     if data.startswith("company:"):
-        cname = data.split(":",1)[1]
-        workspace["current_company"] = cname
-        update_user_data(user_id, user_data)
-        kb = task_keyboard(workspace["companies"][cname])
-        await callback_query.message.edit_text(company_text(cname, workspace["companies"][cname]), reply_markup=kb)
+        cname = data.split(":")[1]
+        company = ws["companies"].get(cname)
+        if company:
+            await cq.message.edit_text(company_text(cname, company), reply_markup=task_keyboard(company))
         return
-    if data == "add_task":
-        cname = workspace.get("current_company")
-        if cname:
-            workspace["adding_task"] = cname
-            update_user_data(user_id, user_data)
-            await callback_query.message.answer("Введите название задачи:")
-        return
-    if data.startswith("task:"):
-        idx = int(data.split(":")[1])
-        cname = workspace.get("current_company")
-        if cname:
-            workspace["companies"][cname]["selected_task"] = idx
-            update_user_data(user_id, user_data)
-            await callback_query.message.edit_text(f"Задача: {workspace['companies'][cname]['tasks'][idx]['text']}", reply_markup=single_task_keyboard())
-        return
-    if data == "mark_done":
-        cname = workspace.get("current_company")
-        idx = workspace["companies"][cname]["selected_task"]
-        workspace["companies"][cname]["tasks"][idx]["done"] = True
-        update_user_data(user_id, user_data)
-        kb = task_keyboard(workspace["companies"][cname])
-        await callback_query.message.edit_text(company_text(cname, workspace["companies"][cname]), reply_markup=kb)
-        await update_duplicates(workspace["companies"][cname], cname)
-        return
-    if data == "unmark_done":
-        cname = workspace.get("current_company")
-        idx = workspace["companies"][cname]["selected_task"]
-        workspace["companies"][cname]["tasks"][idx]["done"] = False
-        update_user_data(user_id, user_data)
-        kb = task_keyboard(workspace["companies"][cname])
-        await callback_query.message.edit_text(company_text(cname, workspace["companies"][cname]), reply_markup=kb)
-        await update_duplicates(workspace["companies"][cname], cname)
-        return
-    if data == "delete_task":
-        cname = workspace.get("current_company")
-        idx = workspace["companies"][cname]["selected_task"]
-        workspace["companies"][cname]["tasks"].pop(idx)
-        workspace["companies"][cname]["selected_task"] = None
-        update_user_data(user_id, user_data)
-        kb = task_keyboard(workspace["companies"][cname])
-        await callback_query.message.edit_text(company_text(cname, workspace["companies"][cname]), reply_markup=kb)
-        await update_duplicates(workspace["companies"][cname], cname)
-        return
-    if data == "back_to_company":
-        cname = workspace.get("current_company")
-        kb = task_keyboard(workspace["companies"][cname])
-        await callback_query.message.edit_text(company_text(cname, workspace["companies"][cname]), reply_markup=kb)
-        return
-    if data == "delete_company":
-        cname = workspace.get("current_company")
-        del workspace["companies"][cname]
-        workspace["current_company"] = None
-        update_user_data(user_id, user_data)
-        await callback_query.message.edit_text("Компания удалена.", reply_markup=company_keyboard(workspace))
+    if data == "back_to_companies":
+        await cq.message.edit_text("Компании:", reply_markup=company_keyboard(ws))
         return
     if data == "edit_template":
-        await callback_query.message.edit_text("Редактор шаблона:", reply_markup=template_keyboard(workspace["template"]))
+        await cq.message.edit_text("Шаблон задач:", reply_markup=template_keyboard(ws["template"]))
+        return
+
+    # ---------- Tasks ----------
+    if data.startswith("task:"):
+        idx = int(data.split(":")[1])
+        cname = next(iter(ws["companies"]))
+        company = ws["companies"][cname]
+        company["current_task"] = idx
+        update_user_data(cq.from_user.id, user_data)
+        await cq.message.edit_text(f"Задача: {company['tasks'][idx]['text']}", reply_markup=single_task_keyboard())
+        return
+    if data == "mark_done":
+        cname = next(iter(ws["companies"]))
+        company = ws["companies"][cname]
+        idx = company.get("current_task", 0)
+        company["tasks"][idx]["done"] = True
+        update_user_data(cq.from_user.id, user_data)
+        await cq.message.edit_text(company_text(cname, company), reply_markup=task_keyboard(company))
+        await update_duplicates(company, cname)
+        return
+    if data == "unmark_done":
+        cname = next(iter(ws["companies"]))
+        company = ws["companies"][cname]
+        idx = company.get("current_task", 0)
+        company["tasks"][idx]["done"] = False
+        update_user_data(cq.from_user.id, user_data)
+        await cq.message.edit_text(company_text(cname, company), reply_markup=task_keyboard(company))
+        await update_duplicates(company, cname)
+        return
+    if data == "back_to_company":
+        cname = next(iter(ws["companies"]))
+        company = ws["companies"][cname]
+        await cq.message.edit_text(company_text(cname, company), reply_markup=task_keyboard(company))
+        return
+    if data == "rename_task":
+        cname = next(iter(ws["companies"]))
+        company = ws["companies"][cname]
+        idx = company.get("current_task", 0)
+        user_data["awaiting_task_rename"] = idx
+        update_user_data(cq.from_user.id, user_data)
+        await cq.message.reply(f"Отправьте новое название для задачи: {company['tasks'][idx]['text']}")
+        return
+    if data == "delete_task":
+        cname = next(iter(ws["companies"]))
+        company = ws["companies"][cname]
+        idx = company.get("current_task", 0)
+        company["tasks"].pop(idx)
+        update_user_data(cq.from_user.id, user_data)
+        await cq.message.edit_text(company_text(cname, company), reply_markup=task_keyboard(company))
+        await update_duplicates(company, cname)
+        return
+    if data.startswith("template_task:"):
+        idx = int(data.split(":")[1])
+        user_data["awaiting_template_rename"] = idx
+        update_user_data(cq.from_user.id, user_data)
+        await cq.message.reply(f"Отправьте новое название для шаблонной задачи: {ws['template'][idx]}")
         return
     if data == "add_template_task":
-        workspace["adding_template_task"] = True
-        update_user_data(user_id, user_data)
-        await callback_query.message.answer("Введите название задачи для шаблона:")
-        return
-    if data == "add_duplicate":
-        cname = workspace.get("current_company")
-        if cname:
-            workspace["awaiting_duplicate"] = cname
-            update_user_data(user_id, user_data)
-            await callback_query.message.answer("Перешлите сообщение из чата, куда хотите дублировать список (forward или отправьте chat_id).")
+        user_data["awaiting_template_add"] = True
+        update_user_data(cq.from_user.id, user_data)
+        await cq.message.reply("Отправьте название новой задачи для шаблона")
         return
 
 # -------------------------
-# Handle forwarded message for duplicates
+# Text handler for all inputs
 # -------------------------
-@dp.message_handler(lambda m: m.forward_from_chat or hasattr(m, "chat"))
-async def duplicate_chat_handler(message: types.Message):
+@dp.message_handler(lambda m: True)
+async def text_handler_full(message: types.Message):
     user_data = get_user_data(message.from_user.id)
-    workspace = list(user_data["workspaces"].values())[0]
-    if "awaiting_duplicate" in workspace:
-        cname = workspace["awaiting_duplicate"]
-        duplicate_chat_id = message.forward_from_chat.id if message.forward_from_chat else message.chat.id
-        company_data = workspace["companies"][cname]
-        await add_duplicate_chat(company_data, cname, duplicate_chat_id)
-        await message.reply(f"Дублирующий чат добавлен для компании {cname}.")
-        workspace.pop("awaiting_duplicate")
+    ws = next(iter(user_data["workspaces"].values()), None)
+    if not ws:
+        return
+
+    # ----- Company name -----
+    if user_data.get("awaiting_company_name"):
+        cname = message.text.strip()
+        ws["companies"][cname] = {"tasks":[{"text": t,"done":False} for t in ws["template"]],"message_id":None,"duplicates":[]}
+        user_data.pop("awaiting_company_name")
         update_user_data(message.from_user.id, user_data)
+        await message.reply(f"Компания '{cname}' создана!", reply_markup=company_keyboard(ws))
+        return
+
+    # ----- Task rename -----
+    if user_data.get("awaiting_task_rename") is not None:
+        idx = user_data.pop("awaiting_task_rename")
+        cname = next(iter(ws["companies"]))
+        company = ws["companies"][cname]
+        company["tasks"][idx]["text"] = message.text.strip()
+        update_user_data(message.from_user.id, user_data)
+        await message.reply(f"Задача переименована!", reply_markup=task_keyboard(company))
+        await update_duplicates(company, cname)
+        return
+
+    # ----- Template rename -----
+    if user_data.get("awaiting_template_rename") is not None:
+        idx = user_data.pop("awaiting_template_rename")
+        ws["template"][idx] = message.text.strip()
+        update_user_data(message.from_user.id, user_data)
+        await message.reply("Шаблон обновлён", reply_markup=template_keyboard(ws["template"]))
+        return
+
+    # ----- Template add -----
+    if user_data.get("awaiting_template_add"):
+        user_data.pop("awaiting_template_add")
+        ws["template"].append(message.text.strip())
+        update_user_data(message.from_user.id, user_data)
+        await message.reply("Задача добавлена в шаблон", reply_markup=template_keyboard(ws["template"]))
+        return
 
 # -------------------------
 # Run
