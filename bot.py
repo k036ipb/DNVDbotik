@@ -385,11 +385,14 @@ async def text_handler(message: types.Message):
     # --- Добавление нового workspace ---
     if user.get("await_forward"):
 
+        # Получаем chat_id и thread_id
         chat_id = message.forward_from_chat.id if message.forward_from_chat else message.chat.id
         thread_id = message.message_thread_id or 0  # 0 для обычного чата
 
+        # Формируем уникальный ID workspace
         ws_id = f"{chat_id}_{thread_id}"
 
+        # Создаём workspace
         user["workspaces"][ws_id] = {
             "name": message.chat.title or message.chat.first_name or "Без названия",
             "chat_id": chat_id,
@@ -402,6 +405,7 @@ async def text_handler(message: types.Message):
             "companies": {}
         }
 
+        # Обновляем текущий workspace
         user["current_workspace"] = ws_id
         user.pop("await_forward")
         update_user(message.from_user.id, user)
