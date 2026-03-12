@@ -376,25 +376,31 @@ async def callbacks(cq: types.CallbackQuery):
         return
 
 # -------------------------
-# Подключение workspace и обработка текстовых сообщений
+# TEXT HANDLER
 # -------------------------
 @dp.message_handler(lambda m: True)
 async def text_handler(message: types.Message):
+
     user = get_user(message.from_user.id)
 
-    # --- Добавление нового workspace ---
+    # -------------------------
+    # CREATE WORKSPACE
+    # -------------------------
+
     if user.get("await_forward"):
 
-        # Получаем chat_id и thread_id
-        chat_id = message.forward_from_chat.id if message.forward_from_chat else message.chat.id
-        thread_id = message.message_thread_id or 0  # 0 для обычного чата
+        # нельзя создавать workspace из лички
+        if message.chat.type == "private":
+            await message.reply("Отправьте сообщение из группы или темы (треда).")
+            return
 
-        # Формируем уникальный ID workspace
+        chat_id = message.chat.id
+        thread_id = message.message_thread_id or 0
+
         ws_id = f"{chat_id}_{thread_id}"
 
-        # Создаём workspace
         user["workspaces"][ws_id] = {
-            "name": message.chat.title or message.chat.first_name or "Без названия",
+            "name": message.chat.title or "Без названия",
             "chat_id": chat_id,
             "thread_id": thread_id,
             "template": [
@@ -405,50 +411,100 @@ async def text_handler(message: types.Message):
             "companies": {}
         }
 
-        # Обновляем текущий workspace
         user["current_workspace"] = ws_id
         user.pop("await_forward")
+
         update_user(message.from_user.id, user)
+
+        ws = user["workspaces"][ws_id]
+
+        # отправляем меню компаний прямо в тред
+        await bot.send_message(
+            chat_id,
+            "Компании:",
+            message_thread_id=thread_id,
+            reply_markup=companies_keyboard(ws)
+        )
 
         await message.reply(
-            f"Конфа '{user['workspaces'][ws_id]['name']}' добавлена!\n"
-            "Теперь можно создавать компании.",
-            reply_markup=workspace_keyboard(user)
+            f"Конфа '{ws['name']}' добавлена!"
         )
+
         return
 
-    # --- Добавление компании ---
+    # -------------------------
+    # ADD COMPANY
+    # -------------------------
+
     if user.get("await_company"):
+
         cname = message.text.strip()
+
         ws = user["workspaces"][user["current_workspace"]]
+
         await create_company(ws, cname)
+
         user.pop("await_company")
+
         update_user(message.from_user.id, user)
+
         await message.reply("Компания создана")
+
         return
 
-    # --- Добавление задачи ---
+    # -------------------------
+    # ADD TASK
+    # -------------------------
+
     if user.get("await_task"):
+
         cname = user["current_company"]
         ws = user["workspaces"][user["current_workspace"]]
+
         company = ws["companies"][cname]
-        company["tasks"].append({"text": message.text, "done": False})
+
+        company["tasks"].append({
+            "text": message.text,
+            "done": False
+        })
+
         user.pop("await_task")
+
         update_user(message.from_user.id, user)
+
         await render_company(ws, cname)
+
         return
 
-    # --- Добавление дубликата ---
+    # -------------------------
+    # ADD DUPLICATE
+    # -------------------------
+
     if user.get("await_dup"):
+
         cname = user["current_company"]
         ws = user["workspaces"][user["current_workspace"]]
+
         company = ws["companies"][cname]
+
         chat_id = int(message.text)
-        msg = await bot.send_message(chat_id, company_text(cname, company))
-        company.setdefault("duplicates", []).append({"chat_id": chat_id, "message_id": msg.message_id})
+
+        msg = await bot.send_message(
+            chat_id,
+            company_text(cname, company)
+        )
+
+        company.setdefault("duplicates", []).append({
+            "chat_id": chat_id,
+            "message_id": msg.message_id
+        })
+
         user.pop("await_dup")
+
         update_user(message.from_user.id, user)
+
         await message.reply("Дубликат создан")
+
         return
         
 # -------------------------
