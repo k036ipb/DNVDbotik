@@ -38,21 +38,20 @@ def get_user(user_id):
 
     if str(user_id) not in data["users"]:
 
-        data["users"][str(user_id)] = {
+        data["users"][str(user_id]] = {
             "workspaces": {},
-            "current_workspace": None,
-            "current_company": None
+            "current_workspace": None
         }
 
         save_data(data)
 
-    return data["users"][str(user_id)]
+    return data["users"][str(user_id]]
 
 
 def update_user(user_id, user):
 
     data = load_data()
-    data["users"][str(user_id)] = user
+    data["users"][str(user_id]] = user
     save_data(data)
 
 
@@ -78,29 +77,6 @@ def company_text(name, company):
 # KEYBOARDS
 # -------------------------
 
-def workspace_keyboard(user):
-
-    kb = InlineKeyboardMarkup()
-
-    for ws_id, ws in user["workspaces"].items():
-
-        kb.add(
-            InlineKeyboardButton(
-                text=f"▶ {ws['name']}",
-                callback_data=f"ws:{ws_id}"
-            )
-        )
-
-    kb.add(
-        InlineKeyboardButton(
-            text="➕ Добавить новую конфу",
-            callback_data="ws_new"
-        )
-    )
-
-    return kb
-
-
 def companies_keyboard(ws):
 
     kb = InlineKeyboardMarkup()
@@ -115,7 +91,6 @@ def companies_keyboard(ws):
         )
 
     kb.add(InlineKeyboardButton("➕ Добавить компанию", callback_data="company_add"))
-    kb.add(InlineKeyboardButton("⚙ Редактор шаблона", callback_data="template"))
 
     return kb
 
@@ -137,29 +112,23 @@ def tasks_keyboard(company):
 
     kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data="task_add"))
     kb.add(InlineKeyboardButton("🤖 Добавить дубликат", callback_data="dup_add"))
-    kb.add(InlineKeyboardButton("🗑 Удалить список", callback_data="company_delete"))
     kb.add(InlineKeyboardButton("🔙 Назад", callback_data="companies"))
 
     return kb
 
 
-def template_keyboard(template):
+# -------------------------
+# FIND COMPANY
+# -------------------------
 
-    kb = InlineKeyboardMarkup()
+def find_company_by_message(ws, message_id):
 
-    for i, t in enumerate(template):
+    for cname, company in ws["companies"].items():
 
-        kb.add(
-            InlineKeyboardButton(
-                text=f"{i+1} {t}",
-                callback_data=f"template_task:{i}"
-            )
-        )
+        if company["message_id"] == message_id:
+            return cname, company
 
-    kb.add(InlineKeyboardButton("➕ Добавить", callback_data="template_add"))
-    kb.add(InlineKeyboardButton("🔙 Назад", callback_data="companies"))
-
-    return kb
+    return None, None
 
 
 # -------------------------
@@ -226,30 +195,68 @@ async def create_company(ws, cname):
 
     company["message_id"] = msg.message_id
 
+
 # -------------------------
-# /start
+# START
 # -------------------------
+
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
-    user = get_user(message.from_user.id)
-
-    # Если есть workspace, показываем выбор
-    if user["workspaces"]:
-        await message.reply(
-            "Выберите рабочую конфигурацию:",
-            reply_markup=workspace_keyboard(user)
-        )
-        return
-
-    # Если workspace нет, предлагаем подключить тред
-    user["await_forward"] = True
-    update_user(message.from_user.id, user)
 
     await message.reply(
-        "Добавим первую конфигурацию.\n"
-        "Перешлите любое сообщение из нужной темы (треда) группы, "
-        "или напишите команду /connect прямо в этой теме."
+        "Добавьте бота в группу и в нужном треде напишите:\n\n"
+        "/connect"
     )
+
+
+# -------------------------
+# CONNECT WORKSPACE
+# -------------------------
+
+@dp.message_handler(commands=["connect"])
+async def connect(message: types.Message):
+
+    if message.chat.type == "private":
+        await message.reply("Команду нужно написать в группе или треде.")
+        return
+
+    user = get_user(message.from_user.id)
+
+    chat_id = message.chat.id
+    thread_id = message.message_thread_id or 0
+
+    ws_id = f"{chat_id}_{thread_id}"
+
+    user["workspaces"][ws_id] = {
+
+        "name": message.chat.title,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+
+        "template": [
+            "Создать договор",
+            "Выставить счет",
+            "Подготовить мебель"
+        ],
+
+        "companies": {}
+    }
+
+    user["current_workspace"] = ws_id
+
+    update_user(message.from_user.id, user)
+
+    ws = user["workspaces"][ws_id]
+
+    await bot.send_message(
+        chat_id,
+        "Компании:",
+        message_thread_id=thread_id,
+        reply_markup=companies_keyboard(ws)
+    )
+
+    await message.reply("Workspace подключён.")
+
 
 # -------------------------
 # CALLBACKS
@@ -259,46 +266,13 @@ async def start(message: types.Message):
 async def callbacks(cq: types.CallbackQuery):
 
     user = get_user(cq.from_user.id)
-    data = cq.data
-
-
-# WORKSPACE
-
-    if data.startswith("ws:"):
-
-        ws_id = data.split(":")[1]
-
-        user["current_workspace"] = ws_id
-        update_user(cq.from_user.id, user)
-
-        ws = user["workspaces"][ws_id]
-
-        await bot.send_message(
-            ws["chat_id"],
-            "Компании:",
-            message_thread_id=ws["thread_id"],
-            reply_markup=companies_keyboard(ws)
-        )
-
-        return
-
-
-    if data == "ws_new":
-
-        user["await_forward"] = True
-        update_user(cq.from_user.id, user)
-
-        await cq.message.edit_text("Перешлите сообщение из нужного треда.")
-        return
-
-
-# COMPANIES
 
     ws = user["workspaces"].get(user["current_workspace"])
 
     if not ws:
         return
 
+    data = cq.data
 
     if data == "companies":
 
@@ -306,8 +280,8 @@ async def callbacks(cq: types.CallbackQuery):
             "Компании:",
             reply_markup=companies_keyboard(ws)
         )
-        return
 
+        return
 
     if data == "company_add":
 
@@ -315,15 +289,12 @@ async def callbacks(cq: types.CallbackQuery):
         update_user(cq.from_user.id, user)
 
         await cq.message.reply("Введите название компании")
-        return
 
+        return
 
     if data.startswith("company:"):
 
         cname = data.split(":")[1]
-
-        user["current_company"] = cname
-        update_user(cq.from_user.id, user)
 
         company = ws["companies"][cname]
 
@@ -334,18 +305,12 @@ async def callbacks(cq: types.CallbackQuery):
 
         return
 
-
-# TASKS
-
-    cname = user.get("current_company")
-
-    if not cname:
-        return
-
-    company = ws["companies"][cname]
-
-
     if data.startswith("task:"):
+
+        cname, company = find_company_by_message(ws, cq.message.message_id)
+
+        if not company:
+            return
 
         idx = int(data.split(":")[1])
 
@@ -357,90 +322,42 @@ async def callbacks(cq: types.CallbackQuery):
 
         return
 
-
     if data == "task_add":
 
-        user["await_task"] = True
+        user["await_task"] = cq.message.message_id
         update_user(cq.from_user.id, user)
 
         await cq.message.reply("Введите текст задачи")
-        return
 
+        return
 
     if data == "dup_add":
 
-        user["await_dup"] = True
+        user["await_dup"] = cq.message.message_id
         update_user(cq.from_user.id, user)
 
-        await cq.message.reply("Отправьте chat_id дубликата")
+        await cq.message.reply("Введите chat_id для дубликата")
+
         return
+
 
 # -------------------------
 # TEXT HANDLER
 # -------------------------
+
 @dp.message_handler(lambda m: True)
 async def text_handler(message: types.Message):
 
     user = get_user(message.from_user.id)
 
-    # -------------------------
-    # CREATE WORKSPACE
-    # -------------------------
+    ws = user["workspaces"].get(user["current_workspace"])
 
-    if user.get("await_forward"):
-
-        # нельзя создавать workspace из лички
-        if message.chat.type == "private":
-            await message.reply("Отправьте сообщение из группы или темы (треда).")
-            return
-
-        chat_id = message.chat.id
-        thread_id = message.message_thread_id or 0
-
-        ws_id = f"{chat_id}_{thread_id}"
-
-        user["workspaces"][ws_id] = {
-            "name": message.chat.title or "Без названия",
-            "chat_id": chat_id,
-            "thread_id": thread_id,
-            "template": [
-                "Создать договор",
-                "Выставить счет",
-                "Подготовить мебель"
-            ],
-            "companies": {}
-        }
-
-        user["current_workspace"] = ws_id
-        user.pop("await_forward")
-
-        update_user(message.from_user.id, user)
-
-        ws = user["workspaces"][ws_id]
-
-        # отправляем меню компаний прямо в тред
-        await bot.send_message(
-            chat_id,
-            "Компании:",
-            message_thread_id=thread_id,
-            reply_markup=companies_keyboard(ws)
-        )
-
-        await message.reply(
-            f"Конфа '{ws['name']}' добавлена!"
-        )
-
+    if not ws:
         return
-
-    # -------------------------
-    # ADD COMPANY
-    # -------------------------
 
     if user.get("await_company"):
 
         cname = message.text.strip()
-
-        ws = user["workspaces"][user["current_workspace"]]
 
         await create_company(ws, cname)
 
@@ -452,16 +369,14 @@ async def text_handler(message: types.Message):
 
         return
 
-    # -------------------------
-    # ADD TASK
-    # -------------------------
+    msg_id = user.get("await_task")
 
-    if user.get("await_task"):
+    if msg_id:
 
-        cname = user["current_company"]
-        ws = user["workspaces"][user["current_workspace"]]
+        cname, company = find_company_by_message(ws, msg_id)
 
-        company = ws["companies"][cname]
+        if not company:
+            return
 
         company["tasks"].append({
             "text": message.text,
@@ -476,16 +391,14 @@ async def text_handler(message: types.Message):
 
         return
 
-    # -------------------------
-    # ADD DUPLICATE
-    # -------------------------
+    msg_id = user.get("await_dup")
 
-    if user.get("await_dup"):
+    if msg_id:
 
-        cname = user["current_company"]
-        ws = user["workspaces"][user["current_workspace"]]
+        cname, company = find_company_by_message(ws, msg_id)
 
-        company = ws["companies"][cname]
+        if not company:
+            return
 
         chat_id = int(message.text)
 
@@ -506,7 +419,8 @@ async def text_handler(message: types.Message):
         await message.reply("Дубликат создан")
 
         return
-        
+
+
 # -------------------------
 # RUN
 # -------------------------
