@@ -51,7 +51,7 @@ def get_user(user_id):
 def update_user(user_id, user):
 
     data = load_data()
-    data["users"][str(user_id]] = user
+    data["users"][str(user_id] = user
     save_data(data)
 
 
