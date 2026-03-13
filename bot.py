@@ -38,20 +38,20 @@ def get_user(user_id):
 
     if str(user_id) not in data["users"]:
 
-        data["users"][str(user_id] = {
+        data["users"][str(user_id)] = {
             "workspaces": {},
             "current_workspace": None
         }
 
         save_data(data)
 
-    return data["users"][str(user_id]
+    return data["users"][str(user_id)]
 
 
 def update_user(user_id, user):
 
     data = load_data()
-    data["users"][str(user_id] = user
+    data["users"][str(user_id)] = user
     save_data(data)
 
 
