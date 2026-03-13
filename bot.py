@@ -65,10 +65,12 @@ def company_text(name, company):
 
     for i, task in enumerate(company["tasks"]):
 
+        mark = "✔" if task["done"] else "⬜"
+
         if task["done"]:
-            text += f"{i+1} ✔ ~~{task['text']}~~\n"
+            text += f"{i+1}. {mark} ~~{task['text']}~~\n"
         else:
-            text += f"{i+1} ⬜ {task['text']}\n"
+            text += f"{i+1}. {mark} {task['text']}\n"
 
     return text
 
@@ -105,13 +107,12 @@ def tasks_keyboard(company):
 
         kb.add(
             InlineKeyboardButton(
-                text=f"{i+1} {mark} {task['text']}",
+                text=f"{i+1}. {mark} {task['text']}",
                 callback_data=f"task:{i}"
             )
         )
 
     kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data="task_add"))
-    kb.add(InlineKeyboardButton("🤖 Добавить дубликат", callback_data="dup_add"))
     kb.add(InlineKeyboardButton("🔙 Назад", callback_data="companies"))
 
     return kb
@@ -153,19 +154,6 @@ async def render_company(ws, cname):
     except:
         pass
 
-    for dup in company.get("duplicates", []):
-
-        try:
-
-            await bot.edit_message_text(
-                chat_id=dup["chat_id"],
-                message_id=dup["message_id"],
-                text=text
-            )
-
-        except:
-            pass
-
 
 # -------------------------
 # CREATE COMPANY
@@ -174,13 +162,10 @@ async def render_company(ws, cname):
 async def create_company(ws, cname):
 
     company = {
-
         "tasks": [
             {"text": t, "done": False}
             for t in ws["template"]
         ],
-
-        "duplicates": [],
         "message_id": None
     }
 
@@ -217,7 +202,7 @@ async def start(message: types.Message):
 async def connect(message: types.Message):
 
     if message.chat.type == "private":
-        await message.reply("Команду нужно написать в группе или треде.")
+        await message.reply("Команду нужно писать в группе или треде.")
         return
 
     user = get_user(message.from_user.id)
@@ -250,7 +235,7 @@ async def connect(message: types.Message):
 
     await bot.send_message(
         chat_id,
-        "Компании:",
+        "📂 Компании:",
         message_thread_id=thread_id,
         reply_markup=companies_keyboard(ws)
     )
@@ -274,14 +259,16 @@ async def callbacks(cq: types.CallbackQuery):
 
     data = cq.data
 
+
     if data == "companies":
 
         await cq.message.edit_text(
-            "Компании:",
+            "📂 Компании:",
             reply_markup=companies_keyboard(ws)
         )
 
         return
+
 
     if data == "company_add":
 
@@ -291,6 +278,7 @@ async def callbacks(cq: types.CallbackQuery):
         await cq.message.reply("Введите название компании")
 
         return
+
 
     if data.startswith("company:"):
 
@@ -304,6 +292,7 @@ async def callbacks(cq: types.CallbackQuery):
         )
 
         return
+
 
     if data.startswith("task:"):
 
@@ -322,21 +311,13 @@ async def callbacks(cq: types.CallbackQuery):
 
         return
 
+
     if data == "task_add":
 
         user["await_task"] = cq.message.message_id
         update_user(cq.from_user.id, user)
 
         await cq.message.reply("Введите текст задачи")
-
-        return
-
-    if data == "dup_add":
-
-        user["await_dup"] = cq.message.message_id
-        update_user(cq.from_user.id, user)
-
-        await cq.message.reply("Введите chat_id для дубликата")
 
         return
 
@@ -355,6 +336,7 @@ async def text_handler(message: types.Message):
     if not ws:
         return
 
+
     if user.get("await_company"):
 
         cname = message.text.strip()
@@ -368,6 +350,7 @@ async def text_handler(message: types.Message):
         await message.reply("Компания создана")
 
         return
+
 
     msg_id = user.get("await_task")
 
@@ -388,35 +371,6 @@ async def text_handler(message: types.Message):
         update_user(message.from_user.id, user)
 
         await render_company(ws, cname)
-
-        return
-
-    msg_id = user.get("await_dup")
-
-    if msg_id:
-
-        cname, company = find_company_by_message(ws, msg_id)
-
-        if not company:
-            return
-
-        chat_id = int(message.text)
-
-        msg = await bot.send_message(
-            chat_id,
-            company_text(cname, company)
-        )
-
-        company.setdefault("duplicates", []).append({
-            "chat_id": chat_id,
-            "message_id": msg.message_id
-        })
-
-        user.pop("await_dup")
-
-        update_user(message.from_user.id, user)
-
-        await message.reply("Дубликат создан")
 
         return
 
