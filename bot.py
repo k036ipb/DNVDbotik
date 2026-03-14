@@ -1,12 +1,10 @@
 import json
 import os
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 
 TOKEN = os.getenv("API_TOKEN")
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 
@@ -14,7 +12,7 @@ DATA_FILE = "data.json"
 
 
 # ----------------
-# DATA
+# DATA FUNCTIONS
 # ----------------
 
 def load_data():
@@ -24,6 +22,7 @@ def load_data():
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
+        # если json пустой или битый
         return {"users": {}}
 
 
@@ -47,16 +46,14 @@ def update_user(uid, user):
 
 
 # ----------------
-# UI
+# UI KEYBOARDS
 # ----------------
 
 def panel_keyboard(user):
     kb = InlineKeyboardMarkup(row_width=1)
     for ws_id, ws in user["workspaces"].items():
         kb.add(
-            InlineKeyboardButton(
-                f"🗑 {ws['name']}", callback_data=f"delete_ws:{ws_id}"
-            )
+            InlineKeyboardButton(f"🗑 {ws['name']}", callback_data=f"delete_ws:{ws_id}")
         )
     kb.add(
         InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help")
@@ -89,7 +86,7 @@ def tasks_keyboard(company):
 
 
 # ----------------
-# TEXT
+# TEXT GENERATORS
 # ----------------
 
 def workspace_text(user):
@@ -113,11 +110,13 @@ def company_text(name, company):
 
 
 # ----------------
-# START
+# START COMMAND
 # ----------------
 
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
+    # удаляем старую ReplyKeyboard
+    await message.answer("", reply_markup=ReplyKeyboardRemove())
     user = get_user(message.from_user.id)
     await message.answer(
         workspace_text(user),
@@ -134,18 +133,24 @@ async def connect_help(callback: types.CallbackQuery):
     text = (
         "Чтобы подключить workspace:\n\n"
         "1️⃣ Перейди в нужный Telegram topic\n"
-        "2️⃣ Напиши там:\n\n"
+        "2️⃣ Напиши там команду:\n\n"
         "/connect"
     )
     user = get_user(callback.from_user.id)
-    await callback.message.edit_text(text, reply_markup=panel_keyboard(user))
+    try:
+        await callback.message.edit_text(text, reply_markup=panel_keyboard(user))
+    except types.MessageNotModified:
+        pass
     await callback.answer()
 
 
 @dp.callback_query_handler(lambda c: c.data == "refresh")
 async def refresh(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
-    await callback.message.edit_text(workspace_text(user), reply_markup=panel_keyboard(user))
+    try:
+        await callback.message.edit_text(workspace_text(user), reply_markup=panel_keyboard(user))
+    except types.MessageNotModified:
+        pass
     await callback.answer()
 
 
@@ -156,12 +161,15 @@ async def delete_workspace(callback: types.CallbackQuery):
     if ws_id in user["workspaces"]:
         del user["workspaces"][ws_id]
         update_user(callback.from_user.id, user)
-    await callback.message.edit_text(workspace_text(user), reply_markup=panel_keyboard(user))
+    try:
+        await callback.message.edit_text(workspace_text(user), reply_markup=panel_keyboard(user))
+    except types.MessageNotModified:
+        pass
     await callback.answer("Workspace удалён")
 
 
 # ----------------
-# CONNECT
+# CONNECT COMMAND
 # ----------------
 
 @dp.message_handler(commands=["connect"])
@@ -199,7 +207,7 @@ async def connect(message: types.Message):
 
 
 # ----------------
-# COMPANY
+# COMPANY COMMAND
 # ----------------
 
 @dp.message_handler(commands=["company"])
@@ -234,20 +242,28 @@ async def company(message: types.Message):
 # TASK TOGGLE
 # ----------------
 
-@dp.callback_query_handler(lambda c: c.data == "connect_help")
-async def connect_help(callback: types.CallbackQuery):
-    text = (
-        "Чтобы подключить workspace:\n\n"
-        "1️⃣ Перейди в нужный Telegram topic\n"
-        "2️⃣ Напиши там:\n\n"
-        "/connect"
-    )
-    user = get_user(callback.from_user.id)
-    try:
-        await callback.message.edit_text(text, reply_markup=panel_keyboard(user))
-    except types.MessageNotModified:
-        pass
-    await callback.answer()
+@dp.callback_query_handler(lambda c: c.data.startswith("task:"))
+async def toggle_task(callback: types.CallbackQuery):
+    index = int(callback.data.split(":")[1])
+    data = load_data()
+    chat_id = callback.message.chat.id
+    thread_id = callback.message.message_thread_id or 0
+
+    for user in data["users"].values():
+        for ws in user["workspaces"].values():
+            if ws["chat_id"] == chat_id and ws["thread_id"] == thread_id:
+                for cname, company in ws["companies"].items():
+                    if company["message_id"] == callback.message.message_id:
+                        company["tasks"][index]["done"] = not company["tasks"][index]["done"]
+                        try:
+                            await callback.message.edit_text(
+                                company_text(cname, company),
+                                reply_markup=tasks_keyboard(company)
+                            )
+                        except types.MessageNotModified:
+                            pass
+                        save_data(data)
+                        await callback.answer()
                         return
 
 
