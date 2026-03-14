@@ -1,5 +1,6 @@
 import json
 import os
+import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -12,7 +13,7 @@ DATA_FILE = "data.json"
 
 
 # ----------------
-# DATA FUNCTIONS
+# DATA
 # ----------------
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -44,46 +45,7 @@ def update_user(uid, user):
 
 
 # ----------------
-# KEYBOARDS
-# ----------------
-def panel_keyboard(user):
-    kb = InlineKeyboardMarkup(row_width=1)
-    for ws_id, ws in user["workspaces"].items():
-        kb.add(
-            InlineKeyboardButton(f"🗑 {ws['name']}", callback_data=f"delete_ws:{ws_id}")
-        )
-    kb.add(
-        InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help")
-    )
-    kb.add(
-        InlineKeyboardButton("🔄 Обновить", callback_data="refresh")
-    )
-    return kb
-
-
-def topic_menu_keyboard():
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        InlineKeyboardButton("➕ Создать компанию", callback_data="create_company")
-    )
-    kb.add(
-        InlineKeyboardButton("📋 Список компаний", callback_data="list_companies")
-    )
-    return kb
-
-
-def tasks_keyboard(company):
-    kb = InlineKeyboardMarkup(row_width=1)
-    for i, task in enumerate(company["tasks"]):
-        mark = "✔" if task["done"] else "⬜"
-        kb.add(
-            InlineKeyboardButton(f"{mark} {task['text']}", callback_data=f"task:{i}")
-        )
-    return kb
-
-
-# ----------------
-# TEXT GENERATORS
+# TEXT
 # ----------------
 def workspace_text(user):
     text = "📂 Ваши workspace\n\n"
@@ -106,16 +68,51 @@ def company_text(name, company):
 
 
 # ----------------
-# START COMMAND
+# KEYBOARDS
+# ----------------
+def main_panel_keyboard(user):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for ws_id, ws in user["workspaces"].items():
+        kb.add(InlineKeyboardButton(f"▶ {ws['name']}", callback_data=f"ws_actions:{ws_id}"))
+    kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help"))
+    kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="refresh"))
+    return kb
+
+
+def ws_actions_keyboard(ws_id):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🗑 Удалить workspace", callback_data=f"delete_ws:{ws_id}"))
+    kb.add(InlineKeyboardButton("◀ Назад", callback_data="panel"))
+    return kb
+
+
+def topic_menu_keyboard():
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data="create_company"))
+    kb.add(InlineKeyboardButton("📋 Список компаний", callback_data="list_companies"))
+    kb.add(InlineKeyboardButton("◀ Назад", callback_data="panel"))
+    return kb
+
+
+def tasks_keyboard(company):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for i, task in enumerate(company["tasks"]):
+        mark = "✔" if task["done"] else "⬜"
+        kb.add(InlineKeyboardButton(f"{mark} {task['text']}", callback_data=f"task:{i}"))
+    kb.add(InlineKeyboardButton("◀ Назад", callback_data="panel"))
+    return kb
+
+
+# ----------------
+# START
 # ----------------
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     user = get_user(message.from_user.id)
     text = workspace_text(user)
 
-    kb = panel_keyboard(user)
+    kb = main_panel_keyboard(user)
     if not user["workspaces"]:
-        # Если workspace нет, кнопки только для подключения
         kb = InlineKeyboardMarkup(row_width=1)
         kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help"))
 
@@ -123,32 +120,55 @@ async def start(message: types.Message):
 
 
 # ----------------
-# PANEL CALLBACKS
+# CALLBACKS
 # ----------------
-@dp.callback_query_handler(lambda c: c.data == "connect_help")
-async def connect_help(callback: types.CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data == "panel")
+async def back_to_panel(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
-    text = (
-        "Чтобы подключить workspace:\n\n"
-        "1️⃣ Перейди в нужный Telegram topic\n"
-        "2️⃣ Напиши там команду:\n\n"
-        "/connect"
-    )
     try:
-        await callback.message.edit_text(text, reply_markup=panel_keyboard(user))
+        await callback.message.edit_text(workspace_text(user), reply_markup=main_panel_keyboard(user))
     except types.MessageNotModified:
-        # Если текст не изменился, просто обновляем inline-кнопки
-        try:
-            await callback.message.edit_reply_markup(reply_markup=panel_keyboard(user))
-        except types.MessageNotModified:
-            pass
-    await callback.answer()  # Чтобы убрать “loading” на кнопке
+        pass
+    await callback.answer()
+
 
 @dp.callback_query_handler(lambda c: c.data == "refresh")
 async def refresh(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
     try:
-        await callback.message.edit_text(workspace_text(user), reply_markup=panel_keyboard(user))
+        await callback.message.edit_text(workspace_text(user), reply_markup=main_panel_keyboard(user))
+    except types.MessageNotModified:
+        pass
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "connect_help")
+async def connect_help(callback: types.CallbackQuery):
+    user = get_user(callback.from_user.id)
+    text = (
+        "📌 Перед подключением workspace убедитесь, что бот добавлен в нужную конфу.\n\n"
+        "Чтобы подключить workspace:\n"
+        "1️⃣ Перейдите в нужный Telegram topic\n"
+        "2️⃣ Напишите там команду:\n"
+        "/connect"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup().add(
+            InlineKeyboardButton("◀ Назад", callback_data="panel")
+        ))
+    except types.MessageNotModified:
+        pass
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("ws_actions:"))
+async def workspace_actions(callback: types.CallbackQuery):
+    ws_id = callback.data.split(":")[1]
+    try:
+        await callback.message.edit_text(
+            f"Выберите действие для workspace:",
+            reply_markup=ws_actions_keyboard(ws_id)
+        )
     except types.MessageNotModified:
         pass
     await callback.answer()
@@ -159,17 +179,29 @@ async def delete_workspace(callback: types.CallbackQuery):
     ws_id = callback.data.split(":")[1]
     user = get_user(callback.from_user.id)
     if ws_id in user["workspaces"]:
+        ws_name = user["workspaces"][ws_id]["name"]
+        # Удаляем workspace
         del user["workspaces"][ws_id]
         update_user(callback.from_user.id, user)
+        # Уведомление в личке
+        await bot.send_message(callback.from_user.id, f"Workspace {ws_name} удален")
+        # Уведомление в topic
+        try:
+            chat_id, thread_id = map(int, ws_id.split("_"))
+            await bot.send_message(chat_id, f"Workspace {ws_name} удален", message_thread_id=thread_id)
+        except:
+            pass
+
+    # Вернуть панель в личку
     try:
-        await callback.message.edit_text(workspace_text(user), reply_markup=panel_keyboard(user))
+        await callback.message.edit_text(workspace_text(user), reply_markup=main_panel_keyboard(user))
     except types.MessageNotModified:
         pass
     await callback.answer("Workspace удалён")
 
 
 # ----------------
-# CONNECT COMMAND
+# CONNECT
 # ----------------
 @dp.message_handler(commands=["connect"])
 async def connect(message: types.Message):
@@ -195,14 +227,14 @@ async def connect(message: types.Message):
     }
     update_user(message.from_user.id, user)
 
-    # Сообщение в topic с меню управления
+    # Сообщение в topic с меню
     await message.answer(
-        "✅ Workspace подключен\n\nВыберите действие:",
+        f"✅ Workspace {message.chat.title} подключен\n\nВыберите действие:",
         reply_markup=topic_menu_keyboard()
     )
 
     # Подтверждение в личку
-    await bot.send_message(message.from_user.id, "Workspace подключен")
+    await bot.send_message(message.from_user.id, f"Workspace {message.chat.title} подключен")
 
 
 # ----------------
