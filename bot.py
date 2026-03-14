@@ -3,7 +3,7 @@ import os
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 
 TOKEN = os.getenv("API_TOKEN")
 
@@ -50,13 +50,30 @@ def update_user(uid, user):
 # UI
 # ----------------
 
-def panel_keyboard():
+def panel_keyboard(user):
     kb = InlineKeyboardMarkup(row_width=1)
+    for ws_id, ws in user["workspaces"].items():
+        kb.add(
+            InlineKeyboardButton(
+                f"🗑 {ws['name']}", callback_data=f"delete_ws:{ws_id}"
+            )
+        )
     kb.add(
         InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help")
     )
     kb.add(
         InlineKeyboardButton("🔄 Обновить", callback_data="refresh")
+    )
+    return kb
+
+
+def topic_menu_keyboard():
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton("➕ Создать компанию", callback_data="create_company")
+    )
+    kb.add(
+        InlineKeyboardButton("📋 Список компаний", callback_data="list_companies")
     )
     return kb
 
@@ -81,10 +98,7 @@ def workspace_text(user):
         companies = len(ws["companies"])
         total_tasks = sum(len(c["tasks"]) for c in ws["companies"].values())
         done = sum(sum(1 for t in c["tasks"] if t["done"]) for c in ws["companies"].values())
-        text += f"{ws['name']}\n"
-        text += f"Компаний: {companies}\n"
-        text += f"Задач: {total_tasks}\n"
-        text += f"Выполнено: {done}\n\n"
+        text += f"{ws['name']}\nКомпаний: {companies}\nЗадач: {total_tasks}\nВыполнено: {done}\n\n"
     if not user["workspaces"]:
         text += "Нет workspace"
     return text
@@ -107,7 +121,7 @@ async def start(message: types.Message):
     user = get_user(message.from_user.id)
     await message.answer(
         workspace_text(user),
-        reply_markup=panel_keyboard()
+        reply_markup=panel_keyboard(user)
     )
 
 
@@ -120,18 +134,30 @@ async def connect_help(callback: types.CallbackQuery):
     text = (
         "Чтобы подключить workspace:\n\n"
         "1️⃣ Перейди в нужный Telegram topic\n"
-        "2️⃣ Напиши там команду:\n\n"
+        "2️⃣ Напиши там:\n\n"
         "/connect"
     )
-    await callback.message.edit_text(text, reply_markup=panel_keyboard())
+    user = get_user(callback.from_user.id)
+    await callback.message.edit_text(text, reply_markup=panel_keyboard(user))
     await callback.answer()
 
 
 @dp.callback_query_handler(lambda c: c.data == "refresh")
 async def refresh(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
-    await callback.message.edit_text(workspace_text(user), reply_markup=panel_keyboard())
+    await callback.message.edit_text(workspace_text(user), reply_markup=panel_keyboard(user))
     await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("delete_ws:"))
+async def delete_workspace(callback: types.CallbackQuery):
+    ws_id = callback.data.split(":")[1]
+    user = get_user(callback.from_user.id)
+    if ws_id in user["workspaces"]:
+        del user["workspaces"][ws_id]
+        update_user(callback.from_user.id, user)
+    await callback.message.edit_text(workspace_text(user), reply_markup=panel_keyboard(user))
+    await callback.answer("Workspace удалён")
 
 
 # ----------------
@@ -157,17 +183,18 @@ async def connect(message: types.Message):
         "name": message.chat.title,
         "chat_id": chat_id,
         "thread_id": thread_id,
-        "template": [
-            "Создать договор",
-            "Выставить счет",
-            "Подготовить мебель"
-        ],
+        "template": ["Создать договор", "Выставить счет", "Подготовить мебель"],
         "companies": {}
     }
-
     update_user(message.from_user.id, user)
 
-    await message.reply("✅ Workspace подключен")
+    # Сообщение в topic с меню управления
+    await message.answer(
+        "✅ Workspace подключен\n\nВыберите действие:",
+        reply_markup=topic_menu_keyboard()
+    )
+
+    # Подтверждение в личку
     await bot.send_message(message.from_user.id, "Workspace подключен")
 
 
@@ -192,10 +219,7 @@ async def company(message: types.Message):
     for user in data["users"].values():
         for ws in user["workspaces"].values():
             if ws["chat_id"] == chat_id and ws["thread_id"] == thread_id:
-                company = {
-                    "tasks": [{"text": t, "done": False} for t in ws["template"]],
-                    "message_id": None
-                }
+                company = {"tasks": [{"text": t, "done": False} for t in ws["template"]], "message_id": None}
                 ws["companies"][name] = company
                 msg = await message.answer(
                     company_text(name, company),
@@ -210,25 +234,20 @@ async def company(message: types.Message):
 # TASK TOGGLE
 # ----------------
 
-@dp.callback_query_handler(lambda c: c.data.startswith("task:"))
-async def toggle_task(callback: types.CallbackQuery):
-    index = int(callback.data.split(":")[1])
-    data = load_data()
-    chat_id = callback.message.chat.id
-    thread_id = callback.message.message_thread_id or 0
-
-    for user in data["users"].values():
-        for ws in user["workspaces"].values():
-            if ws["chat_id"] == chat_id and ws["thread_id"] == thread_id:
-                for cname, company in ws["companies"].items():
-                    if company["message_id"] == callback.message.message_id:
-                        company["tasks"][index]["done"] = not company["tasks"][index]["done"]
-                        await callback.message.edit_text(
-                            company_text(cname, company),
-                            reply_markup=tasks_keyboard(company)
-                        )
-                        save_data(data)
-                        await callback.answer()
+@dp.callback_query_handler(lambda c: c.data == "connect_help")
+async def connect_help(callback: types.CallbackQuery):
+    text = (
+        "Чтобы подключить workspace:\n\n"
+        "1️⃣ Перейди в нужный Telegram topic\n"
+        "2️⃣ Напиши там:\n\n"
+        "/connect"
+    )
+    user = get_user(callback.from_user.id)
+    try:
+        await callback.message.edit_text(text, reply_markup=panel_keyboard(user))
+    except types.MessageNotModified:
+        pass
+    await callback.answer()
                         return
 
 
