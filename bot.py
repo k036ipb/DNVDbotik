@@ -115,8 +115,6 @@ def company_text(name, company):
 
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
-    # удаляем старую ReplyKeyboard
-    await message.answer("", reply_markup=ReplyKeyboardRemove())
     user = get_user(message.from_user.id)
     await message.answer(
         workspace_text(user),
