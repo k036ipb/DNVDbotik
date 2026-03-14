@@ -116,10 +116,7 @@ def company_text(name, company):
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     user = get_user(message.from_user.id)
-    await message.answer(
-        workspace_text(user),
-        reply_markup=panel_keyboard(user)
-    )
+    await message.answer(" ", reply_markup=ReplyKeyboardRemove())
 
 
 # ----------------
