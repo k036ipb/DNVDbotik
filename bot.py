@@ -111,10 +111,15 @@ def company_text(name, company):
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     user = get_user(message.from_user.id)
-    await message.answer(
-        workspace_text(user),
-        reply_markup=panel_keyboard(user)
-    )
+    text = workspace_text(user)
+
+    kb = panel_keyboard(user)
+    if not user["workspaces"]:
+        # Если workspace нет, кнопки только для подключения
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help"))
+
+    await message.answer(text, reply_markup=kb)
 
 
 # ----------------
