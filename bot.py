@@ -2,7 +2,7 @@ import json
 import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 TOKEN = os.getenv("API_TOKEN")
 bot = Bot(token=TOKEN)
@@ -14,7 +14,6 @@ DATA_FILE = "data.json"
 # ----------------
 # DATA FUNCTIONS
 # ----------------
-
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {"users": {}}
@@ -22,7 +21,6 @@ def load_data():
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
-        # если json пустой или битый
         return {"users": {}}
 
 
@@ -46,9 +44,8 @@ def update_user(uid, user):
 
 
 # ----------------
-# UI KEYBOARDS
+# KEYBOARDS
 # ----------------
-
 def panel_keyboard(user):
     kb = InlineKeyboardMarkup(row_width=1)
     for ws_id, ws in user["workspaces"].items():
@@ -88,7 +85,6 @@ def tasks_keyboard(company):
 # ----------------
 # TEXT GENERATORS
 # ----------------
-
 def workspace_text(user):
     text = "📂 Ваши workspace\n\n"
     for ws in user["workspaces"].values():
@@ -112,17 +108,18 @@ def company_text(name, company):
 # ----------------
 # START COMMAND
 # ----------------
-
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     user = get_user(message.from_user.id)
-    await message.answer(" ", reply_markup=ReplyKeyboardRemove())
+    await message.answer(
+        workspace_text(user),
+        reply_markup=panel_keyboard(user)
+    )
 
 
 # ----------------
 # PANEL CALLBACKS
 # ----------------
-
 @dp.callback_query_handler(lambda c: c.data == "connect_help")
 async def connect_help(callback: types.CallbackQuery):
     text = (
@@ -166,7 +163,6 @@ async def delete_workspace(callback: types.CallbackQuery):
 # ----------------
 # CONNECT COMMAND
 # ----------------
-
 @dp.message_handler(commands=["connect"])
 async def connect(message: types.Message):
     if message.chat.type == "private":
@@ -204,7 +200,6 @@ async def connect(message: types.Message):
 # ----------------
 # COMPANY COMMAND
 # ----------------
-
 @dp.message_handler(commands=["company"])
 async def company(message: types.Message):
     if message.chat.type == "private":
@@ -213,7 +208,7 @@ async def company(message: types.Message):
     name = message.get_args()
     if not name:
         await message.reply("Напиши /company НАЗВАНИЕ")
-        return  # <- 4 пробела от начала блока функции
+        return
 
     data = load_data()
     chat_id = message.chat.id
@@ -222,10 +217,7 @@ async def company(message: types.Message):
     for user in data["users"].values():
         for ws in user["workspaces"].values():
             if ws["chat_id"] == chat_id and ws["thread_id"] == thread_id:
-                company = {
-                    "tasks": [{"text": t, "done": False} for t in ws["template"]],
-                    "message_id": None
-                }
+                company = {"tasks": [{"text": t, "done": False} for t in ws["template"]], "message_id": None}
                 ws["companies"][name] = company
                 msg = await message.answer(
                     company_text(name, company),
@@ -239,7 +231,6 @@ async def company(message: types.Message):
 # ----------------
 # TASK TOGGLE
 # ----------------
-
 @dp.callback_query_handler(lambda c: c.data.startswith("task:"))
 async def toggle_task(callback: types.CallbackQuery):
     index = int(callback.data.split(":")[1])
@@ -268,6 +259,5 @@ async def toggle_task(callback: types.CallbackQuery):
 # ----------------
 # RUN
 # ----------------
-
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
