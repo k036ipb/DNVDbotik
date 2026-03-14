@@ -3,12 +3,7 @@ import os
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import (
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 TOKEN = os.getenv("API_TOKEN")
 
@@ -27,8 +22,11 @@ def load_data():
     if not os.path.exists(DATA_FILE):
         return {"users": {}}
 
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"users": {}}
 
 
 def save_data(data):
@@ -60,15 +58,26 @@ def update_user(uid, user):
 
 
 # ----------------
-# KEYBOARD
+# UI
 # ----------------
 
-def private_keyboard():
+def panel_keyboard():
 
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb = InlineKeyboardMarkup()
 
-    kb.add(KeyboardButton("➕ Подключить workspace"))
-    kb.add(KeyboardButton("🔄 Обновить"))
+    kb.add(
+        InlineKeyboardButton(
+            "➕ Подключить workspace",
+            callback_data="connect_help"
+        )
+    )
+
+    kb.add(
+        InlineKeyboardButton(
+            "🔄 Обновить",
+            callback_data="refresh"
+        )
+    )
 
     return kb
 
@@ -83,7 +92,7 @@ def tasks_keyboard(company):
 
         kb.add(
             InlineKeyboardButton(
-                text=f"{mark} {task['text']}",
+                f"{mark} {task['text']}",
                 callback_data=f"task:{i}"
             )
         )
@@ -145,34 +154,43 @@ async def start(message: types.Message):
 
     await message.answer(
         workspace_text(user),
-        reply_markup=private_keyboard()
+        reply_markup=panel_keyboard()
     )
 
 
 # ----------------
-# BUTTONS PRIVATE
+# PANEL CALLBACKS
 # ----------------
 
-@dp.message_handler(lambda m: m.text == "🔄 Обновить")
-async def refresh(message: types.Message):
+@dp.callback_query_handler(lambda c: c.data == "connect_help")
+async def connect_help(callback: types.CallbackQuery):
 
-    user = get_user(message.from_user.id)
-
-    await message.answer(
-        workspace_text(user),
-        reply_markup=private_keyboard()
-    )
-
-
-@dp.message_handler(lambda m: m.text == "➕ Подключить workspace")
-async def connect_info(message: types.Message):
-
-    await message.answer(
+    text = (
         "Чтобы подключить workspace:\n\n"
-        "1. Открой нужный topic\n"
-        "2. Напиши там:\n\n"
+        "1️⃣ Открой нужный Telegram topic\n"
+        "2️⃣ Напиши там команду:\n\n"
         "/connect"
     )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=panel_keyboard()
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "refresh")
+async def refresh(callback: types.CallbackQuery):
+
+    user = get_user(callback.from_user.id)
+
+    await callback.message.edit_text(
+        workspace_text(user),
+        reply_markup=panel_keyboard()
+    )
+
+    await callback.answer()
 
 
 # ----------------
@@ -183,7 +201,6 @@ async def connect_info(message: types.Message):
 async def connect(message: types.Message):
 
     if message.chat.type == "private":
-        await message.reply("Эту команду нужно писать в группе.")
         return
 
     user = get_user(message.from_user.id)
@@ -194,7 +211,8 @@ async def connect(message: types.Message):
     ws_id = f"{chat_id}_{thread_id}"
 
     if ws_id in user["workspaces"]:
-        await message.reply("⚠️ Workspace уже подключен")
+
+        await message.reply("Workspace уже подключен")
         return
 
     user["workspaces"][ws_id] = {
@@ -215,7 +233,7 @@ async def connect(message: types.Message):
 
     update_user(message.from_user.id, user)
 
-    await message.reply("✅ Workspace подключен")
+    await message.reply("Workspace подключен")
 
     await bot.send_message(
         message.from_user.id,
@@ -236,7 +254,6 @@ async def company(message: types.Message):
     name = message.get_args()
 
     if not name:
-        await message.reply("Напиши /company НАЗВАНИЕ")
         return
 
     data = load_data()
@@ -275,7 +292,7 @@ async def company(message: types.Message):
 
 
 # ----------------
-# TASK CALLBACK
+# TASK TOGGLE
 # ----------------
 
 @dp.callback_query_handler(lambda c: c.data.startswith("task:"))
