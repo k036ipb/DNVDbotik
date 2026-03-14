@@ -127,19 +127,22 @@ async def start(message: types.Message):
 # ----------------
 @dp.callback_query_handler(lambda c: c.data == "connect_help")
 async def connect_help(callback: types.CallbackQuery):
+    user = get_user(callback.from_user.id)
     text = (
         "Чтобы подключить workspace:\n\n"
         "1️⃣ Перейди в нужный Telegram topic\n"
         "2️⃣ Напиши там команду:\n\n"
         "/connect"
     )
-    user = get_user(callback.from_user.id)
     try:
         await callback.message.edit_text(text, reply_markup=panel_keyboard(user))
     except types.MessageNotModified:
-        pass
-    await callback.answer()
-
+        # Если текст не изменился, просто обновляем inline-кнопки
+        try:
+            await callback.message.edit_reply_markup(reply_markup=panel_keyboard(user))
+        except types.MessageNotModified:
+            pass
+    await callback.answer()  # Чтобы убрать “loading” на кнопке
 
 @dp.callback_query_handler(lambda c: c.data == "refresh")
 async def refresh(callback: types.CallbackQuery):
