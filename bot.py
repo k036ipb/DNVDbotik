@@ -104,6 +104,17 @@ def tasks_keyboard(company):
 
 
 # ----------------
+# AUTO DELETE HELPER
+# ----------------
+async def delete_later(chat_id, message_id, delay=7*24*60*60):
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except:
+        pass
+
+
+# ----------------
 # START
 # ----------------
 @dp.message_handler(commands=["start"])
@@ -144,12 +155,11 @@ async def refresh(callback: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "connect_help")
 async def connect_help(callback: types.CallbackQuery):
-    user = get_user(callback.from_user.id)
     text = (
         "📌 Перед подключением workspace убедитесь, что бот добавлен в нужную конфу.\n\n"
         "Чтобы подключить workspace:\n"
         "1️⃣ Перейдите в нужный Telegram topic\n"
-        "2️⃣ Напишите там команду:\n"
+        "2️⃣ Напишите там команду:\n\n"
         "/connect"
     )
     try:
@@ -180,19 +190,21 @@ async def delete_workspace(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
     if ws_id in user["workspaces"]:
         ws_name = user["workspaces"][ws_id]["name"]
-        # Удаляем workspace
         del user["workspaces"][ws_id]
         update_user(callback.from_user.id, user)
+
         # Уведомление в личке
-        await bot.send_message(callback.from_user.id, f"Workspace {ws_name} удален")
+        msg_user = await bot.send_message(callback.from_user.id, f"Workspace {ws_name} удален")
+        asyncio.create_task(delete_later(callback.from_user.id, msg_user.message_id))
+
         # Уведомление в topic
         try:
             chat_id, thread_id = map(int, ws_id.split("_"))
-            await bot.send_message(chat_id, f"Workspace {ws_name} удален", message_thread_id=thread_id)
+            msg_topic = await bot.send_message(chat_id, f"Workspace {ws_name} удален", message_thread_id=thread_id)
+            asyncio.create_task(delete_later(chat_id, msg_topic.message_id))
         except:
             pass
 
-    # Вернуть панель в личку
     try:
         await callback.message.edit_text(workspace_text(user), reply_markup=main_panel_keyboard(user))
     except types.MessageNotModified:
@@ -227,14 +239,22 @@ async def connect(message: types.Message):
     }
     update_user(message.from_user.id, user)
 
-    # Сообщение в topic с меню
-    await message.answer(
+    # Меню в topic + уведомление о подключении
+    msg_menu = await message.answer(
         f"✅ Workspace {message.chat.title} подключен\n\nВыберите действие:",
         reply_markup=topic_menu_keyboard()
     )
 
-    # Подтверждение в личку
-    await bot.send_message(message.from_user.id, f"Workspace {message.chat.title} подключен")
+    # Сохраняем menu_message_id для авто-очистки
+    user["workspaces"][ws_id]["menu_message_id"] = msg_menu.message_id
+    update_user(message.from_user.id, user)
+
+    # Авто-удаление уведомления через неделю
+    asyncio.create_task(delete_later(message.chat.id, msg_menu.message_id))
+
+    # Уведомление в личке
+    msg_user = await bot.send_message(message.from_user.id, f"Workspace {message.chat.title} подключен")
+    asyncio.create_task(delete_later(message.from_user.id, msg_user.message_id))
 
 
 # ----------------
@@ -297,7 +317,32 @@ async def toggle_task(callback: types.CallbackQuery):
 
 
 # ----------------
+# REMOVE BOT FROM CHAT HANDLER
+# ----------------
+@dp.chat_member_handler()
+async def on_bot_removed(update: types.ChatMemberUpdated):
+    if update.new_chat_member.user.id == (await bot.get_me()).id:
+        if update.new_chat_member.status in ["kicked", "left"]:
+            chat_id = update.chat.id
+            data = load_data()
+            for user in data["users"].values():
+                ws_to_remove = []
+                for ws_id, ws in user["workspaces"].items():
+                    if ws["chat_id"] == chat_id:
+                        ws_to_remove.append(ws_id)
+                        # Удаляем меню, оставляем задачи
+                        try:
+                            await bot.delete_message(chat_id, ws.get("menu_message_id"))
+                        except:
+                            pass
+                for ws_id in ws_to_remove:
+                    del user["workspaces"][ws_id]
+            save_data(data)
+
+
+# ----------------
 # RUN
 # ----------------
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
+
