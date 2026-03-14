@@ -218,7 +218,7 @@ async def company(message: types.Message):
     name = message.get_args()
     if not name:
         await message.reply("Напиши /company НАЗВАНИЕ")
-        return
+        return  # <- 4 пробела от начала блока функции
 
     data = load_data()
     chat_id = message.chat.id
@@ -227,7 +227,10 @@ async def company(message: types.Message):
     for user in data["users"].values():
         for ws in user["workspaces"].values():
             if ws["chat_id"] == chat_id and ws["thread_id"] == thread_id:
-                company = {"tasks": [{"text": t, "done": False} for t in ws["template"]], "message_id": None}
+                company = {
+                    "tasks": [{"text": t, "done": False} for t in ws["template"]],
+                    "message_id": None
+                }
                 ws["companies"][name] = company
                 msg = await message.answer(
                     company_text(name, company),
