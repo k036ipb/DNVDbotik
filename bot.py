@@ -30,24 +30,22 @@ db_lock = asyncio.Lock()
 # =========================
 
 def load_data():
-if not os.path.exists(DATA_FILE):
-return {"users": {}, "workspaces": {}}
+    if not os.path.exists(DATA_FILE):
+        return {"users": {}, "workspaces": {}}
 
-```
-try:
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-except:
-    return {"users": {}, "workspaces": {}}
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except:
+        return {"users": {}, "workspaces": {}}
 
-# автоисправление структуры
-if "users" not in data:
-    data["users"] = {}
+    if "users" not in data:
+        data["users"] = {}
 
-if "workspaces" not in data:
-    data["workspaces"] = {}
+    if "workspaces" not in data:
+        data["workspaces"] = {}
 
-return data
+    return data
 ```
 
 async def save_data(data):
