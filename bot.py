@@ -46,7 +46,6 @@ def load_data():
         data["workspaces"] = {}
 
     return data
-```
 
 async def save_data(data):
 async with db_lock:
@@ -61,7 +60,6 @@ json.dump(data, f, ensure_ascii=False, indent=2)
 
 async def safe_edit(message, text, keyboard):
 
-```
 try:
     await message.edit_text(
         text,
@@ -74,7 +72,6 @@ except (
     MessageCantBeEdited
 ):
     pass
-```
 
 # =========================
 
@@ -84,7 +81,6 @@ except (
 
 def workspace_menu_keyboard():
 
-```
 kb = InlineKeyboardMarkup(row_width=1)
 
 kb.add(
@@ -102,11 +98,9 @@ kb.add(
 )
 
 return kb
-```
 
 def main_keyboard(user_id, data):
 
-```
 kb = InlineKeyboardMarkup(row_width=1)
 
 for ws_id in data["users"][user_id]["workspaces"]:
@@ -138,7 +132,6 @@ kb.add(
 )
 
 return kb
-```
 
 # =========================
 
@@ -148,7 +141,6 @@ return kb
 
 def workspace_text(user_id, data):
 
-```
 text = "📂 Ваши workspace\n\n"
 
 ws_list = data["users"][user_id]["workspaces"]
@@ -165,7 +157,6 @@ for ws_id in ws_list:
         text += f"• {ws['name']}\n"
 
 return text
-```
 
 # =========================
 
@@ -176,7 +167,6 @@ return text
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
 
-```
 data = load_data()
 
 user_id = str(message.from_user.id)
@@ -191,7 +181,6 @@ await message.answer(
     text,
     reply_markup=main_keyboard(user_id, data)
 )
-```
 
 # =========================
 
@@ -202,7 +191,6 @@ await message.answer(
 @dp.callback_query_handler(lambda c: c.data == "panel")
 async def panel(callback: types.CallbackQuery):
 
-```
 data = load_data()
 user_id = str(callback.from_user.id)
 
@@ -218,7 +206,6 @@ await safe_edit(
 )
 
 await callback.answer()
-```
 
 # =========================
 
@@ -229,7 +216,6 @@ await callback.answer()
 @dp.callback_query_handler(lambda c: c.data == "connect_help")
 async def connect_help(callback: types.CallbackQuery):
 
-```
 text = (
     "📌 Как подключить workspace\n\n"
     "1️⃣ Добавьте бота в группу\n"
@@ -244,7 +230,6 @@ kb.add(InlineKeyboardButton("◀ Назад", callback_data="panel"))
 await safe_edit(callback.message, text, kb)
 
 await callback.answer()
-```
 
 # =========================
 
@@ -255,7 +240,6 @@ await callback.answer()
 @dp.message_handler(commands=["connect"])
 async def connect(message: types.Message):
 
-```
 if message.chat.type == "private":
     await message.reply("Эту команду нужно писать в группе")
     return
@@ -311,7 +295,6 @@ await bot.send_message(
     message.from_user.id,
     f"Workspace {message.chat.title} подключен"
 )
-```
 
 # =========================
 
@@ -322,7 +305,6 @@ await bot.send_message(
 @dp.message_handler(lambda m: m.text and m.text.startswith("/company"))
 async def create_company(message: types.Message):
 
-```
 if message.chat.type == "private":
     return
 
@@ -379,7 +361,6 @@ await bot.send_message(
     text=text,
     reply_markup=kb
 )
-```
 
 # =========================
 
@@ -390,7 +371,6 @@ await bot.send_message(
 @dp.callback_query_handler(lambda c: c.data.startswith("task:"))
 async def toggle_task(callback: types.CallbackQuery):
 
-```
 _, ws_id, company, task_index = callback.data.split(":")
 task_index = int(task_index)
 
@@ -427,7 +407,6 @@ for i, t in enumerate(ws["companies"][company]["tasks"]):
 await safe_edit(callback.message, text, kb)
 
 await callback.answer()
-```
 
 # =========================
 
@@ -437,7 +416,6 @@ await callback.answer()
 
 if **name** == "**main**":
 
-```
 if not os.path.exists(DATA_FILE):
     with open(DATA_FILE, "w") as f:
         json.dump({"users": {}, "workspaces": {}}, f)
@@ -446,4 +424,3 @@ executor.start_polling(
     dp,
     skip_updates=True
 )
-```
