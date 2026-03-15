@@ -9,7 +9,8 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.exceptions import (
     MessageNotModified,
     MessageToEditNotFound,
-    MessageCantBeEdited
+    MessageCantBeEdited,
+    MessageDeleteForbidden
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +25,6 @@ db_lock = asyncio.Lock()
 # =========================
 # DATABASE
 # =========================
-
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {"users": {}, "workspaces": {}}
@@ -50,7 +50,6 @@ async def save_data(data):
 # =========================
 # SAFE EDIT
 # =========================
-
 async def safe_edit(message, text, keyboard=None):
     try:
         await message.edit_text(text, reply_markup=keyboard)
@@ -61,7 +60,6 @@ async def safe_edit(message, text, keyboard=None):
 # =========================
 # KEYBOARDS
 # =========================
-
 def main_keyboard(user_id, data):
     kb = InlineKeyboardMarkup(row_width=1)
     for ws_id in data["users"][user_id]["workspaces"]:
@@ -69,10 +67,7 @@ def main_keyboard(user_id, data):
         if not ws:
             continue
         kb.add(
-            InlineKeyboardButton(
-                f"📂 {ws['name']}",
-                callback_data=f"ws:{ws_id}"
-            )
+            InlineKeyboardButton(f"📂 {ws['name']}", callback_data=f"ws:{ws_id}")
         )
     kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help"))
     kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="panel"))
@@ -96,7 +91,6 @@ def back_keyboard(callback_data="panel"):
 # =========================
 # TEXT
 # =========================
-
 def workspace_text(user_id, data):
     text = "📂 Ваши workspace\n\n"
     ws_list = data["users"][user_id]["workspaces"]
@@ -113,7 +107,6 @@ def workspace_text(user_id, data):
 # =========================
 # START
 # =========================
-
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     data = load_data()
@@ -130,7 +123,6 @@ async def start(message: types.Message):
 # =========================
 # PANEL REFRESH
 # =========================
-
 @dp.callback_query_handler(lambda c: c.data == "panel")
 async def panel(callback: types.CallbackQuery):
     data = load_data()
@@ -144,15 +136,13 @@ async def panel(callback: types.CallbackQuery):
 # =========================
 # CONNECT HELP
 # =========================
-
 @dp.callback_query_handler(lambda c: c.data == "connect_help")
 async def connect_help(callback: types.CallbackQuery):
     text = (
         "📌 Как подключить workspace\n\n"
         "1️⃣ Добавьте бота в группу\n"
         "2️⃣ Откройте нужный topic\n"
-        "3️⃣ Напишите команду:\n\n"
-        "/connect"
+        "3️⃣ Нажмите кнопку подключения workspace"
     )
     await safe_edit(callback.message, text, back_keyboard("panel"))
     await callback.answer()
@@ -161,7 +151,6 @@ async def connect_help(callback: types.CallbackQuery):
 # =========================
 # CONNECT WORKSPACE
 # =========================
-
 @dp.message_handler(commands=["connect"])
 async def connect(message: types.Message):
     if message.chat.type == "private":
@@ -181,7 +170,8 @@ async def connect(message: types.Message):
             "thread_id": thread_id,
             "menu_message_id": None,
             "template": ["Создать договор", "Выставить счет", "Подготовить мебель"],
-            "companies": {}
+            "companies": {},
+            "awaiting_company_name": False
         }
 
     if user_id not in data["users"]:
@@ -193,7 +183,7 @@ async def connect(message: types.Message):
 
     await message.reply(f"✅ Workspace {message.chat.title} подключен")
 
-    # создаём меню workspace в треде
+    # Создаём меню workspace в треде
     menu = await bot.send_message(
         chat_id=chat_id,
         message_thread_id=thread_id,
@@ -204,6 +194,13 @@ async def connect(message: types.Message):
     data["workspaces"][ws_id]["menu_message_id"] = menu.message_id
     await save_data(data)
 
+    # Сообщение о правах
+    await bot.send_message(
+        chat_id=chat_id,
+        message_thread_id=thread_id,
+        text="ℹ️ Дай боту админку, чтобы я мог пылесосить тред от мусора"
+    )
+
     # уведомление пользователю в личку
     await bot.send_message(message.from_user.id, f"Workspace {message.chat.title} подключен")
 
@@ -211,43 +208,46 @@ async def connect(message: types.Message):
 # =========================
 # CREATE COMPANY
 # =========================
-
 @dp.callback_query_handler(lambda c: c.data.startswith("company_create:"))
 async def create_company_menu(callback: types.CallbackQuery):
     ws_id = callback.data.split(":")[1]
-    text = (
-        "📌 Чтобы создать компанию, отправьте в тред команду:\n\n"
-        "/company НАЗВАНИЕ"
-    )
-    await callback.answer()
-    # отправка инструкции в личку, а не редактирование меню треда
-    await bot.send_message(callback.from_user.id, text)
-
-
-@dp.message_handler(lambda m: m.text and m.text.startswith("/company"))
-async def create_company(message: types.Message):
-    if message.chat.type == "private":
-        return
-
-    name = message.text.replace("/company", "").strip()
-    if not name:
-        await message.reply("Укажите название компании")
-        return
-
     data = load_data()
+    ws = data["workspaces"].get(ws_id)
+    if not ws:
+        await callback.answer("Workspace не найден")
+        return
+    ws["awaiting_company_name"] = True
+    await save_data(data)
+    await callback.answer("📌 Напишите название новой компании в этом треде")
+
+
+@dp.message_handler(lambda m: m.chat.type != "private")
+async def handle_new_company_name(message: types.Message):
     chat_id = message.chat.id
     thread_id = message.message_thread_id or 0
     ws_id = f"{chat_id}_{thread_id}"
+    data = load_data()
     ws = data["workspaces"].get(ws_id)
-    if not ws:
+    if not ws or not ws.get("awaiting_company_name", False):
         return
 
-    # создаём задачи
+    name = message.text.strip()
+    if not name:
+        return
+
+    # Создаём задачи
     tasks = [{"text": t, "done": False} for t in ws["template"]]
     ws["companies"][name] = {"tasks": tasks}
+    ws["awaiting_company_name"] = False
     await save_data(data)
 
-    # формируем сообщение с задачами
+    # Удаляем сообщение пользователя, если возможно
+    try:
+        await message.delete()
+    except MessageDeleteForbidden:
+        pass
+
+    # Формируем сообщение с задачами
     kb = InlineKeyboardMarkup(row_width=1)
     text = f"📁 Клиент: {name}\n\nЗадачи:\n"
     for i, task in enumerate(tasks):
@@ -255,14 +255,12 @@ async def create_company(message: types.Message):
         kb.add(
             InlineKeyboardButton(f"⬜ {task['text']}", callback_data=f"task:{ws_id}:{name}:{i}")
         )
-
     await bot.send_message(chat_id=chat_id, message_thread_id=thread_id, text=text, reply_markup=kb)
 
 
 # =========================
 # TOGGLE TASK
 # =========================
-
 @dp.callback_query_handler(lambda c: c.data.startswith("task:"))
 async def toggle_task(callback: types.CallbackQuery):
     _, ws_id, company, task_index = callback.data.split(":")
@@ -292,7 +290,6 @@ async def toggle_task(callback: types.CallbackQuery):
 # =========================
 # RUN
 # =========================
-
 if __name__ == "__main__":
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w") as f:
