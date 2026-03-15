@@ -123,13 +123,20 @@ async def start(message: types.Message):
     user = get_user(message.from_user.id)
     text = workspace_text(user)
 
-    kb = main_panel_keyboard(user)
-    if not user["workspaces"]:
-        kb = InlineKeyboardMarkup(row_width=1)
+    kb = InlineKeyboardMarkup(row_width=1)
+
+    if user["workspaces"]:
+        # Добавляем кнопки для каждого workspace
+        for ws_id, ws in user["workspaces"].items():
+            kb.add(InlineKeyboardButton(f"▶ {ws['name']}", callback_data=f"ws_actions:{ws_id}"))
+        kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help"))
+        kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="refresh"))
+    else:
+        # Пустой список workspace — добавляем кнопку подключения и подсказку
+        text += "\n\nЧтобы подключить workspace, нажмите кнопку ниже"
         kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help"))
 
     await message.answer(text, reply_markup=kb)
-
 
 # ----------------
 # CALLBACKS
