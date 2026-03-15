@@ -60,11 +60,11 @@ async def save_data(data):
 
 async def safe_edit(message, text, keyboard):
 
-try:
-    await message.edit_text(
-        text,
-        reply_markup=keyboard
-    )
+    try:
+        await message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
 
 except (
     MessageNotModified,
