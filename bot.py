@@ -4,6 +4,7 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.exceptions import MessageNotModified
 
 TOKEN = os.getenv("API_TOKEN")
 bot = Bot(token=TOKEN)
@@ -138,7 +139,7 @@ async def back_to_panel(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
     try:
         await callback.message.edit_text(workspace_text(user), reply_markup=main_panel_keyboard(user))
-    except types.MessageNotModified:
+    except MessageNotModified:
         pass
     await callback.answer()
 
@@ -148,7 +149,7 @@ async def refresh(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
     try:
         await callback.message.edit_text(workspace_text(user), reply_markup=main_panel_keyboard(user))
-    except types.MessageNotModified:
+    except MessageNotModified:
         pass
     await callback.answer()
 
@@ -166,7 +167,7 @@ async def connect_help(callback: types.CallbackQuery):
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup().add(
             InlineKeyboardButton("◀ Назад", callback_data="panel")
         ))
-    except types.MessageNotModified:
+    except MessageNotModified:
         pass
     await callback.answer()
 
@@ -179,7 +180,7 @@ async def workspace_actions(callback: types.CallbackQuery):
             f"Выберите действие для workspace:",
             reply_markup=ws_actions_keyboard(ws_id)
         )
-    except types.MessageNotModified:
+    except MessageNotModified:
         pass
     await callback.answer()
 
@@ -207,7 +208,7 @@ async def delete_workspace(callback: types.CallbackQuery):
 
     try:
         await callback.message.edit_text(workspace_text(user), reply_markup=main_panel_keyboard(user))
-    except types.MessageNotModified:
+    except MessageNotModified:
         pass
     await callback.answer("Workspace удалён")
 
@@ -309,7 +310,7 @@ async def toggle_task(callback: types.CallbackQuery):
                                 company_text(cname, company),
                                 reply_markup=tasks_keyboard(company)
                             )
-                        except types.MessageNotModified:
+                        except MessageNotModified:
                             pass
                         save_data(data)
                         await callback.answer()
@@ -345,4 +346,3 @@ async def on_bot_removed(update: types.ChatMemberUpdated):
 # ----------------
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
-
