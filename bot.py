@@ -10,7 +10,7 @@ from aiogram.utils.exceptions import (
     MessageNotModified,
     MessageToEditNotFound,
     MessageCantBeEdited,
-    MessageDeleteForbidden
+    TelegramAPIError
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -241,11 +241,11 @@ async def handle_new_company_name(message: types.Message):
     ws["awaiting_company_name"] = False
     await save_data(data)
 
-    # Удаляем сообщение пользователя, если возможно
+    # Удаляем сообщение пользователя, если есть права
     try:
         await message.delete()
-    except MessageDeleteForbidden:
-        pass
+    except TelegramAPIError:
+        pass  # просто игнорируем, если нельзя удалить
 
     # Формируем сообщение с задачами
     kb = InlineKeyboardMarkup(row_width=1)
