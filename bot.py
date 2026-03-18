@@ -51,6 +51,19 @@ async def save_data(data):
 
 
 # =========================
+# HELPERS
+# =========================
+
+def get_ws_id(chat_id, thread_id):
+    return f"{chat_id}_{thread_id}"
+
+
+def get_ws_from_message(message, data):
+    ws_id = get_ws_id(message.chat.id, message.message_thread_id)
+    return ws_id, data["workspaces"].get(ws_id)
+
+
+# =========================
 # SAFE EDIT
 # =========================
 
@@ -76,7 +89,7 @@ def main_keyboard(user_id, data):
         kb.add(
             InlineKeyboardButton(
                 f"📂 {ws['name']}",
-                callback_data=f"ws:{ws_id}"
+                callback_data="ws"
             )
         )
 
@@ -86,10 +99,10 @@ def main_keyboard(user_id, data):
     return kb
 
 
-def workspace_keyboard(ws_id):
+def workspace_keyboard():
     kb = InlineKeyboardMarkup()
     kb.add(
-        InlineKeyboardButton("➕ Создать компанию", callback_data=f"create:{ws_id}")
+        InlineKeyboardButton("➕ Создать компанию", callback_data="create")
     )
     return kb
 
@@ -120,20 +133,17 @@ def workspace_text(user_id, data):
 
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
-    try:
-        data = load_data()
-        user_id = str(message.from_user.id)
+    data = load_data()
+    user_id = str(message.from_user.id)
 
-        if user_id not in data["users"]:
-            data["users"][user_id] = {"workspaces": []}
-            await save_data(data)
+    if user_id not in data["users"]:
+        data["users"][user_id] = {"workspaces": []}
+        await save_data(data)
 
-        await message.answer(
-            workspace_text(user_id, data),
-            reply_markup=main_keyboard(user_id, data)
-        )
-    except Exception as e:
-        print("START ERROR:", e)
+    await message.answer(
+        workspace_text(user_id, data),
+        reply_markup=main_keyboard(user_id, data)
+    )
 
 
 # =========================
@@ -145,9 +155,6 @@ async def panel(callback: types.CallbackQuery):
     data = load_data()
     user_id = str(callback.from_user.id)
 
-    if user_id not in data["users"]:
-        return
-
     await safe_edit(
         callback.message,
         workspace_text(user_id, data),
@@ -158,12 +165,12 @@ async def panel(callback: types.CallbackQuery):
 
 
 # =========================
-# OPEN WORKSPACE (FIX)
+# WS CLICK
 # =========================
 
-@dp.callback_query_handler(lambda c: c.data.startswith("ws:"))
+@dp.callback_query_handler(lambda c: c.data == "ws")
 async def open_ws(callback: types.CallbackQuery):
-    await callback.answer("Открой workspace в треде 👇", show_alert=True)
+    await callback.answer("Открой workspace в нужном треде")
 
 
 # =========================
@@ -175,11 +182,10 @@ async def connect_help(callback: types.CallbackQuery):
     await callback.answer()
 
     await callback.message.answer(
-        "📌 Как подключить workspace:\n\n"
-        "1. Открой нужный тред (topic)\n"
-        "2. Напиши туда команду:\n"
-        "/connect\n\n"
-        "После этого workspace появится здесь"
+        "📌 Чтобы подключить workspace:\n\n"
+        "1. Перейди в нужный тред\n"
+        "2. Напиши туда:\n"
+        "/connect"
     )
 
 
@@ -191,23 +197,19 @@ async def connect_help(callback: types.CallbackQuery):
 async def connect(message: types.Message):
 
     if message.chat.type == "private":
-        await message.reply("Эту команду нужно писать в группе")
+        await message.reply("Пиши эту команду в группе")
         return
 
     data = load_data()
     user_id = str(message.from_user.id)
 
-    chat_id = message.chat.id
-    thread_id = message.message_thread_id
-    ws_id = f"{chat_id}_{thread_id}"
-
-    print("CONNECT WS:", ws_id)
+    ws_id = get_ws_id(message.chat.id, message.message_thread_id)
 
     if ws_id not in data["workspaces"]:
         data["workspaces"][ws_id] = {
             "name": message.chat.title,
-            "chat_id": chat_id,
-            "thread_id": thread_id,
+            "chat_id": message.chat.id,
+            "thread_id": message.message_thread_id,
             "template": [
                 "Создать договор",
                 "Выставить счет",
@@ -227,16 +229,16 @@ async def connect(message: types.Message):
     await message.reply(f"✅ Workspace {message.chat.title} подключен")
 
     await bot.send_message(
-        chat_id,
+        message.chat.id,
         "📂 Меню workspace",
-        message_thread_id=thread_id,
-        reply_markup=workspace_keyboard(ws_id)
+        message_thread_id=message.message_thread_id,
+        reply_markup=workspace_keyboard()
     )
 
     await bot.send_message(
-        chat_id,
+        message.chat.id,
         "ℹ️ Дай админку, чтобы я мог чистить сообщения",
-        message_thread_id=thread_id
+        message_thread_id=message.message_thread_id
     )
 
     try:
@@ -252,15 +254,20 @@ async def connect(message: types.Message):
 # CREATE COMPANY
 # =========================
 
-@dp.callback_query_handler(lambda c: c.data.startswith("create:"))
+@dp.callback_query_handler(lambda c: c.data == "create")
 async def create_company(callback: types.CallbackQuery):
 
-    ws_id = callback.data.split(":")[1]
     data = load_data()
 
+    ws_id = get_ws_id(
+        callback.message.chat.id,
+        callback.message.message_thread_id
+    )
+
     ws = data["workspaces"].get(ws_id)
+
     if not ws:
-        await callback.answer("Workspace не найден")
+        await callback.answer("Сначала /connect", show_alert=True)
         return
 
     if ws.get("awaiting"):
@@ -274,7 +281,7 @@ async def create_company(callback: types.CallbackQuery):
 
 
 # =========================
-# HANDLE NAME (FIXED)
+# HANDLE NAME
 # =========================
 
 @dp.message_handler(lambda m: m.chat.type != "private")
@@ -282,23 +289,12 @@ async def handle_name(message: types.Message):
 
     data = load_data()
 
-    thread_id = message.message_thread_id
-    ws_id = f"{message.chat.id}_{thread_id}"
+    ws_id, ws = get_ws_from_message(message, data)
 
-    print("HANDLE NAME:", ws_id)
-
-    ws = data["workspaces"].get(ws_id)
-
-    if not ws:
-        print("WS NOT FOUND")
-        return
-
-    if not ws.get("awaiting"):
-        print("NOT AWAITING")
+    if not ws or not ws.get("awaiting"):
         return
 
     if not message.text:
-        print("NO TEXT")
         return
 
     name = message.text.strip()
@@ -323,14 +319,14 @@ async def handle_name(message: types.Message):
         kb.add(
             InlineKeyboardButton(
                 f"⬜ {t['text']}",
-                callback_data=f"task:{ws_id}:{name}:{i}"
+                callback_data=f"task:{i}:{name}"
             )
         )
 
     await bot.send_message(
         message.chat.id,
         text,
-        message_thread_id=thread_id,
+        message_thread_id=message.message_thread_id,
         reply_markup=kb
     )
 
@@ -342,19 +338,20 @@ async def handle_name(message: types.Message):
 @dp.callback_query_handler(lambda c: c.data.startswith("task:"))
 async def toggle(callback: types.CallbackQuery):
 
-    try:
-        _, ws_id, company, index = callback.data.split(":")
-    except ValueError:
-        await callback.answer("Ошибка данных")
-        return
-
+    _, index, company = callback.data.split(":")
     index = int(index)
 
     data = load_data()
+
+    ws_id = get_ws_id(
+        callback.message.chat.id,
+        callback.message.message_thread_id
+    )
+
     ws = data["workspaces"].get(ws_id)
 
     if not ws:
-        await callback.answer("Workspace не найден")
+        await callback.answer("Ошибка workspace")
         return
 
     task = ws["companies"][company]["tasks"][index]
@@ -372,7 +369,7 @@ async def toggle(callback: types.CallbackQuery):
         kb.add(
             InlineKeyboardButton(
                 f"{icon} {t['text']}",
-                callback_data=f"task:{ws_id}:{company}:{i}"
+                callback_data=f"task:{i}:{company}"
             )
         )
 
