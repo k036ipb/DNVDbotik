@@ -186,7 +186,7 @@ async def connect(message: types.Message):
     user_id = str(message.from_user.id)
 
     chat_id = message.chat.id
-    thread_id = message.message_thread_id or 0
+    thread_id = message.message_thread_id
     ws_id = f"{chat_id}_{thread_id}"
 
     if ws_id not in data["workspaces"]:
@@ -270,7 +270,7 @@ async def handle_name(message: types.Message):
 
     data = load_data()
 
-    ws_id = f"{message.chat.id}_{message.message_thread_id or 0}"
+    ws_id = f"{message.chat.id}_{message.message_thread_id}"
     ws = data["workspaces"].get(ws_id)
 
     if not ws or not ws.get("awaiting"):
