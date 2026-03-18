@@ -120,17 +120,20 @@ def workspace_text(user_id, data):
 
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
-    data = load_data()
-    user_id = str(message.from_user.id)
+    try:
+        data = load_data()
+        user_id = str(message.from_user.id)
 
-    if user_id not in data["users"]:
-        data["users"][user_id] = {"workspaces": []}
-        await save_data(data)
+        if user_id not in data["users"]:
+            data["users"][user_id] = {"workspaces": []}
+            await save_data(data)
 
-    await message.answer(
-        workspace_text(user_id, data),
-        reply_markup=main_keyboard(user_id, data)
-    )
+        await message.answer(
+            workspace_text(user_id, data),
+            reply_markup=main_keyboard(user_id, data)
+        )
+    except Exception as e:
+        print("START ERROR:", e)
 
 
 # =========================
@@ -155,7 +158,16 @@ async def panel(callback: types.CallbackQuery):
 
 
 # =========================
-# CONNECT HELP (FIX)
+# OPEN WORKSPACE (FIX)
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("ws:"))
+async def open_ws(callback: types.CallbackQuery):
+    await callback.answer("Открой workspace в треде 👇", show_alert=True)
+
+
+# =========================
+# CONNECT HELP
 # =========================
 
 @dp.callback_query_handler(lambda c: c.data == "connect_help")
@@ -189,6 +201,8 @@ async def connect(message: types.Message):
     thread_id = message.message_thread_id
     ws_id = f"{chat_id}_{thread_id}"
 
+    print("CONNECT WS:", ws_id)
+
     if ws_id not in data["workspaces"]:
         data["workspaces"][ws_id] = {
             "name": message.chat.title,
@@ -212,7 +226,6 @@ async def connect(message: types.Message):
 
     await message.reply(f"✅ Workspace {message.chat.title} подключен")
 
-    # меню
     await bot.send_message(
         chat_id,
         "📂 Меню workspace",
@@ -220,14 +233,12 @@ async def connect(message: types.Message):
         reply_markup=workspace_keyboard(ws_id)
     )
 
-    # просьба админки
     await bot.send_message(
         chat_id,
         "ℹ️ Дай админку, чтобы я мог чистить сообщения",
         message_thread_id=thread_id
     )
 
-    # безопасная отправка в личку
     try:
         await bot.send_message(
             message.from_user.id,
@@ -238,7 +249,7 @@ async def connect(message: types.Message):
 
 
 # =========================
-# CREATE COMPANY BUTTON
+# CREATE COMPANY
 # =========================
 
 @dp.callback_query_handler(lambda c: c.data.startswith("create:"))
@@ -249,6 +260,7 @@ async def create_company(callback: types.CallbackQuery):
 
     ws = data["workspaces"].get(ws_id)
     if not ws:
+        await callback.answer("Workspace не найден")
         return
 
     if ws.get("awaiting"):
@@ -262,7 +274,7 @@ async def create_company(callback: types.CallbackQuery):
 
 
 # =========================
-# HANDLE NAME
+# HANDLE NAME (FIXED)
 # =========================
 
 @dp.message_handler(lambda m: m.chat.type != "private")
@@ -270,15 +282,26 @@ async def handle_name(message: types.Message):
 
     data = load_data()
 
-    ws_id = f"{message.chat.id}_{message.message_thread_id}"
+    thread_id = message.message_thread_id
+    ws_id = f"{message.chat.id}_{thread_id}"
+
+    print("HANDLE NAME:", ws_id)
+
     ws = data["workspaces"].get(ws_id)
 
-    if not ws or not ws.get("awaiting"):
+    if not ws:
+        print("WS NOT FOUND")
+        return
+
+    if not ws.get("awaiting"):
+        print("NOT AWAITING")
+        return
+
+    if not message.text:
+        print("NO TEXT")
         return
 
     name = message.text.strip()
-    if not name:
-        return
 
     ws["awaiting"] = False
 
@@ -306,8 +329,8 @@ async def handle_name(message: types.Message):
 
     await bot.send_message(
         message.chat.id,
-        message_thread_id=message.message_thread_id,
-        text=text,
+        text,
+        message_thread_id=thread_id,
         reply_markup=kb
     )
 
@@ -322,6 +345,7 @@ async def toggle(callback: types.CallbackQuery):
     try:
         _, ws_id, company, index = callback.data.split(":")
     except ValueError:
+        await callback.answer("Ошибка данных")
         return
 
     index = int(index)
@@ -330,6 +354,7 @@ async def toggle(callback: types.CallbackQuery):
     ws = data["workspaces"].get(ws_id)
 
     if not ws:
+        await callback.answer("Workspace не найден")
         return
 
     task = ws["companies"][company]["tasks"][index]
