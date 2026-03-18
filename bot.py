@@ -155,6 +155,23 @@ async def panel(callback: types.CallbackQuery):
 
 
 # =========================
+# CONNECT HELP (FIX)
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data == "connect_help")
+async def connect_help(callback: types.CallbackQuery):
+    await callback.answer()
+
+    await callback.message.answer(
+        "📌 Как подключить workspace:\n\n"
+        "1. Открой нужный тред (topic)\n"
+        "2. Напиши туда команду:\n"
+        "/connect\n\n"
+        "После этого workspace появится здесь"
+    )
+
+
+# =========================
 # CONNECT
 # =========================
 
@@ -210,10 +227,14 @@ async def connect(message: types.Message):
         message_thread_id=thread_id
     )
 
-    await bot.send_message(
-        message.from_user.id,
-        f"Workspace {message.chat.title} подключен"
-    )
+    # безопасная отправка в личку
+    try:
+        await bot.send_message(
+            message.from_user.id,
+            f"Workspace {message.chat.title} подключен"
+        )
+    except TelegramAPIError:
+        pass
 
 
 # =========================
@@ -230,7 +251,6 @@ async def create_company(callback: types.CallbackQuery):
     if not ws:
         return
 
-    # защита от спама
     if ws.get("awaiting"):
         await callback.answer("Уже ждём название")
         return
@@ -267,13 +287,11 @@ async def handle_name(message: types.Message):
 
     await save_data(data)
 
-    # пробуем удалить сообщение
     try:
         await message.delete()
     except TelegramAPIError:
         pass
 
-    # создаём задачи
     kb = InlineKeyboardMarkup(row_width=1)
     text = f"📁 Клиент: {name}\n\nЗадачи:\n"
 
@@ -288,8 +306,8 @@ async def handle_name(message: types.Message):
 
     await bot.send_message(
         message.chat.id,
-        text,
         message_thread_id=message.message_thread_id,
+        text=text,
         reply_markup=kb
     )
 
@@ -301,7 +319,11 @@ async def handle_name(message: types.Message):
 @dp.callback_query_handler(lambda c: c.data.startswith("task:"))
 async def toggle(callback: types.CallbackQuery):
 
-    _, ws_id, company, index = callback.data.split(":")
+    try:
+        _, ws_id, company, index = callback.data.split(":")
+    except ValueError:
+        return
+
     index = int(index)
 
     data = load_data()
@@ -334,7 +356,7 @@ async def toggle(callback: types.CallbackQuery):
 
 
 # =========================
-# RUN (АНТИ-ФЛУД)
+# RUN
 # =========================
 
 if __name__ == "__main__":
