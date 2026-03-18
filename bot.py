@@ -5,6 +5,7 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.exceptions import TelegramAPIError
 
 TOKEN = os.getenv("API_TOKEN")
 
@@ -40,29 +41,62 @@ def ws_id(chat_id, thread_id):
 
 
 # =========================
-# KEYBOARDS
+# MAIN MENU (ЛС)
 # =========================
 
-def ws_kb(ws_id, ws):
+def main_kb(user_id, data):
     kb = InlineKeyboardMarkup(row_width=1)
 
-    for c in ws["companies"]:
-        kb.add(InlineKeyboardButton(c, callback_data=f"company:{ws_id}:{c}"))
+    for wid in data["users"].get(user_id, {}).get("workspaces", []):
+        ws = data["workspaces"].get(wid)
+        if ws:
+            kb.add(InlineKeyboardButton(ws["name"], callback_data=f"ws:{wid}"))
 
-    kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data=f"create:{ws_id}"))
-    kb.add(InlineKeyboardButton("⚙️ Шаблон задач", callback_data=f"template:{ws_id}"))
+    kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="help"))
 
     return kb
 
 
-def template_kb(ws_id, ws):
+def main_text(user_id, data):
+    text = "📂 Ваши workspace\n\n"
+
+    wss = data["users"].get(user_id, {}).get("workspaces", [])
+
+    if not wss:
+        return text + "Нет подключенных workspace"
+
+    for wid in wss:
+        ws = data["workspaces"].get(wid)
+        if ws:
+            text += f"• {ws['name']}\n"
+
+    return text
+
+
+# =========================
+# WORKSPACE KEYBOARDS
+# =========================
+
+def ws_kb(wid, ws):
+    kb = InlineKeyboardMarkup(row_width=1)
+
+    for c in ws["companies"]:
+        kb.add(InlineKeyboardButton(c, callback_data=f"company:{wid}:{c}"))
+
+    kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data=f"create:{wid}"))
+    kb.add(InlineKeyboardButton("⚙️ Шаблон задач", callback_data=f"template:{wid}"))
+
+    return kb
+
+
+def template_kb(wid, ws):
     kb = InlineKeyboardMarkup(row_width=1)
 
     for i, t in enumerate(ws["template"]):
-        kb.add(InlineKeyboardButton(t, callback_data=f"t_edit:{ws_id}:{i}"))
+        kb.add(InlineKeyboardButton(t, callback_data=f"t_del:{wid}:{i}"))
 
-    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"t_add:{ws_id}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{ws_id}"))
+    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"t_add:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{wid}"))
 
     return kb
 
@@ -79,7 +113,44 @@ async def start(m: types.Message):
     data["users"].setdefault(uid, {"workspaces": []})
     await save(data)
 
-    await m.answer("Готов")
+    await m.answer(
+        main_text(uid, data),
+        reply_markup=main_kb(uid, data)
+    )
+
+
+# =========================
+# MAIN NAVIGATION
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data == "help")
+async def help_connect(cb: types.CallbackQuery):
+    await cb.message.answer("📌 Перейди в тред группы и напиши:\n/connect")
+    await cb.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("ws:"))
+async def open_ws(cb: types.CallbackQuery):
+    _, wid = cb.data.split(":")
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🗑 Удалить workspace", callback_data=f"del:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="back_main"))
+
+    await cb.message.edit_text("⚙️ Управление workspace", reply_markup=kb)
+    await cb.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "back_main")
+async def back_main(cb: types.CallbackQuery):
+    data = load()
+    uid = str(cb.from_user.id)
+
+    await cb.message.edit_text(
+        main_text(uid, data),
+        reply_markup=main_kb(uid, data)
+    )
+    await cb.answer()
 
 
 # =========================
@@ -99,13 +170,12 @@ async def connect(m: types.Message):
 
     data["workspaces"][wid] = {
         "name": m.chat.title,
-        "template": ["Задача 1", "Задача 2"],
+        "template": ["Создать договор", "Выставить счет"],
         "companies": {},
         "awaiting": None
     }
 
     data["users"].setdefault(uid, {"workspaces": []})
-
     if wid not in data["users"][uid]["workspaces"]:
         data["users"][uid]["workspaces"].append(wid)
 
@@ -133,7 +203,7 @@ async def create(cb: types.CallbackQuery):
     if ws["awaiting"]:
         return await cb.answer("Уже ждём")
 
-    msg = await cb.message.answer("Напиши название компании")
+    msg = await cb.message.answer("✏️ Напиши название компании")
 
     ws["awaiting"] = {
         "type": "company",
@@ -145,7 +215,7 @@ async def create(cb: types.CallbackQuery):
 
 
 # =========================
-# TEMPLATE MENU
+# TEMPLATE
 # =========================
 
 @dp.callback_query_handler(lambda c: c.data.startswith("template:"))
@@ -153,19 +223,13 @@ async def template(cb: types.CallbackQuery):
 
     _, wid = cb.data.split(":")
     data = load()
-    ws = data["workspaces"][wid]
 
     await cb.message.edit_text(
         "⚙️ Шаблон задач",
-        reply_markup=template_kb(wid, ws)
+        reply_markup=template_kb(wid, data["workspaces"][wid])
     )
-
     await cb.answer()
 
-
-# =========================
-# ADD TEMPLATE TASK
-# =========================
 
 @dp.callback_query_handler(lambda c: c.data.startswith("t_add:"))
 async def t_add(cb: types.CallbackQuery):
@@ -184,12 +248,8 @@ async def t_add(cb: types.CallbackQuery):
     await cb.answer()
 
 
-# =========================
-# DELETE TEMPLATE TASK
-# =========================
-
-@dp.callback_query_handler(lambda c: c.data.startswith("t_edit:"))
-async def t_edit(cb: types.CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith("t_del:"))
+async def t_del(cb: types.CallbackQuery):
 
     _, wid, i = cb.data.split(":")
     i = int(i)
@@ -198,20 +258,14 @@ async def t_edit(cb: types.CallbackQuery):
     ws = data["workspaces"][wid]
 
     ws["template"].pop(i)
-
     await save(data)
 
     await cb.message.edit_text(
         "⚙️ Шаблон задач",
         reply_markup=template_kb(wid, ws)
     )
-
     await cb.answer("Удалено")
 
-
-# =========================
-# BACK
-# =========================
 
 @dp.callback_query_handler(lambda c: c.data.startswith("back:"))
 async def back(cb: types.CallbackQuery):
@@ -223,7 +277,6 @@ async def back(cb: types.CallbackQuery):
         "📂 Workspace",
         reply_markup=ws_kb(wid, data["workspaces"][wid])
     )
-
     await cb.answer()
 
 
@@ -238,11 +291,10 @@ async def handle(m: types.Message):
     wid = ws_id(m.chat.id, m.message_thread_id)
 
     ws = data["workspaces"].get(wid)
-    if not ws or not ws["awaiting"]:
+    if not ws or not ws["awaiting"] or not m.text:
         return
 
     text = m.text.strip()
-
     mode = ws["awaiting"]["type"]
     msg_id = ws["awaiting"]["msg_id"]
 
@@ -257,7 +309,6 @@ async def handle(m: types.Message):
 
     await save(data)
 
-    # удаление
     try:
         await m.delete()
     except:
@@ -268,13 +319,34 @@ async def handle(m: types.Message):
     except:
         pass
 
-    # обновление меню
     await bot.send_message(
         m.chat.id,
         "📂 Workspace",
         message_thread_id=m.message_thread_id,
         reply_markup=ws_kb(wid, ws)
     )
+
+
+# =========================
+# DELETE WORKSPACE
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("del:"))
+async def delete_ws(cb: types.CallbackQuery):
+
+    _, wid = cb.data.split(":")
+    data = load()
+    uid = str(cb.from_user.id)
+
+    data["workspaces"].pop(wid, None)
+
+    if wid in data["users"].get(uid, {}).get("workspaces", []):
+        data["users"][uid]["workspaces"].remove(wid)
+
+    await save(data)
+
+    await cb.message.edit_text("❌ Workspace удалён")
+    await cb.answer()
 
 
 # =========================
