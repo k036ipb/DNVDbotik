@@ -1,19 +1,10 @@
 import os
 import json
-import logging
 import asyncio
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.exceptions import (
-    MessageNotModified,
-    MessageToEditNotFound,
-    MessageCantBeEdited,
-    TelegramAPIError
-)
-
-logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("API_TOKEN")
 
@@ -21,17 +12,16 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 
 DATA_FILE = "data.json"
-db_lock = asyncio.Lock()
+lock = asyncio.Lock()
 
 
 # =========================
-# DATABASE
+# DB
 # =========================
 
-def load_data():
+def load():
     if not os.path.exists(DATA_FILE):
         return {"users": {}, "workspaces": {}}
-
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -39,63 +29,40 @@ def load_data():
         return {"users": {}, "workspaces": {}}
 
 
-async def save_data(data):
-    async with db_lock:
+async def save(data):
+    async with lock:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-# =========================
-# HELPERS
-# =========================
-
-def get_ws_id(chat_id, thread_id):
+def ws_id(chat_id, thread_id):
     return f"{chat_id}_{thread_id}"
-
-
-def get_ws(message, data):
-    return data["workspaces"].get(
-        get_ws_id(message.chat.id, message.message_thread_id)
-    )
-
-
-# =========================
-# SAFE EDIT
-# =========================
-
-async def safe_edit(message, text, kb=None):
-    try:
-        await message.edit_text(text, reply_markup=kb)
-    except (MessageNotModified, MessageToEditNotFound, MessageCantBeEdited):
-        pass
 
 
 # =========================
 # KEYBOARDS
 # =========================
 
-def main_keyboard(user_id, data):
+def ws_kb(ws_id, ws):
     kb = InlineKeyboardMarkup(row_width=1)
 
-    for ws_id in data["users"].get(user_id, {}).get("workspaces", []):
-        ws = data["workspaces"].get(ws_id)
-        if ws:
-            kb.add(InlineKeyboardButton(ws["name"], callback_data="ws"))
+    for c in ws["companies"]:
+        kb.add(InlineKeyboardButton(c, callback_data=f"company:{ws_id}:{c}"))
 
-    kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="connect_help"))
-    kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="panel"))
+    kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data=f"create:{ws_id}"))
+    kb.add(InlineKeyboardButton("⚙️ Шаблон задач", callback_data=f"template:{ws_id}"))
 
     return kb
 
 
-def workspace_keyboard(ws):
+def template_kb(ws_id, ws):
     kb = InlineKeyboardMarkup(row_width=1)
 
-    for name in ws["companies"].keys():
-        kb.add(InlineKeyboardButton(name, callback_data=f"open:{name}"))
+    for i, t in enumerate(ws["template"]):
+        kb.add(InlineKeyboardButton(t, callback_data=f"t_edit:{ws_id}:{i}"))
 
-    kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data="create"))
-    kb.add(InlineKeyboardButton("⚙️ Редактировать шаблон", callback_data="edit_template"))
+    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"t_add:{ws_id}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{ws_id}"))
 
     return kb
 
@@ -105,60 +72,14 @@ def workspace_keyboard(ws):
 # =========================
 
 @dp.message_handler(commands=["start"])
-async def start(message: types.Message):
-    data = load_data()
-    user_id = str(message.from_user.id)
+async def start(m: types.Message):
+    data = load()
+    uid = str(m.from_user.id)
 
-    data["users"].setdefault(user_id, {"workspaces": []})
-    await save_data(data)
+    data["users"].setdefault(uid, {"workspaces": []})
+    await save(data)
 
-    await message.answer(
-        "📂 Ваши workspace",
-        reply_markup=main_keyboard(user_id, data)
-    )
-
-
-# =========================
-# PANEL
-# =========================
-
-@dp.callback_query_handler(lambda c: c.data == "panel")
-async def panel(callback: types.CallbackQuery):
-    data = load_data()
-    user_id = str(callback.from_user.id)
-
-    await safe_edit(
-        callback.message,
-        "📂 Ваши workspace",
-        main_keyboard(user_id, data)
-    )
-    await callback.answer()
-
-
-# =========================
-# WS MENU (ЛС)
-# =========================
-
-@dp.callback_query_handler(lambda c: c.data == "ws")
-async def ws_menu(callback: types.CallbackQuery):
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🗑 Удалить workspace", callback_data="delete_ws"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="panel"))
-
-    await safe_edit(callback.message, "⚙️ Управление workspace", kb)
-    await callback.answer()
-
-
-# =========================
-# CONNECT HELP
-# =========================
-
-@dp.callback_query_handler(lambda c: c.data == "connect_help")
-async def connect_help(callback: types.CallbackQuery):
-    await callback.message.answer(
-        "📌 Перейди в тред и напиши:\n/connect"
-    )
-    await callback.answer()
+    await m.answer("Готов")
 
 
 # =========================
@@ -166,39 +87,35 @@ async def connect_help(callback: types.CallbackQuery):
 # =========================
 
 @dp.message_handler(commands=["connect"])
-async def connect(message: types.Message):
+async def connect(m: types.Message):
 
-    if message.chat.type == "private":
-        return await message.answer("Используй в группе")
+    if m.chat.type == "private":
+        return
 
-    data = load_data()
-    user_id = str(message.from_user.id)
+    data = load()
+    uid = str(m.from_user.id)
 
-    ws_id = get_ws_id(message.chat.id, message.message_thread_id)
+    wid = ws_id(m.chat.id, m.message_thread_id)
 
-    data["workspaces"][ws_id] = {
-        "name": message.chat.title,
-        "template": [
-            "Создать договор",
-            "Выставить счет",
-            "Подготовить мебель"
-        ],
+    data["workspaces"][wid] = {
+        "name": m.chat.title,
+        "template": ["Задача 1", "Задача 2"],
         "companies": {},
-        "awaiting": False,
-        "awaiting_msg": None
+        "awaiting": None
     }
 
-    data["users"].setdefault(user_id, {"workspaces": []})
-    if ws_id not in data["users"][user_id]["workspaces"]:
-        data["users"][user_id]["workspaces"].append(ws_id)
+    data["users"].setdefault(uid, {"workspaces": []})
 
-    await save_data(data)
+    if wid not in data["users"][uid]["workspaces"]:
+        data["users"][uid]["workspaces"].append(wid)
+
+    await save(data)
 
     await bot.send_message(
-        message.chat.id,
-        "📂 Меню workspace",
-        message_thread_id=message.message_thread_id,
-        reply_markup=workspace_keyboard(data["workspaces"][ws_id])
+        m.chat.id,
+        "📂 Workspace",
+        message_thread_id=m.message_thread_id,
+        reply_markup=ws_kb(wid, data["workspaces"][wid])
     )
 
 
@@ -206,133 +123,158 @@ async def connect(message: types.Message):
 # CREATE COMPANY
 # =========================
 
-@dp.callback_query_handler(lambda c: c.data == "create")
-async def create(callback: types.CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith("create:"))
+async def create(cb: types.CallbackQuery):
 
-    data = load_data()
-    ws = get_ws(callback.message, data)
-
-    if not ws:
-        return await callback.answer("Сначала /connect", show_alert=True)
+    _, wid = cb.data.split(":")
+    data = load()
+    ws = data["workspaces"][wid]
 
     if ws["awaiting"]:
-        return await callback.answer("Уже ждём")
+        return await cb.answer("Уже ждём")
 
-    msg = await callback.message.answer("✏️ Напиши название компании")
+    msg = await cb.message.answer("Напиши название компании")
 
-    ws["awaiting"] = True
-    ws["awaiting_msg"] = msg.message_id
+    ws["awaiting"] = {
+        "type": "company",
+        "msg_id": msg.message_id
+    }
 
-    await save_data(data)
-    await callback.answer()
+    await save(data)
+    await cb.answer()
 
 
 # =========================
-# HANDLE NAME
+# TEMPLATE MENU
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("template:"))
+async def template(cb: types.CallbackQuery):
+
+    _, wid = cb.data.split(":")
+    data = load()
+    ws = data["workspaces"][wid]
+
+    await cb.message.edit_text(
+        "⚙️ Шаблон задач",
+        reply_markup=template_kb(wid, ws)
+    )
+
+    await cb.answer()
+
+
+# =========================
+# ADD TEMPLATE TASK
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("t_add:"))
+async def t_add(cb: types.CallbackQuery):
+
+    _, wid = cb.data.split(":")
+    data = load()
+
+    msg = await cb.message.answer("Введите задачу")
+
+    data["workspaces"][wid]["awaiting"] = {
+        "type": "template",
+        "msg_id": msg.message_id
+    }
+
+    await save(data)
+    await cb.answer()
+
+
+# =========================
+# DELETE TEMPLATE TASK
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("t_edit:"))
+async def t_edit(cb: types.CallbackQuery):
+
+    _, wid, i = cb.data.split(":")
+    i = int(i)
+
+    data = load()
+    ws = data["workspaces"][wid]
+
+    ws["template"].pop(i)
+
+    await save(data)
+
+    await cb.message.edit_text(
+        "⚙️ Шаблон задач",
+        reply_markup=template_kb(wid, ws)
+    )
+
+    await cb.answer("Удалено")
+
+
+# =========================
+# BACK
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("back:"))
+async def back(cb: types.CallbackQuery):
+
+    _, wid = cb.data.split(":")
+    data = load()
+
+    await cb.message.edit_text(
+        "📂 Workspace",
+        reply_markup=ws_kb(wid, data["workspaces"][wid])
+    )
+
+    await cb.answer()
+
+
+# =========================
+# HANDLE INPUT
 # =========================
 
 @dp.message_handler(lambda m: m.chat.type != "private")
-async def handle_name(message: types.Message):
+async def handle(m: types.Message):
 
-    data = load_data()
-    ws = get_ws(message, data)
+    data = load()
+    wid = ws_id(m.chat.id, m.message_thread_id)
 
-    if not ws or not ws["awaiting"] or not message.text:
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws["awaiting"]:
         return
 
-    name = message.text.strip()
+    text = m.text.strip()
 
-    ws["awaiting"] = False
+    mode = ws["awaiting"]["type"]
+    msg_id = ws["awaiting"]["msg_id"]
 
-    tasks = [{"text": t, "done": False} for t in ws["template"]]
-    ws["companies"][name] = {"tasks": tasks}
+    ws["awaiting"] = None
 
-    await save_data(data)
+    if mode == "company":
+        tasks = [{"text": t, "done": False} for t in ws["template"]]
+        ws["companies"][text] = {"tasks": tasks}
 
-    # удалить сообщения
+    elif mode == "template":
+        ws["template"].append(text)
+
+    await save(data)
+
+    # удаление
     try:
-        await message.delete()
+        await m.delete()
     except:
         pass
 
     try:
-        await bot.delete_message(message.chat.id, ws["awaiting_msg"])
+        await bot.delete_message(m.chat.id, msg_id)
     except:
         pass
 
-    # задачи
-    kb = InlineKeyboardMarkup(row_width=1)
-    text = f"📁 {name}\n\n"
-
-    for i, t in enumerate(tasks):
-        text += f"⬜ {t['text']}\n"
-        kb.add(InlineKeyboardButton(f"⬜ {t['text']}", callback_data=f"task:{i}:{name}"))
-
+    # обновление меню
     await bot.send_message(
-        message.chat.id,
-        text,
-        message_thread_id=message.message_thread_id,
-        reply_markup=kb
+        m.chat.id,
+        "📂 Workspace",
+        message_thread_id=m.message_thread_id,
+        reply_markup=ws_kb(wid, ws)
     )
-
-    # обновить меню
-    await bot.send_message(
-        message.chat.id,
-        "📂 Меню workspace",
-        message_thread_id=message.message_thread_id,
-        reply_markup=workspace_keyboard(ws)
-    )
-
-
-# =========================
-# TASK
-# =========================
-
-@dp.callback_query_handler(lambda c: c.data.startswith("task:"))
-async def task(callback: types.CallbackQuery):
-
-    _, i, name = callback.data.split(":")
-    i = int(i)
-
-    data = load_data()
-    ws = get_ws(callback.message, data)
-
-    task = ws["companies"][name]["tasks"][i]
-    task["done"] = not task["done"]
-
-    await save_data(data)
-
-    kb = InlineKeyboardMarkup(row_width=1)
-    text = f"📁 {name}\n\n"
-
-    for idx, t in enumerate(ws["companies"][name]["tasks"]):
-        icon = "✔" if t["done"] else "⬜"
-        text += f"{icon} {t['text']}\n"
-        kb.add(InlineKeyboardButton(f"{icon} {t['text']}", callback_data=f"task:{idx}:{name}"))
-
-    await safe_edit(callback.message, text, kb)
-    await callback.answer()
-
-
-# =========================
-# DELETE WS
-# =========================
-
-@dp.callback_query_handler(lambda c: c.data == "delete_ws")
-async def delete_ws(callback: types.CallbackQuery):
-
-    data = load_data()
-    user_id = str(callback.from_user.id)
-
-    for ws_id in data["users"].get(user_id, {}).get("workspaces", []):
-        data["workspaces"].pop(ws_id, None)
-
-    data["users"][user_id]["workspaces"] = []
-
-    await save_data(data)
-
-    await safe_edit(callback.message, "❌ Workspace удалён")
-    await callback.answer()
 
 
 # =========================
@@ -340,8 +282,4 @@ async def delete_ws(callback: types.CallbackQuery):
 # =========================
 
 if __name__ == "__main__":
-    if not os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "w") as f:
-            json.dump({"users": {}, "workspaces": {}}, f)
-
     executor.start_polling(dp, skip_updates=True)
