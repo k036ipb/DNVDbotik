@@ -66,6 +66,33 @@ def clean_text(text: str) -> str:
     return (text or "").strip().lstrip("/").strip()
 
 
+def workspace_full_name(chat_title: str, topic_title: str | None, thread_id: int) -> str:
+    if thread_id:
+        return f"{chat_title} - {(topic_title or f'Тред {thread_id}').strip()}"
+    return chat_title
+
+
+def extract_topic_title(message: types.Message) -> str | None:
+    if getattr(message, "forum_topic_created", None):
+        return message.forum_topic_created.name
+
+    if getattr(message, "forum_topic_edited", None):
+        new_name = getattr(message.forum_topic_edited, "name", None)
+        if new_name:
+            return new_name
+
+    reply = getattr(message, "reply_to_message", None)
+    if reply:
+        if getattr(reply, "forum_topic_created", None):
+            return reply.forum_topic_created.name
+        if getattr(reply, "forum_topic_edited", None):
+            new_name = getattr(reply.forum_topic_edited, "name", None)
+            if new_name:
+                return new_name
+
+    return None
+
+
 def company_card_text(company: dict) -> str:
     lines = [f"📁 {company['name']}:"]
     if company["tasks"]:
@@ -261,7 +288,7 @@ async def update_company_card(ws: dict, company_idx: int):
 async def delete_old_prompt_if_any(ws: dict):
     awaiting = ws.get("awaiting")
     if awaiting and awaiting.get("prompt_msg_id"):
-        await safe_delete_message(ws["chat_id"], awaiting["prompt_msg_id"])
+        await safe_delete_message(ws["chat_id"], awaiting.get("prompt_msg_id"))
 
 
 async def set_prompt(ws: dict, prompt_text: str, awaiting_payload: dict):
@@ -310,23 +337,17 @@ async def edit_company_menu(data: dict, wid: str, company_idx: int):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("menu_msg_id"):
         return
+
     if company_idx < 0 or company_idx >= len(ws["companies"]):
         await edit_ws_home_menu(data, wid)
         return
 
     company = ws["companies"][company_idx]
-    text_lines = [f"📁 {company['name']}", ""]
-    if company["tasks"]:
-        for task in company["tasks"]:
-            icon = "✔" if task["done"] else "⬜"
-            text_lines.append(f"{icon} {task['text']}")
-    else:
-        text_lines.append("—")
 
     await safe_edit_text(
         ws["chat_id"],
         ws["menu_msg_id"],
-        "\n".join(text_lines),
+        f"📁 {company['name']}",
         reply_markup=company_menu_kb(wid, company_idx, company),
     )
 
@@ -484,47 +505,59 @@ async def pm_delete_workspace(cb: types.CallbackQuery):
         return
 
     data = await load_data()
-    uid = str(cb.from_user.id)
+    current_uid = str(cb.from_user.id)
     wid = cb.data.split(":", 1)[1]
     ws = data["workspaces"].get(wid)
 
     if not ws:
         await cb.message.edit_text(
-            pm_main_text(uid, data),
-            reply_markup=pm_main_kb(uid, data),
+            pm_main_text(current_uid, data),
+            reply_markup=pm_main_kb(current_uid, data),
         )
         return
 
-    # Удаляем prompt/menu/cards в треде
-    await safe_delete_message(ws["chat_id"], ws.get("menu_msg_id"))
-    if ws.get("awaiting", {}).get("prompt_msg_id"):
-        await safe_delete_message(ws["chat_id"], ws["awaiting"]["prompt_msg_id"])
-    for company in ws["companies"]:
-        await safe_delete_message(ws["chat_id"], company.get("card_msg_id"))
+    ws_name = ws["name"]
+    chat_id = ws["chat_id"]
+    thread_id = ws["thread_id"]
 
-    # Удаляем ws у всех пользователей
-    for user_id, user in data["users"].items():
+    await safe_delete_message(chat_id, ws.get("menu_msg_id"))
+
+    if ws.get("awaiting", {}).get("prompt_msg_id"):
+        await safe_delete_message(chat_id, ws["awaiting"]["prompt_msg_id"])
+
+    for company in ws.get("companies", []):
+        await safe_delete_message(chat_id, company.get("card_msg_id"))
+
+    affected_users = []
+    for uid, user in data["users"].items():
         if wid in user.get("workspaces", []):
             user["workspaces"].remove(wid)
-
-    ws_name = ws["name"]
-    thread_id = ws["thread_id"]
-    chat_id = ws["chat_id"]
+            affected_users.append(uid)
 
     data["workspaces"].pop(wid, None)
+
+    ensure_user(data, current_uid)
+    data["users"][current_uid]["pm_menu_msg_id"] = cb.message.message_id
+
     await save_data(data)
 
-    # Уведомления
     await cb.message.edit_text(
-        pm_main_text(uid, data),
-        reply_markup=pm_main_kb(uid, data),
+        pm_main_text(current_uid, data),
+        reply_markup=pm_main_kb(current_uid, data),
     )
-    await send_temp_message(int(uid), f"🗑 Workspace «{ws_name}» удалён", 0, delay=10)
-    await send_temp_message(chat_id, f"🗑 Workspace «{ws_name}» удалён", thread_id, delay=10)
+
+    for uid in affected_users:
+        if uid != current_uid:
+            await update_pm_menu(uid, data)
+
+    for uid in affected_users:
+        await send_temp_message(int(uid), f"Workspace «{ws_name}» отключен", 0, delay=10)
+
+    await send_temp_message(chat_id, f"Workspace «{ws_name}» отключен", thread_id, delay=10)
 
 
 # =========================
-# CONNECT
+# CONNECT + TOPIC TRACKING
 # =========================
 
 @dp.message_handler(commands=["connect"])
@@ -539,36 +572,39 @@ async def cmd_connect(message: types.Message):
     thread_id = message.message_thread_id or 0
     wid = make_ws_id(message.chat.id, thread_id)
 
-    existing_ws = data["workspaces"].get(wid)
-    if existing_ws:
-        await safe_delete_message(existing_ws["chat_id"], existing_ws.get("menu_msg_id"))
-        if existing_ws.get("awaiting", {}).get("prompt_msg_id"):
-            await safe_delete_message(existing_ws["chat_id"], existing_ws["awaiting"]["prompt_msg_id"])
+    old_ws = data["workspaces"].get(wid)
+    old_companies = old_ws["companies"] if old_ws else []
+    old_template = old_ws["template"] if old_ws else ["Создать договор", "Выставить счёт"]
 
-    ws = data["workspaces"].setdefault(
-        wid,
-        {
-            "id": wid,
-            "name": message.chat.title or "Workspace",
-            "chat_id": message.chat.id,
-            "thread_id": thread_id,
-            "menu_msg_id": None,
-            "template": ["Создать договор", "Выставить счёт"],
-            "companies": [],
-            "awaiting": None,
-        },
-    )
+    topic_title = extract_topic_title(message)
+    if not topic_title and old_ws:
+        topic_title = old_ws.get("topic_title")
 
-    ws["id"] = wid
-    ws["name"] = message.chat.title or "Workspace"
-    ws["chat_id"] = message.chat.id
-    ws["thread_id"] = thread_id
-    ws["awaiting"] = None
+    chat_title = message.chat.title or "Workspace"
+    ws_name = workspace_full_name(chat_title, topic_title, thread_id)
+
+    if old_ws:
+        await safe_delete_message(old_ws["chat_id"], old_ws.get("menu_msg_id"))
+        if old_ws.get("awaiting", {}).get("prompt_msg_id"):
+            await safe_delete_message(old_ws["chat_id"], old_ws["awaiting"]["prompt_msg_id"])
+
+    data["workspaces"][wid] = {
+        "id": wid,
+        "name": ws_name,
+        "chat_title": chat_title,
+        "topic_title": topic_title,
+        "chat_id": message.chat.id,
+        "thread_id": thread_id,
+        "menu_msg_id": None,
+        "template": old_template,
+        "companies": old_companies,
+        "awaiting": None,
+    }
+    ws = data["workspaces"][wid]
 
     if wid not in data["users"][uid]["workspaces"]:
         data["users"][uid]["workspaces"].append(wid)
 
-    # удаляем help в ЛС
     help_msg_id = data["users"][uid].get("help_msg_id")
     if help_msg_id:
         await safe_delete_message(int(uid), help_msg_id)
@@ -582,6 +618,36 @@ async def cmd_connect(message: types.Message):
         await send_week_notice_pm(uid, f"Workspace «{ws['name']}» подключён")
     except Exception:
         pass
+
+
+@dp.message_handler(content_types=types.ContentTypes.ANY, lambda m: bool(getattr(m, "forum_topic_created", None) or getattr(m, "forum_topic_edited", None)))
+async def track_forum_topic_updates(message: types.Message):
+    if message.chat.type == "private":
+        return
+
+    thread_id = message.message_thread_id or 0
+    if not thread_id:
+        return
+
+    topic_title = extract_topic_title(message)
+    if not topic_title:
+        return
+
+    data = await load_data()
+    wid = make_ws_id(message.chat.id, thread_id)
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+
+    ws["topic_title"] = topic_title
+    ws["chat_title"] = message.chat.title or ws.get("chat_title") or "Workspace"
+    ws["name"] = workspace_full_name(ws["chat_title"], ws["topic_title"], thread_id)
+
+    await save_data(data)
+
+    for uid, user in data["users"].items():
+        if wid in user.get("workspaces", []):
+            await update_pm_menu(uid, data)
 
 
 # =========================
@@ -944,7 +1010,6 @@ async def handle_group_text(message: types.Message):
 
     prompt_msg_id = awaiting.get("prompt_msg_id")
 
-    # ========= NEW COMPANY =========
     if mode == "new_company":
         if company_exists(ws, text):
             await send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6)
@@ -976,7 +1041,6 @@ async def handle_group_text(message: types.Message):
         await save_data(data)
         return
 
-    # ========= RENAME COMPANY =========
     if mode == "rename_company":
         company_idx = awaiting["company_idx"]
         if company_idx < 0 or company_idx >= len(ws["companies"]):
@@ -1003,7 +1067,6 @@ async def handle_group_text(message: types.Message):
         await send_temp_message(ws["chat_id"], "✅ Новое название компании сохранено", ws["thread_id"], delay=6)
         return
 
-    # ========= NEW TASK =========
     if mode == "new_task":
         company_idx = awaiting["company_idx"]
         if company_idx < 0 or company_idx >= len(ws["companies"]):
@@ -1025,7 +1088,6 @@ async def handle_group_text(message: types.Message):
         await edit_company_menu(data, wid, company_idx)
         return
 
-    # ========= RENAME TASK =========
     if mode == "rename_task":
         company_idx = awaiting["company_idx"]
         task_idx = awaiting["task_idx"]
@@ -1056,7 +1118,6 @@ async def handle_group_text(message: types.Message):
         await send_temp_message(ws["chat_id"], "✅ Название задачи обновлено", ws["thread_id"], delay=6)
         return
 
-    # ========= NEW TEMPLATE TASK =========
     if mode == "new_template_task":
         ws["template"].append(text)
         ws["awaiting"] = None
@@ -1071,7 +1132,6 @@ async def handle_group_text(message: types.Message):
         await edit_template_menu(data, wid)
         return
 
-    # ========= RENAME TEMPLATE TASK =========
     if mode == "rename_template_task":
         template_idx = awaiting["template_idx"]
         if template_idx < 0 or template_idx >= len(ws["template"]):
