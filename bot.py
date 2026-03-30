@@ -1,419 +1,1101 @@
-import os, json, asyncio
+import os
+import json
+import asyncio
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils import executor
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.utils.exceptions import MessageNotModified
 
-TOKEN = os.getenv("API_TOKEN")  # формат токена: строка (не указано подробностей)
+TOKEN = os.getenv("API_TOKEN")
+if not TOKEN:
+    raise RuntimeError("API_TOKEN is not set")
+
 bot = Bot(token=TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(bot)
+
 DATA_FILE = "data.json"
 lock = asyncio.Lock()
 
-# FSM-состояния
-class BotState(StatesGroup):
-    new_company = State()
-    add_task = State()
-    rename_company = State()
-    rename_task = State()
-    new_template = State()
-    rename_template = State()
 
-def ws_id(chat_id, thread_id):
-    return f"{chat_id}_{thread_id or 0}"
+# =========================
+# DATA
+# =========================
+
+def default_data():
+    return {"users": {}, "workspaces": {}}
+
 
 async def load_data():
     if not os.path.exists(DATA_FILE):
-        return {"users": {}, "workspaces": {}}
+        return default_data()
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
-        return {"users": {}, "workspaces": {}}
+    except Exception:
+        return default_data()
+
 
 async def save_data(data):
     async with lock:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-# Клавиатуры
-def main_kb(uid, data):
+
+def ensure_user(data, user_id: str):
+    data["users"].setdefault(
+        user_id,
+        {
+            "workspaces": [],
+            "pm_menu_msg_id": None,
+            "help_msg_id": None,
+        },
+    )
+    return data["users"][user_id]
+
+
+def make_ws_id(chat_id: int, thread_id: int | None):
+    return f"{chat_id}_{thread_id or 0}"
+
+
+def thread_kwargs(thread_id: int):
+    return {"message_thread_id": thread_id} if thread_id else {}
+
+
+def clean_text(text: str) -> str:
+    return (text or "").strip().lstrip("/").strip()
+
+
+def company_card_text(company: dict) -> str:
+    lines = [f"📁 {company['name']}:"]
+    if company["tasks"]:
+        for task in company["tasks"]:
+            icon = "✔" if task["done"] else "⬜"
+            lines.append(f"{icon} {task['text']}")
+    else:
+        lines.append("—")
+    return "\n".join(lines)
+
+
+def pm_main_text(user_id: str, data: dict) -> str:
+    lines = ["📂 Ваши workspace:"]
+    workspaces = data["users"].get(user_id, {}).get("workspaces", [])
+    if not workspaces:
+        lines.append("Нет workspace")
+    else:
+        for wid in workspaces:
+            ws = data["workspaces"].get(wid)
+            if ws:
+                lines.append(f"• {ws['name']}")
+    return "\n".join(lines)
+
+
+# =========================
+# KEYBOARDS
+# =========================
+
+def pm_main_kb(user_id: str, data: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    for wid in data["users"].get(uid, {}).get("workspaces", []):
+    for wid in data["users"].get(user_id, {}).get("workspaces", []):
         ws = data["workspaces"].get(wid)
         if ws:
-            kb.add(InlineKeyboardButton(ws["name"], callback_data=f"ws:{wid}"))
-    kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="help"))
-    kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="refresh"))
+            kb.add(InlineKeyboardButton(ws["name"], callback_data=f"pmws:{wid}"))
+    kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="pmhelp:root"))
+    kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="pmrefresh:root"))
     return kb
 
-def ws_kb(wid, ws):
+
+def pm_ws_manage_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    for i, comp in enumerate(ws["companies"]):
-        kb.add(InlineKeyboardButton(comp["name"], callback_data=f"company:{wid}:{i}"))
-    kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data=f"create:{wid}"))
-    kb.add(InlineKeyboardButton("⚙️ Шаблон задач", callback_data=f"template:{wid}"))
+    kb.add(InlineKeyboardButton("🗑 Удалить workspace", callback_data=f"pmwsdel:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="pmrefresh:root"))
     return kb
 
-def template_kb(wid, ws):
+
+def ws_home_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    for i, task in enumerate(ws["template"]):
-        kb.add(InlineKeyboardButton(task, callback_data=f"t_open:{wid}:{i}"))
-    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"t_add:{wid}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{wid}"))
+    for idx, company in enumerate(ws["companies"]):
+        kb.add(InlineKeyboardButton(company["name"], callback_data=f"cmp:{wid}:{idx}"))
+    kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data=f"cmpnew:{wid}"))
+    kb.add(InlineKeyboardButton("⚙️ Шаблон задач", callback_data=f"tpl:{wid}"))
     return kb
 
-# /start в ЛС
-@dp.message_handler(commands=["start"])
-async def cmd_start(m: types.Message):
-    if m.chat.type != "private":
+
+def company_menu_kb(wid: str, company_idx: int, company: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for task_idx, task in enumerate(company["tasks"]):
+        icon = "✔" if task["done"] else "⬜"
+        kb.add(
+            InlineKeyboardButton(
+                f"{icon} {task['text']}",
+                callback_data=f"task:{wid}:{company_idx}:{task_idx}",
+            )
+        )
+    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"tasknew:{wid}:{company_idx}"))
+    kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"cmpren:{wid}:{company_idx}"))
+    kb.add(InlineKeyboardButton("🗑 Удалить компанию", callback_data=f"cmpdel:{wid}:{company_idx}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"backws:{wid}"))
+    return kb
+
+
+def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    if task["done"]:
+        kb.add(InlineKeyboardButton("❌ Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
+    else:
+        kb.add(InlineKeyboardButton("✔ Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
+    kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
+    kb.add(InlineKeyboardButton("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cmp:{wid}:{company_idx}"))
+    return kb
+
+
+def template_menu_kb(wid: str, ws: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for idx, task in enumerate(ws["template"]):
+        kb.add(InlineKeyboardButton(task, callback_data=f"tplitem:{wid}:{idx}"))
+    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"tplnew:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"backws:{wid}"))
+    return kb
+
+
+def template_item_kb(wid: str, template_idx: int):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"tplren:{wid}:{template_idx}"))
+    kb.add(InlineKeyboardButton("🗑 Удалить", callback_data=f"tpldel:{wid}:{template_idx}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"tpl:{wid}"))
+    return kb
+
+
+def prompt_kb(wid: str):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cancel:{wid}"))
+    return kb
+
+
+# =========================
+# SAFE HELPERS
+# =========================
+
+async def safe_delete_message(chat_id: int, message_id: int | None):
+    if not message_id:
         return
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+
+async def safe_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None):
+    try:
+        await bot.edit_message_text(text, chat_id, message_id, reply_markup=reply_markup)
+    except MessageNotModified:
+        pass
+    except Exception:
+        pass
+
+
+async def send_temp_message(chat_id: int, text: str, thread_id: int = 0, delay: int = 8):
+    msg = await bot.send_message(chat_id, text, **thread_kwargs(thread_id))
+
+    async def remover():
+        await asyncio.sleep(delay)
+        try:
+            await bot.delete_message(chat_id, msg.message_id)
+        except Exception:
+            pass
+
+    asyncio.create_task(remover())
+
+
+async def send_week_notice_pm(user_id: str, text: str):
+    msg = await bot.send_message(int(user_id), text)
+
+    async def remover():
+        await asyncio.sleep(7 * 24 * 3600)
+        try:
+            await bot.delete_message(int(user_id), msg.message_id)
+        except Exception:
+            pass
+
+    asyncio.create_task(remover())
+
+
+async def update_pm_menu(user_id: str, data: dict):
+    user = ensure_user(data, user_id)
+    text = pm_main_text(user_id, data)
+    kb = pm_main_kb(user_id, data)
+
+    if user.get("pm_menu_msg_id"):
+        try:
+            await bot.edit_message_text(
+                text,
+                int(user_id),
+                user["pm_menu_msg_id"],
+                reply_markup=kb,
+            )
+            return
+        except Exception:
+            user["pm_menu_msg_id"] = None
+
+    try:
+        msg = await bot.send_message(int(user_id), text, reply_markup=kb)
+        user["pm_menu_msg_id"] = msg.message_id
+    except Exception:
+        pass
+
+
+async def update_company_card(ws: dict, company_idx: int):
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        return
+    company = ws["companies"][company_idx]
+    if not company.get("card_msg_id"):
+        return
+    await safe_edit_text(
+        ws["chat_id"],
+        company["card_msg_id"],
+        company_card_text(company),
+    )
+
+
+async def delete_old_prompt_if_any(ws: dict):
+    awaiting = ws.get("awaiting")
+    if awaiting and awaiting.get("prompt_msg_id"):
+        await safe_delete_message(ws["chat_id"], awaiting["prompt_msg_id"])
+
+
+async def set_prompt(ws: dict, prompt_text: str, awaiting_payload: dict):
+    await delete_old_prompt_if_any(ws)
+    msg = await bot.send_message(
+        ws["chat_id"],
+        prompt_text,
+        reply_markup=prompt_kb(ws["id"]),
+        **thread_kwargs(ws["thread_id"]),
+    )
+    awaiting_payload["prompt_msg_id"] = msg.message_id
+    ws["awaiting"] = awaiting_payload
+
+
+async def send_or_replace_ws_home_menu(data: dict, wid: str):
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+
+    old_menu_id = ws.get("menu_msg_id")
+    if old_menu_id:
+        await safe_delete_message(ws["chat_id"], old_menu_id)
+
+    msg = await bot.send_message(
+        ws["chat_id"],
+        "📂 Меню workspace",
+        reply_markup=ws_home_kb(wid, ws),
+        **thread_kwargs(ws["thread_id"]),
+    )
+    ws["menu_msg_id"] = msg.message_id
+
+
+async def edit_ws_home_menu(data: dict, wid: str):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("menu_msg_id"):
+        return
+    await safe_edit_text(
+        ws["chat_id"],
+        ws["menu_msg_id"],
+        "📂 Меню workspace",
+        reply_markup=ws_home_kb(wid, ws),
+    )
+
+
+async def edit_company_menu(data: dict, wid: str, company_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("menu_msg_id"):
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        await edit_ws_home_menu(data, wid)
+        return
+
+    company = ws["companies"][company_idx]
+    text_lines = [f"📁 {company['name']}", ""]
+    if company["tasks"]:
+        for task in company["tasks"]:
+            icon = "✔" if task["done"] else "⬜"
+            text_lines.append(f"{icon} {task['text']}")
+    else:
+        text_lines.append("—")
+
+    await safe_edit_text(
+        ws["chat_id"],
+        ws["menu_msg_id"],
+        "\n".join(text_lines),
+        reply_markup=company_menu_kb(wid, company_idx, company),
+    )
+
+
+async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("menu_msg_id"):
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        await edit_ws_home_menu(data, wid)
+        return
+
+    company = ws["companies"][company_idx]
+    if task_idx < 0 or task_idx >= len(company["tasks"]):
+        await edit_company_menu(data, wid, company_idx)
+        return
+
+    task = company["tasks"][task_idx]
+    text = f"📌 {task['text']}"
+    await safe_edit_text(
+        ws["chat_id"],
+        ws["menu_msg_id"],
+        text,
+        reply_markup=task_menu_kb(wid, company_idx, task_idx, task),
+    )
+
+
+async def edit_template_menu(data: dict, wid: str):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("menu_msg_id"):
+        return
+    await safe_edit_text(
+        ws["chat_id"],
+        ws["menu_msg_id"],
+        "⚙️ Шаблон задач",
+        reply_markup=template_menu_kb(wid, ws),
+    )
+
+
+async def edit_template_item_menu(data: dict, wid: str, template_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("menu_msg_id"):
+        return
+    if template_idx < 0 or template_idx >= len(ws["template"]):
+        await edit_template_menu(data, wid)
+        return
+
+    text = f"⚙️ {ws['template'][template_idx]}"
+    await safe_edit_text(
+        ws["chat_id"],
+        ws["menu_msg_id"],
+        text,
+        reply_markup=template_item_kb(wid, template_idx),
+    )
+
+
+def company_exists(ws: dict, name: str, exclude_idx: int | None = None) -> bool:
+    target = name.casefold()
+    for idx, company in enumerate(ws["companies"]):
+        if exclude_idx is not None and idx == exclude_idx:
+            continue
+        if company["name"].casefold() == target:
+            return True
+    return False
+
+
+# =========================
+# PM HANDLERS
+# =========================
+
+@dp.message_handler(commands=["start"])
+async def cmd_start(message: types.Message):
+    if message.chat.type != "private":
+        return
+
     data = await load_data()
-    uid = str(m.from_user.id)
-    data["users"].setdefault(uid, {"workspaces": []})
+    uid = str(message.from_user.id)
+    user = ensure_user(data, uid)
+
+    text = pm_main_text(uid, data)
+    msg = await message.answer(text, reply_markup=pm_main_kb(uid, data))
+    user["pm_menu_msg_id"] = msg.message_id
     await save_data(data)
-    text = "📂 Ваши workspace:\n"
-    if not data["users"][uid]["workspaces"]:
-        text += "Нет workspace"
-    else:
-        for wid in data["users"][uid]["workspaces"]:
-            ws = data["workspaces"].get(wid)
-            if ws:
-                text += f"• {ws['name']}\n"
-    await m.answer(text, reply_markup=main_kb(uid, data))
 
-# Обновление меню ЛС
-@dp.callback_query_handler(lambda c: c.data == "refresh")
-async def cb_refresh(cb: types.CallbackQuery):
+
+@dp.callback_query_handler(lambda c: c.data == "pmrefresh:root")
+async def pm_refresh(cb: types.CallbackQuery):
     await cb.answer()
+    if cb.message.chat.type != "private":
+        return
+
     data = await load_data()
     uid = str(cb.from_user.id)
-    text = "📂 Ваши workspace:\n"
-    wss = data["users"].get(uid, {}).get("workspaces", [])
-    if not wss:
-        text += "Нет workspace"
-    else:
-        for wid in wss:
-            ws = data["workspaces"].get(wid)
-            if ws:
-                text += f"• {ws['name']}\n"
-    await cb.message.edit_text(text, reply_markup=main_kb(uid, data))
+    user = ensure_user(data, uid)
+    user["pm_menu_msg_id"] = cb.message.message_id
+    await save_data(data)
 
-# Подсказка подключения (отдельное сообщение)
-@dp.callback_query_handler(lambda c: c.data == "help")
-async def cb_help(cb: types.CallbackQuery):
+    await cb.message.edit_text(
+        pm_main_text(uid, data),
+        reply_markup=pm_main_kb(uid, data),
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data == "pmhelp:root")
+async def pm_help(cb: types.CallbackQuery):
     await cb.answer()
+    if cb.message.chat.type != "private":
+        return
+
     data = await load_data()
     uid = str(cb.from_user.id)
-    # Высылаем инструкцию
-    hint_msg = await cb.message.answer(
+    user = ensure_user(data, uid)
+
+    if user.get("help_msg_id"):
+        await safe_delete_message(int(uid), user["help_msg_id"])
+
+    msg = await cb.message.answer(
         "📌 Как подключить workspace:\n\n"
         "1) Перейдите в нужный тред группы\n"
         "2) Отправьте команду /connect"
     )
-    # Сохраняем ID подсказки, чтобы удалить позже
-    # (берём ws_id = uid_0, временно, или сохраняем в отдельную структуру)
-    # Здесь просто удалим в /connect после работы
+    user["help_msg_id"] = msg.message_id
+    await save_data(data)
 
-# /connect в теме
-@dp.message_handler(commands=["connect"])
-async def cmd_connect(m: types.Message):
-    if m.chat.type == "private":
+
+@dp.callback_query_handler(lambda c: c.data.startswith("pmws:"))
+async def pm_open_workspace(cb: types.CallbackQuery):
+    await cb.answer()
+    if cb.message.chat.type != "private":
         return
+
     data = await load_data()
-    uid = str(m.from_user.id)
-    thread_id = m.message_thread_id or 0
-    wid = ws_id(m.chat.id, thread_id)
-    # Создаём/обновляем workspace
-    data["workspaces"].setdefault(wid, {
-        "name": m.chat.title or "Группа",
-        "chat_id": m.chat.id,
-        "thread_id": thread_id,
-        "menu_msg_id": None,
-        "template": ["Создать договор", "Выставить счёт"],
-        "companies": [],
-        "awaiting": None
-    })
-    data["users"].setdefault(uid, {"workspaces": []})
+    uid = str(cb.from_user.id)
+    wid = cb.data.split(":", 1)[1]
+
+    ws = data["workspaces"].get(wid)
+    if not ws or wid not in data["users"].get(uid, {}).get("workspaces", []):
+        await cb.answer("Workspace не найден", show_alert=False)
+        await cb.message.edit_text(
+            pm_main_text(uid, data),
+            reply_markup=pm_main_kb(uid, data),
+        )
+        return
+
+    await cb.message.edit_text(
+        f"📂 {ws['name']}",
+        reply_markup=pm_ws_manage_kb(wid),
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("pmwsdel:"))
+async def pm_delete_workspace(cb: types.CallbackQuery):
+    await cb.answer()
+    if cb.message.chat.type != "private":
+        return
+
+    data = await load_data()
+    uid = str(cb.from_user.id)
+    wid = cb.data.split(":", 1)[1]
+    ws = data["workspaces"].get(wid)
+
+    if not ws:
+        await cb.message.edit_text(
+            pm_main_text(uid, data),
+            reply_markup=pm_main_kb(uid, data),
+        )
+        return
+
+    # Удаляем prompt/menu/cards в треде
+    await safe_delete_message(ws["chat_id"], ws.get("menu_msg_id"))
+    if ws.get("awaiting", {}).get("prompt_msg_id"):
+        await safe_delete_message(ws["chat_id"], ws["awaiting"]["prompt_msg_id"])
+    for company in ws["companies"]:
+        await safe_delete_message(ws["chat_id"], company.get("card_msg_id"))
+
+    # Удаляем ws у всех пользователей
+    for user_id, user in data["users"].items():
+        if wid in user.get("workspaces", []):
+            user["workspaces"].remove(wid)
+
+    ws_name = ws["name"]
+    thread_id = ws["thread_id"]
+    chat_id = ws["chat_id"]
+
+    data["workspaces"].pop(wid, None)
+    await save_data(data)
+
+    # Уведомления
+    await cb.message.edit_text(
+        pm_main_text(uid, data),
+        reply_markup=pm_main_kb(uid, data),
+    )
+    await send_temp_message(int(uid), f"🗑 Workspace «{ws_name}» удалён", 0, delay=10)
+    await send_temp_message(chat_id, f"🗑 Workspace «{ws_name}» удалён", thread_id, delay=10)
+
+
+# =========================
+# CONNECT
+# =========================
+
+@dp.message_handler(commands=["connect"])
+async def cmd_connect(message: types.Message):
+    if message.chat.type == "private":
+        return
+
+    data = await load_data()
+    uid = str(message.from_user.id)
+    ensure_user(data, uid)
+
+    thread_id = message.message_thread_id or 0
+    wid = make_ws_id(message.chat.id, thread_id)
+
+    existing_ws = data["workspaces"].get(wid)
+    if existing_ws:
+        await safe_delete_message(existing_ws["chat_id"], existing_ws.get("menu_msg_id"))
+        if existing_ws.get("awaiting", {}).get("prompt_msg_id"):
+            await safe_delete_message(existing_ws["chat_id"], existing_ws["awaiting"]["prompt_msg_id"])
+
+    ws = data["workspaces"].setdefault(
+        wid,
+        {
+            "id": wid,
+            "name": message.chat.title or "Workspace",
+            "chat_id": message.chat.id,
+            "thread_id": thread_id,
+            "menu_msg_id": None,
+            "template": ["Создать договор", "Выставить счёт"],
+            "companies": [],
+            "awaiting": None,
+        },
+    )
+
+    ws["id"] = wid
+    ws["name"] = message.chat.title or "Workspace"
+    ws["chat_id"] = message.chat.id
+    ws["thread_id"] = thread_id
+    ws["awaiting"] = None
+
     if wid not in data["users"][uid]["workspaces"]:
         data["users"][uid]["workspaces"].append(wid)
-    await save_data(data)
-    # Удаляем подсказку (предполагаем, что она только что была отправлена)
-    try:
-        await bot.delete_message(m.chat.id, m.message_id - 1, message_thread_id=thread_id)
-    except: pass
-    # Отправляем меню Workspace в треде
-    ws = data["workspaces"][wid]
-    menu_msg = await bot.send_message(
-        m.chat.id, "📂 Workspace", reply_markup=ws_kb(wid, ws),
-        message_thread_id=thread_id
-    )
-    ws["menu_msg_id"] = menu_msg.message_id
-    await save_data(data)
-    # Уведомление в ЛС (удалится через неделю)
-    try:
-        info = await bot.send_message(uid, f"Workspace «{m.chat.title}» подключён")
-        async def delete_notice(chat, msg_id):
-            await asyncio.sleep(7*24*3600)
-            try: await bot.delete_message(chat, msg_id)
-            except: pass
-        asyncio.create_task(delete_notice(uid, info.message_id))
-    except: pass
 
-# Открыть управление workspace в ЛС
-@dp.callback_query_handler(lambda c: c.data.startswith("ws:"))
-async def cb_open_ws(cb: types.CallbackQuery):
+    # удаляем help в ЛС
+    help_msg_id = data["users"][uid].get("help_msg_id")
+    if help_msg_id:
+        await safe_delete_message(int(uid), help_msg_id)
+        data["users"][uid]["help_msg_id"] = None
+
+    await send_or_replace_ws_home_menu(data, wid)
+    await update_pm_menu(uid, data)
+    await save_data(data)
+
+    try:
+        await send_week_notice_pm(uid, f"Workspace «{ws['name']}» подключён")
+    except Exception:
+        pass
+
+
+# =========================
+# GROUP MENU NAVIGATION
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("backws:"))
+async def back_to_ws(cb: types.CallbackQuery):
     await cb.answer()
+    wid = cb.data.split(":", 1)[1]
     data = await load_data()
-    uid = str(cb.from_user.id)
-    _, wid = cb.data.split(":")
     ws = data["workspaces"].get(wid)
     if not ws:
-        await cb.answer("Workspace не найден")
+        await cb.answer("Workspace удалён", show_alert=False)
         return
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🗑 Удалить workspace", callback_data=f"delete_ws:{wid}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="refresh"))
-    await cb.message.edit_text(f"📂 {ws['name']}", reply_markup=kb)
+    await edit_ws_home_menu(data, wid)
 
-# Удалить workspace
-@dp.callback_query_handler(lambda c: c.data.startswith("delete_ws:"))
-async def cb_delete_ws(cb: types.CallbackQuery):
-    await cb.answer()
-    data = await load_data()
-    uid = str(cb.from_user.id)
-    _, wid = cb.data.split(":")
-    ws = data["workspaces"].get(wid)
-    if ws:
-        # Удаляем меню из треда
-        chat_id = ws["chat_id"]; thread_id = ws["thread_id"]
-        old_menu = ws.get("menu_msg_id")
-        if old_menu:
-            try: await bot.delete_message(chat_id, old_menu, message_thread_id=thread_id)
-            except: pass
-        # Удаляем из списка пользователя
-        if wid in data["users"][uid]["workspaces"]:
-            data["users"][uid]["workspaces"].remove(wid)
-    await save_data(data)
-    # Показываем обновлённый список workspace
-    text = "📂 Ваши workspace:\n"
-    wss = data["users"].get(uid, {}).get("workspaces", [])
-    if not wss:
-        text += "Нет workspace"
-    else:
-        for wid2 in wss:
-            ws2 = data["workspaces"].get(wid2)
-            if ws2:
-                text += f"• {ws2['name']}\n"
-    await cb.message.edit_text(text, reply_markup=main_kb(uid, data))
 
-# Создать компанию (запрос названия)
-@dp.callback_query_handler(lambda c: c.data.startswith("create:"))
-async def cb_create(cb: types.CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith("cmp:"))
+async def open_company(cb: types.CallbackQuery):
     await cb.answer()
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+
     data = await load_data()
-    _, wid = cb.data.split(":")
     ws = data["workspaces"].get(wid)
     if not ws:
-        await cb.answer("Ошибка")
+        await cb.answer("Workspace удалён", show_alert=False)
         return
-    await BotState.new_company.set()
-    await cb.message.answer("✏️ Напишите название компании:")
 
-# Ввести название компании
-@dp.message_handler(state=BotState.new_company, content_types=types.ContentTypes.TEXT)
-async def process_new_company(message: types.Message, state: FSMContext):
-    text = message.text.lstrip("/").strip()
-    data = await load_data()
-    tid = message.message_thread_id or 0
-    wid = ws_id(message.chat.id, tid)
-    ws = data["workspaces"].get(wid)
-    if ws is None:
-        await state.finish()
-        return
-    # Проверка дублей
-    if any(c["name"] == text for c in ws["companies"]):
-        await message.answer("Такая компания уже существует.")
-        await state.finish()
-        return
-    # Создаём карточку компании
-    tasks = [{"text": t, "done": False} for t in ws["template"]]
-    card_msg = await message.answer(f"📁 {text}:\n" + "\n".join(f"⬜ {t['text']}" for t in tasks))
-    ws["companies"].append({"name": text, "tasks": tasks, "card_msg_id": card_msg.message_id})
-    await save_data(data)
-    # Удаляем запрос и текст пользователя
-    try: await message.delete()
-    except: pass
-    try: await bot.delete_message(message.chat.id, message.message_id - 1, message_thread_id=tid)
-    except: pass
-    # Пересоздаём меню workspace
-    old_menu = ws.get("menu_msg_id")
-    if old_menu:
-        try: await bot.delete_message(message.chat.id, old_menu, message_thread_id=tid)
-        except: pass
-    menu_msg = await bot.send_message(message.chat.id, "📂 Workspace", reply_markup=ws_kb(wid, ws), message_thread_id=tid)
-    ws["menu_msg_id"] = menu_msg.message_id
-    await save_data(data)
-    await state.finish()
+    await edit_company_menu(data, wid, company_idx)
 
-# Открыть список задач компании
-@dp.callback_query_handler(lambda c: c.data.startswith("company:"))
-async def cb_open_company(cb: types.CallbackQuery):
+
+@dp.callback_query_handler(lambda c: c.data.startswith("task:"))
+async def open_task_menu(cb: types.CallbackQuery):
     await cb.answer()
+    _, wid, company_idx, task_idx = cb.data.split(":")
     data = await load_data()
-    _, wid, idx = cb.data.split(":")
-    comp_idx = int(idx)
     ws = data["workspaces"].get(wid)
-    if not ws or comp_idx >= len(ws["companies"]):
-        await cb.answer("Компания не найдена")
+    if not ws:
+        await cb.answer("Workspace удалён", show_alert=False)
         return
-    comp = ws["companies"][comp_idx]
-    text = f"📁 {comp['name']}\n\n"
-    kb = InlineKeyboardMarkup(row_width=1)
-    for i, t in enumerate(comp["tasks"]):
-        icon = "✔" if t["done"] else "⬜"
-        text += f"{icon} {t['text']}\n"
-        kb.add(InlineKeyboardButton(f"{icon} {t['text']}", callback_data=f"task_menu:{wid}:{comp_idx}:{i}"))
-    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"add_task:{wid}:{comp_idx}"))
-    kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"rename_company:{wid}:{comp_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить компанию", callback_data=f"delete_company:{wid}:{comp_idx}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{wid}"))
-    await cb.message.edit_text(text, reply_markup=kb)
 
-# Добавить задачу (запрос)
-@dp.callback_query_handler(lambda c: c.data.startswith("add_task:"))
-async def cb_add_task(cb: types.CallbackQuery):
+    await edit_task_menu(data, wid, int(company_idx), int(task_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tpl:"))
+async def open_template_menu(cb: types.CallbackQuery):
     await cb.answer()
-    _, wid, comp_idx = cb.data.split(":")
-    ws = (await load_data())["workspaces"].get(wid)
-    if not ws or int(comp_idx) >= len(ws["companies"]):
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        await cb.answer("Workspace удалён", show_alert=False)
         return
-    await BotState.add_task.set()
-    await cb.message.answer("✏️ Введите текст новой задачи:")
 
-# Ввести задачу
-@dp.message_handler(state=BotState.add_task, content_types=types.ContentTypes.TEXT)
-async def process_add_task(message: types.Message, state: FSMContext):
-    text = message.text
-    data = await load_data()
-    tid = message.message_thread_id or 0
-    wid = ws_id(message.chat.id, tid)
-    ws = data["workspaces"].get(wid)
-    comp_idx = ws["awaiting"]["company_idx"] if ws.get("awaiting") else None
-    if not ws or comp_idx is None: 
-        await state.finish(); return
-    comp = ws["companies"][comp_idx]
-    comp["tasks"].append({"text": text, "done": False})
-    await save_data(data)
-    # Удаляем запрос и ввод
-    try: await message.delete()
-    except: pass
-    # Обновляем меню задач
-    new_text = f"📁 {comp['name']}\n\n"
-    kb = InlineKeyboardMarkup(row_width=1)
-    for i, t in enumerate(comp["tasks"]):
-        icon = "✔" if t["done"] else "⬜"
-        new_text += f"{icon} {t['text']}\n"
-        kb.add(InlineKeyboardButton(f"{icon} {t['text']}", callback_data=f"task_menu:{wid}:{comp_idx}:{i}"))
-    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"add_task:{wid}:{comp_idx}"))
-    kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"rename_company:{wid}:{comp_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить компанию", callback_data=f"delete_company:{wid}:{comp_idx}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{wid}"))
-    await bot.edit_message_text(new_text, message.chat.id, message_id=ws["menu_msg_id"], reply_markup=kb)
-    # Обновляем карточку
-    card_text = f"📁 {comp['name']}:\n"
-    for t in comp["tasks"]:
-        icon = "✔" if t["done"] else "⬜"
-        card_text += f"{icon} {t['text']}\n"
-    try:
-        await bot.edit_message_text(card_text, message.chat.id, message_id=comp["card_msg_id"])
-    except: pass
-    await state.finish()
+    await edit_template_menu(data, wid)
 
-# Удалить компанию
-@dp.callback_query_handler(lambda c: c.data.startswith("delete_company:"))
-async def cb_delete_company(cb: types.CallbackQuery):
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplitem:"))
+async def open_template_item(cb: types.CallbackQuery):
     await cb.answer()
+    _, wid, template_idx = cb.data.split(":")
     data = await load_data()
-    _, wid, comp_idx = cb.data.split(":")
-    comp_idx = int(comp_idx)
     ws = data["workspaces"].get(wid)
-    if not ws or comp_idx >= len(ws["companies"]):
+    if not ws:
+        await cb.answer("Workspace удалён", show_alert=False)
         return
-    # Удаляем карточку
-    comp = ws["companies"].pop(comp_idx)
-    try:
-        await bot.delete_message(ws["chat_id"], comp["card_msg_id"], message_thread_id=ws["thread_id"])
-    except: pass
-    await save_data(data)
-    # Пересоздаём меню workspace
-    old_menu = ws.get("menu_msg_id")
-    if old_menu:
-        try: await bot.delete_message(ws["chat_id"], old_menu, message_thread_id=ws["thread_id"])
-        except: pass
-    menu_msg = await bot.send_message(ws["chat_id"], "📂 Workspace", reply_markup=ws_kb(wid, ws), message_thread_id=ws["thread_id"])
-    ws["menu_msg_id"] = menu_msg.message_id
 
-# Переименовать задачу (запрос нового названия)
-@dp.callback_query_handler(lambda c: c.data.startswith("task_rename:"))
-async def cb_task_rename(cb: types.CallbackQuery):
+    await edit_template_item_menu(data, wid, int(template_idx))
+
+
+# =========================
+# PROMPT / CANCEL
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("cancel:"))
+async def cancel_input(cb: types.CallbackQuery):
     await cb.answer()
-    _, wid, comp_idx, task_idx = cb.data.split(":")
-    await BotState.rename_task.set()
-    await cb.message.answer("✏️ Введите новое название задачи:")
+    wid = cb.data.split(":", 1)[1]
 
-@dp.message_handler(state=BotState.rename_task, content_types=types.ContentTypes.TEXT)
-async def process_rename_task(message: types.Message, state: FSMContext):
-    text = message.text
     data = await load_data()
-    tid = message.message_thread_id or 0
-    wid = ws_id(message.chat.id, tid)
     ws = data["workspaces"].get(wid)
-    comp_idx = ws["awaiting"]["company_idx"] if ws.get("awaiting") else None
-    task_idx = ws["awaiting"]["task_idx"] if ws.get("awaiting") else None
-    if ws and comp_idx is not None and task_idx is not None:
-        comp = ws["companies"][comp_idx]
-        comp["tasks"][task_idx]["text"] = text
+    if not ws:
+        return
+
+    awaiting = ws.get("awaiting")
+    if awaiting:
+        await safe_delete_message(ws["chat_id"], awaiting.get("prompt_msg_id"))
+        back_to = awaiting.get("back_to", {"view": "ws"})
+        ws["awaiting"] = None
         await save_data(data)
-        await message.answer("✅ Название задачи обновлено")
-        try: await message.delete()
-        except: pass
-        # Обновляем карточку
-        card_text = f"📁 {comp['name']}:\n"
-        for t in comp["tasks"]:
-            icon = "✔" if t["done"] else "⬜"
-            card_text += f"{icon} {t['text']}\n"
-        try:
-            await bot.edit_message_text(card_text, message.chat.id, message_id=comp["card_msg_id"])
-        except: pass
-        # Обновляем меню задач
-        new_text = f"📁 {comp['name']}\n\n"
-        kb = InlineKeyboardMarkup(row_width=1)
-        for i, t in enumerate(comp["tasks"]):
-            icon = "✔" if t["done"] else "⬜"
-            new_text += f"{icon} {t['text']}\n"
-            kb.add(InlineKeyboardButton(f"{icon} {t['text']}", callback_data=f"task_menu:{wid}:{comp_idx}:{i}"))
-        kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"add_task:{wid}:{comp_idx}"))
-        kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"rename_company:{wid}:{comp_idx}"))
-        kb.add(InlineKeyboardButton("🗑 Удалить компанию", callback_data=f"delete_company:{wid}:{comp_idx}"))
-        kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{wid}"))
-        await bot.edit_message_text(new_text, message.chat.id, message_id=ws["menu_msg_id"], reply_markup=kb)
-    await state.finish()
 
-# Обновить статус задачи
-@dp.callback_query_handler(lambda c: c.data.startswith("task_done:"))
-async def cb_task_done(cb: types.CallbackQuery):
+        if back_to["view"] == "company":
+            await edit_company_menu(data, wid, back_to["company_idx"])
+        elif back_to["view"] == "template":
+            await edit_template_menu(data, wid)
+        else:
+            await edit_ws_home_menu(data, wid)
+
+
+# =========================
+# CREATE / RENAME / DELETE COMPANY
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("cmpnew:"))
+async def create_company_prompt(cb: types.CallbackQuery):
     await cb.answer()
+    wid = cb.data.split(":", 1)[1]
+
     data = await load_data()
-    _, wid, comp_idx, task_idx = cb.data.split(":")
-    comp_idx = int(comp_idx); task_idx = int(task_idx)
     ws = data["workspaces"].get(wid)
-    if not ws: return
-    comp = ws["companies"][comp_idx]
-    comp["tasks"][task_idx]["done"] = not comp["tasks"][task_idx]["done"]
+    if not ws:
+        await cb.answer("Workspace удалён", show_alert=False)
+        return
+
+    await set_prompt(
+        ws,
+        "✏️ Напишите название компании:",
+        {
+            "type": "new_company",
+            "back_to": {"view": "ws"},
+        },
+    )
     await save_data(data)
-    # Перестроение меню и карточки аналогично выше
-    await cb.answer("Статус задачи обновлён")
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("cmpren:"))
+async def rename_company_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+
+    await set_prompt(
+        ws,
+        "✏️ Введите новое название компании:",
+        {
+            "type": "rename_company",
+            "company_idx": company_idx,
+            "back_to": {"view": "company", "company_idx": company_idx},
+        },
+    )
+    await save_data(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("cmpdel:"))
+async def delete_company(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        return
+
+    company = ws["companies"].pop(company_idx)
+    await safe_delete_message(ws["chat_id"], company.get("card_msg_id"))
+    await send_or_replace_ws_home_menu(data, wid)
+    await save_data(data)
+
+
+# =========================
+# TASK ACTIONS
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tasknew:"))
+async def add_task_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+
+    await set_prompt(
+        ws,
+        "✏️ Введите текст новой задачи:",
+        {
+            "type": "new_task",
+            "company_idx": company_idx,
+            "back_to": {"view": "company", "company_idx": company_idx},
+        },
+    )
+    await save_data(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("taskren:"))
+async def rename_task_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, company_idx, task_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    task_idx = int(task_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+
+    await set_prompt(
+        ws,
+        "✏️ Введите новое название задачи:",
+        {
+            "type": "rename_task",
+            "company_idx": company_idx,
+            "task_idx": task_idx,
+            "back_to": {"view": "company", "company_idx": company_idx},
+        },
+    )
+    await save_data(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("taskdel:"))
+async def delete_task(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, company_idx, task_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    task_idx = int(task_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        return
+
+    company = ws["companies"][company_idx]
+    if task_idx < 0 or task_idx >= len(company["tasks"]):
+        return
+
+    company["tasks"].pop(task_idx)
+    await save_data(data)
+
+    await update_company_card(ws, company_idx)
+    await edit_company_menu(data, wid, company_idx)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("taskdone:"))
+async def toggle_task_done(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, company_idx, task_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    task_idx = int(task_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        return
+
+    company = ws["companies"][company_idx]
+    if task_idx < 0 or task_idx >= len(company["tasks"]):
+        return
+
+    company["tasks"][task_idx]["done"] = not company["tasks"][task_idx]["done"]
+    await save_data(data)
+
+    await update_company_card(ws, company_idx)
+    await edit_task_menu(data, wid, company_idx, task_idx)
+
+
+# =========================
+# TEMPLATE ACTIONS
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplnew:"))
+async def add_template_task_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    wid = cb.data.split(":", 1)[1]
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+
+    await set_prompt(
+        ws,
+        "✏️ Введите название новой задачи шаблона:",
+        {
+            "type": "new_template_task",
+            "back_to": {"view": "template"},
+        },
+    )
+    await save_data(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplren:"))
+async def rename_template_task_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, template_idx = cb.data.split(":")
+    template_idx = int(template_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+
+    await set_prompt(
+        ws,
+        "✏️ Введите новое название задачи шаблона:",
+        {
+            "type": "rename_template_task",
+            "template_idx": template_idx,
+            "back_to": {"view": "template"},
+        },
+    )
+    await save_data(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tpldel:"))
+async def delete_template_task(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, template_idx = cb.data.split(":")
+    template_idx = int(template_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    if template_idx < 0 or template_idx >= len(ws["template"]):
+        return
+
+    ws["template"].pop(template_idx)
+    await save_data(data)
+    await edit_template_menu(data, wid)
+
+
+# =========================
+# GROUP TEXT INPUT HANDLER
+# =========================
+
+@dp.message_handler(content_types=types.ContentTypes.TEXT)
+async def handle_group_text(message: types.Message):
+    if message.chat.type == "private":
+        return
+
+    data = await load_data()
+    wid = make_ws_id(message.chat.id, message.message_thread_id or 0)
+    ws = data["workspaces"].get(wid)
+
+    if not ws or not ws.get("awaiting"):
+        return
+
+    awaiting = ws["awaiting"]
+    mode = awaiting.get("type")
+    text = clean_text(message.text)
+
+    if not text:
+        return
+
+    prompt_msg_id = awaiting.get("prompt_msg_id")
+
+    # ========= NEW COMPANY =========
+    if mode == "new_company":
+        if company_exists(ws, text):
+            await send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6)
+            return
+
+        company = {
+            "name": text,
+            "tasks": [{"text": t, "done": False} for t in ws["template"]],
+            "card_msg_id": None,
+        }
+
+        card_msg = await bot.send_message(
+            ws["chat_id"],
+            company_card_text(company),
+            **thread_kwargs(ws["thread_id"]),
+        )
+        company["card_msg_id"] = card_msg.message_id
+        ws["companies"].append(company)
+        ws["awaiting"] = None
+
+        await save_data(data)
+        await safe_delete_message(ws["chat_id"], prompt_msg_id)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        await send_or_replace_ws_home_menu(data, wid)
+        await save_data(data)
+        return
+
+    # ========= RENAME COMPANY =========
+    if mode == "rename_company":
+        company_idx = awaiting["company_idx"]
+        if company_idx < 0 or company_idx >= len(ws["companies"]):
+            ws["awaiting"] = None
+            await save_data(data)
+            return
+
+        if company_exists(ws, text, exclude_idx=company_idx):
+            await send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6)
+            return
+
+        ws["companies"][company_idx]["name"] = text
+        ws["awaiting"] = None
+        await save_data(data)
+
+        await safe_delete_message(ws["chat_id"], prompt_msg_id)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        await update_company_card(ws, company_idx)
+        await edit_company_menu(data, wid, company_idx)
+        await send_temp_message(ws["chat_id"], "✅ Новое название компании сохранено", ws["thread_id"], delay=6)
+        return
+
+    # ========= NEW TASK =========
+    if mode == "new_task":
+        company_idx = awaiting["company_idx"]
+        if company_idx < 0 or company_idx >= len(ws["companies"]):
+            ws["awaiting"] = None
+            await save_data(data)
+            return
+
+        ws["companies"][company_idx]["tasks"].append({"text": text, "done": False})
+        ws["awaiting"] = None
+        await save_data(data)
+
+        await safe_delete_message(ws["chat_id"], prompt_msg_id)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        await update_company_card(ws, company_idx)
+        await edit_company_menu(data, wid, company_idx)
+        return
+
+    # ========= RENAME TASK =========
+    if mode == "rename_task":
+        company_idx = awaiting["company_idx"]
+        task_idx = awaiting["task_idx"]
+
+        if company_idx < 0 or company_idx >= len(ws["companies"]):
+            ws["awaiting"] = None
+            await save_data(data)
+            return
+
+        company = ws["companies"][company_idx]
+        if task_idx < 0 or task_idx >= len(company["tasks"]):
+            ws["awaiting"] = None
+            await save_data(data)
+            return
+
+        company["tasks"][task_idx]["text"] = text
+        ws["awaiting"] = None
+        await save_data(data)
+
+        await safe_delete_message(ws["chat_id"], prompt_msg_id)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        await update_company_card(ws, company_idx)
+        await edit_company_menu(data, wid, company_idx)
+        await send_temp_message(ws["chat_id"], "✅ Название задачи обновлено", ws["thread_id"], delay=6)
+        return
+
+    # ========= NEW TEMPLATE TASK =========
+    if mode == "new_template_task":
+        ws["template"].append(text)
+        ws["awaiting"] = None
+        await save_data(data)
+
+        await safe_delete_message(ws["chat_id"], prompt_msg_id)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        await edit_template_menu(data, wid)
+        return
+
+    # ========= RENAME TEMPLATE TASK =========
+    if mode == "rename_template_task":
+        template_idx = awaiting["template_idx"]
+        if template_idx < 0 or template_idx >= len(ws["template"]):
+            ws["awaiting"] = None
+            await save_data(data)
+            return
+
+        ws["template"][template_idx] = text
+        ws["awaiting"] = None
+        await save_data(data)
+
+        await safe_delete_message(ws["chat_id"], prompt_msg_id)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        await edit_template_menu(data, wid)
+        return
+
+
+# =========================
+# RUN
+# =========================
+
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
