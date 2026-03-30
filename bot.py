@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import uuid
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -26,7 +27,70 @@ def default_data():
     return {
         "users": {},
         "workspaces": {},
+        "mirror_tokens": {},
     }
+
+
+def normalize_data(data: dict) -> dict:
+    if not isinstance(data, dict):
+        data = {}
+
+    data.setdefault("users", {})
+    data.setdefault("workspaces", {})
+    data.setdefault("mirror_tokens", {})
+
+    for uid, user in list(data["users"].items()):
+        if not isinstance(user, dict):
+            data["users"][uid] = {}
+            user = data["users"][uid]
+        user.setdefault("workspaces", [])
+        user.setdefault("pm_menu_msg_id", None)
+        user.setdefault("help_msg_id", None)
+
+    for wid, ws in list(data["workspaces"].items()):
+        if not isinstance(ws, dict):
+            data["workspaces"][wid] = {}
+            ws = data["workspaces"][wid]
+
+        ws.setdefault("id", wid)
+        ws.setdefault("name", "Workspace")
+        ws.setdefault("chat_title", None)
+        ws.setdefault("topic_title", None)
+        ws.setdefault("chat_id", None)
+        ws.setdefault("thread_id", 0)
+        ws.setdefault("menu_msg_id", None)
+        ws.setdefault("template", [])
+        ws.setdefault("companies", [])
+        ws.setdefault("awaiting", None)
+        ws.setdefault("is_connected", True)
+
+        if not isinstance(ws["template"], list):
+            ws["template"] = []
+
+        if not isinstance(ws["companies"], list):
+            ws["companies"] = []
+
+        for idx, company in enumerate(ws["companies"]):
+            if not isinstance(company, dict):
+                ws["companies"][idx] = {}
+                company = ws["companies"][idx]
+
+            company.setdefault("name", "Компания")
+            company.setdefault("tasks", [])
+            company.setdefault("card_msg_id", None)
+            company.setdefault("mirror", None)
+
+            if not isinstance(company["tasks"], list):
+                company["tasks"] = []
+
+            for t_idx, task in enumerate(company["tasks"]):
+                if not isinstance(task, dict):
+                    company["tasks"][t_idx] = {"text": str(task), "done": False}
+                    task = company["tasks"][t_idx]
+                task.setdefault("text", "")
+                task.setdefault("done", False)
+
+    return data
 
 
 async def load_data():
@@ -34,7 +98,8 @@ async def load_data():
         return default_data()
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            return normalize_data(data)
     except Exception:
         return default_data()
 
@@ -42,7 +107,7 @@ async def load_data():
 async def save_data(data):
     async with lock:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(normalize_data(data), f, ensure_ascii=False, indent=2)
 
 
 def ensure_user(data, user_id: str):
@@ -76,6 +141,7 @@ def is_known_command(text: str) -> bool:
     return head in {
         "/start",
         "/connect",
+        "/mirror",
     }
 
 
@@ -127,14 +193,20 @@ def company_card_text(company: dict) -> str:
 def pm_main_text(user_id: str, data: dict) -> str:
     lines = ["📂 Ваши workspace:"]
     items = data["users"].get(user_id, {}).get("workspaces", [])
-    if not items:
+    active_items = [wid for wid in items if data["workspaces"].get(wid, {}).get("is_connected")]
+
+    if not active_items:
         lines.append("Нет workspace")
     else:
-        for wid in items:
+        for wid in active_items:
             ws = data["workspaces"].get(wid)
             if ws:
                 lines.append(f"• {ws['name']}")
     return "\n".join(lines)
+
+
+def generate_mirror_token() -> str:
+    return uuid.uuid4().hex[:8].upper()
 
 
 # =========================
@@ -145,7 +217,7 @@ def pm_main_kb(user_id: str, data: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     for wid in data["users"].get(user_id, {}).get("workspaces", []):
         ws = data["workspaces"].get(wid)
-        if ws:
+        if ws and ws.get("is_connected"):
             kb.add(InlineKeyboardButton(ws["name"], callback_data=f"pmws:{wid}"))
     kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="pmhelp:root"))
     kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="pmrefresh:root"))
@@ -178,8 +250,15 @@ def company_menu_kb(wid: str, company_idx: int, company: dict):
                 callback_data=f"task:{wid}:{company_idx}:{task_idx}",
             )
         )
+
     kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"tasknew:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"cmpren:{wid}:{company_idx}"))
+
+    if company.get("mirror"):
+        kb.add(InlineKeyboardButton("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}"))
+    else:
+        kb.add(InlineKeyboardButton("📤 Дублировать список", callback_data=f"mirroron:{wid}:{company_idx}"))
+
     kb.add(InlineKeyboardButton("🗑 Удалить компанию", callback_data=f"cmpdel:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"backws:{wid}"))
     return kb
@@ -233,13 +312,18 @@ async def safe_delete_message(chat_id: int, message_id: int | None):
         pass
 
 
-async def safe_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None):
+async def try_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None) -> bool:
     try:
         await bot.edit_message_text(text, chat_id, message_id, reply_markup=reply_markup)
+        return True
     except MessageNotModified:
-        pass
+        return True
     except Exception:
-        pass
+        return False
+
+
+async def safe_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None):
+    await try_edit_text(chat_id, message_id, text, reply_markup=reply_markup)
 
 
 async def send_temp_message(chat_id: int, text: str, thread_id: int = 0, delay: int = 8):
@@ -268,6 +352,13 @@ async def send_week_notice_pm(user_id: str, text: str):
     asyncio.create_task(remover())
 
 
+async def try_delete_user_message(message: types.Message):
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
 async def update_pm_menu(user_id: str, data: dict):
     user = ensure_user(data, user_id)
     text = pm_main_text(user_id, data)
@@ -294,17 +385,56 @@ async def update_pm_menu(user_id: str, data: dict):
         pass
 
 
-async def update_company_card(ws: dict, company_idx: int):
+async def upsert_company_card(ws: dict, company_idx: int):
     if company_idx < 0 or company_idx >= len(ws["companies"]):
         return
+
     company = ws["companies"][company_idx]
-    if not company.get("card_msg_id"):
-        return
-    await safe_edit_text(
+    text = company_card_text(company)
+
+    card_msg_id = company.get("card_msg_id")
+    if card_msg_id:
+        ok = await try_edit_text(ws["chat_id"], card_msg_id, text)
+        if ok:
+            return
+
+    msg = await bot.send_message(
         ws["chat_id"],
-        company["card_msg_id"],
-        company_card_text(company),
+        text,
+        **thread_kwargs(ws["thread_id"]),
     )
+    company["card_msg_id"] = msg.message_id
+
+
+async def upsert_company_mirror(company: dict):
+    mirror = company.get("mirror")
+    if not mirror:
+        return
+
+    text = company_card_text(company)
+    msg_id = mirror.get("message_id")
+    if msg_id:
+        ok = await try_edit_text(mirror["chat_id"], msg_id, text)
+        if ok:
+            return
+
+    msg = await bot.send_message(
+        mirror["chat_id"],
+        text,
+        **thread_kwargs(mirror.get("thread_id") or 0),
+    )
+    mirror["message_id"] = msg.message_id
+
+
+async def ensure_all_company_cards(ws: dict):
+    for idx in range(len(ws["companies"])):
+        await upsert_company_card(ws, idx)
+
+
+async def sync_company_everywhere(ws: dict, company_idx: int):
+    await upsert_company_card(ws, company_idx)
+    company = ws["companies"][company_idx]
+    await upsert_company_mirror(company)
 
 
 async def delete_old_prompt_if_any(ws: dict):
@@ -327,7 +457,7 @@ async def set_prompt(ws: dict, prompt_text: str, awaiting_payload: dict):
 
 async def send_or_replace_ws_home_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
 
     old_menu_id = ws.get("menu_msg_id")
@@ -345,7 +475,7 @@ async def send_or_replace_ws_home_menu(data: dict, wid: str):
 
 async def edit_ws_home_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("menu_msg_id"):
+    if not ws or not ws.get("menu_msg_id") or not ws.get("is_connected"):
         return
     await safe_edit_text(
         ws["chat_id"],
@@ -357,7 +487,7 @@ async def edit_ws_home_menu(data: dict, wid: str):
 
 async def edit_company_menu(data: dict, wid: str, company_idx: int):
     ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("menu_msg_id"):
+    if not ws or not ws.get("menu_msg_id") or not ws.get("is_connected"):
         return
 
     if company_idx < 0 or company_idx >= len(ws["companies"]):
@@ -375,7 +505,7 @@ async def edit_company_menu(data: dict, wid: str, company_idx: int):
 
 async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
     ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("menu_msg_id"):
+    if not ws or not ws.get("menu_msg_id") or not ws.get("is_connected"):
         return
 
     if company_idx < 0 or company_idx >= len(ws["companies"]):
@@ -398,7 +528,7 @@ async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
 
 async def edit_template_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("menu_msg_id"):
+    if not ws or not ws.get("menu_msg_id") or not ws.get("is_connected"):
         return
     await safe_edit_text(
         ws["chat_id"],
@@ -410,7 +540,7 @@ async def edit_template_menu(data: dict, wid: str):
 
 async def edit_template_item_menu(data: dict, wid: str, template_idx: int):
     ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("menu_msg_id"):
+    if not ws or not ws.get("menu_msg_id") or not ws.get("is_connected"):
         return
 
     if template_idx < 0 or template_idx >= len(ws["template"]):
@@ -433,6 +563,15 @@ def company_exists(ws: dict, name: str, exclude_idx: int | None = None) -> bool:
         if company["name"].casefold() == target:
             return True
     return False
+
+
+def clear_pending_mirror_tokens_for_company(data: dict, wid: str, company_idx: int):
+    to_delete = []
+    for token, payload in data.get("mirror_tokens", {}).items():
+        if payload.get("source_wid") == wid and payload.get("company_idx") == company_idx:
+            to_delete.append(token)
+    for token in to_delete:
+        data["mirror_tokens"].pop(token, None)
 
 
 # =========================
@@ -509,7 +648,7 @@ async def pm_open_workspace(cb: types.CallbackQuery):
     wid = cb.data.split(":", 1)[1]
 
     ws = data["workspaces"].get(wid)
-    if not ws or wid not in data["users"].get(uid, {}).get("workspaces", []):
+    if not ws or not ws.get("is_connected") or wid not in data["users"].get(uid, {}).get("workspaces", []):
         await safe_edit_text(
             int(uid),
             cb.message.message_id,
@@ -556,16 +695,15 @@ async def pm_delete_workspace(cb: types.CallbackQuery):
     if awaiting.get("prompt_msg_id"):
         await safe_delete_message(chat_id, awaiting["prompt_msg_id"])
 
-    for company in ws.get("companies", []):
-        await safe_delete_message(chat_id, company.get("card_msg_id"))
+    ws["menu_msg_id"] = None
+    ws["awaiting"] = None
+    ws["is_connected"] = False
 
     affected_users = []
     for uid, user in data["users"].items():
         if wid in user.get("workspaces", []):
             user["workspaces"].remove(wid)
             affected_users.append(uid)
-
-    data["workspaces"].pop(wid, None)
 
     ensure_user(data, current_uid)
     data["users"][current_uid]["pm_menu_msg_id"] = cb.message.message_id
@@ -613,14 +751,14 @@ async def cmd_connect(message: types.Message):
     chat_title = message.chat.title or "Workspace"
     ws_name = workspace_full_name(chat_title, topic_title, thread_id)
 
+    old_companies = existing_ws["companies"] if existing_ws else []
+    old_template = existing_ws["template"] if existing_ws else ["Создать договор", "Выставить счёт"]
+
     if existing_ws:
         await safe_delete_message(existing_ws["chat_id"], existing_ws.get("menu_msg_id"))
         old_awaiting = existing_ws.get("awaiting") or {}
         if old_awaiting.get("prompt_msg_id"):
             await safe_delete_message(existing_ws["chat_id"], old_awaiting["prompt_msg_id"])
-
-    old_companies = existing_ws["companies"] if existing_ws else []
-    old_template = existing_ws["template"] if existing_ws else ["Создать договор", "Выставить счёт"]
 
     data["workspaces"][wid] = {
         "id": wid,
@@ -633,7 +771,9 @@ async def cmd_connect(message: types.Message):
         "template": old_template,
         "companies": old_companies,
         "awaiting": None,
+        "is_connected": True,
     }
+    ws = data["workspaces"][wid]
 
     if wid not in data["users"][uid]["workspaces"]:
         data["users"][uid]["workspaces"].append(wid)
@@ -643,12 +783,17 @@ async def cmd_connect(message: types.Message):
         await safe_delete_message(int(uid), help_msg_id)
         data["users"][uid]["help_msg_id"] = None
 
+    await ensure_all_company_cards(ws)
+    for company in ws["companies"]:
+        if company.get("mirror"):
+            await upsert_company_mirror(company)
+
     await send_or_replace_ws_home_menu(data, wid)
     await update_pm_menu(uid, data)
     await save_data(data)
 
     try:
-        await send_week_notice_pm(uid, f"Workspace «{data['workspaces'][wid]['name']}» подключён")
+        await send_week_notice_pm(uid, f"Workspace «{ws['name']}» подключён")
     except Exception:
         pass
 
@@ -684,6 +829,128 @@ async def track_forum_topic_updates(message: types.Message):
 
 
 # =========================
+# MIRROR BINDING
+# =========================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("mirroron:"))
+async def mirror_on(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        return
+
+    company = ws["companies"][company_idx]
+    if company.get("mirror"):
+        await send_temp_message(ws["chat_id"], "Этот список уже дублируется.", ws["thread_id"], delay=8)
+        return
+
+    clear_pending_mirror_tokens_for_company(data, wid, company_idx)
+    token = generate_mirror_token()
+    data["mirror_tokens"][token] = {
+        "source_wid": wid,
+        "company_idx": company_idx,
+        "created_by": cb.from_user.id,
+    }
+    await save_data(data)
+
+    await send_temp_message(
+        ws["chat_id"],
+        "📤 Чтобы привязать дубликат:\n"
+        "1) Перейдите в целевой чат/тред\n"
+        f"2) Отправьте команду:\n/mirror {token}",
+        ws["thread_id"],
+        delay=60,
+    )
+    await edit_company_menu(data, wid, company_idx)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("mirroroff:"))
+async def mirror_off(cb: types.CallbackQuery):
+    await cb.answer()
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        return
+
+    company = ws["companies"][company_idx]
+    company["mirror"] = None
+    clear_pending_mirror_tokens_for_company(data, wid, company_idx)
+    await save_data(data)
+
+    await edit_company_menu(data, wid, company_idx)
+    await send_temp_message(ws["chat_id"], "🔌 Список отвязан", ws["thread_id"], delay=8)
+
+
+@dp.message_handler(commands=["mirror"])
+async def cmd_mirror(message: types.Message):
+    if message.chat.type == "private":
+        return
+
+    code = (message.get_args() or "").strip().upper()
+    if not code:
+        await send_temp_message(message.chat.id, "Укажите код: /mirror CODE", message.message_thread_id or 0, delay=10)
+        return
+
+    data = await load_data()
+    payload = data.get("mirror_tokens", {}).get(code)
+    if not payload:
+        await send_temp_message(message.chat.id, "Код не найден или уже использован.", message.message_thread_id or 0, delay=10)
+        return
+
+    source_wid = payload["source_wid"]
+    company_idx = payload["company_idx"]
+
+    ws = data["workspaces"].get(source_wid)
+    if not ws:
+        data["mirror_tokens"].pop(code, None)
+        await save_data(data)
+        await send_temp_message(message.chat.id, "Исходный workspace не найден.", message.message_thread_id or 0, delay=10)
+        return
+
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        data["mirror_tokens"].pop(code, None)
+        await save_data(data)
+        await send_temp_message(message.chat.id, "Компания не найдена.", message.message_thread_id or 0, delay=10)
+        return
+
+    company = ws["companies"][company_idx]
+
+    # новая привязка заменяет старую
+    company["mirror"] = {
+        "chat_id": message.chat.id,
+        "thread_id": message.message_thread_id or 0,
+        "message_id": None,
+    }
+
+    await upsert_company_mirror(company)
+    data["mirror_tokens"].pop(code, None)
+    await save_data(data)
+
+    await try_delete_user_message(message)
+
+    await send_temp_message(
+        ws["chat_id"],
+        f"📤 Список «{company['name']}» дублируется в другой тред/чат",
+        ws["thread_id"],
+        delay=10,
+    )
+
+    if ws.get("is_connected"):
+        await edit_company_menu(data, source_wid, company_idx)
+
+
+# =========================
 # NAVIGATION
 # =========================
 
@@ -693,7 +960,7 @@ async def back_to_ws(cb: types.CallbackQuery):
     wid = cb.data.split(":", 1)[1]
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
     await edit_ws_home_menu(data, wid)
 
@@ -704,7 +971,7 @@ async def open_company(cb: types.CallbackQuery):
     _, wid, company_idx = cb.data.split(":")
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
     await edit_company_menu(data, wid, int(company_idx))
 
@@ -715,7 +982,7 @@ async def open_task_menu(cb: types.CallbackQuery):
     _, wid, company_idx, task_idx = cb.data.split(":")
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
     await edit_task_menu(data, wid, int(company_idx), int(task_idx))
 
@@ -726,7 +993,7 @@ async def open_template_item(cb: types.CallbackQuery):
     _, wid, template_idx = cb.data.split(":")
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
     await edit_template_item_menu(data, wid, int(template_idx))
 
@@ -737,7 +1004,7 @@ async def open_template_menu(cb: types.CallbackQuery):
     wid = cb.data.split(":", 1)[1]
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
     await edit_template_menu(data, wid)
 
@@ -764,6 +1031,9 @@ async def cancel_input(cb: types.CallbackQuery):
     ws["awaiting"] = None
     await save_data(data)
 
+    if not ws.get("is_connected"):
+        return
+
     if back_to["view"] == "company":
         await edit_company_menu(data, wid, back_to["company_idx"])
     elif back_to["view"] == "template":
@@ -783,7 +1053,7 @@ async def create_company_prompt(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
 
     await set_prompt(
@@ -805,7 +1075,7 @@ async def rename_company_prompt(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
 
     await set_prompt(
@@ -828,13 +1098,19 @@ async def delete_company(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
     if company_idx < 0 or company_idx >= len(ws["companies"]):
         return
 
     company = ws["companies"].pop(company_idx)
     await safe_delete_message(ws["chat_id"], company.get("card_msg_id"))
+
+    mirror = company.get("mirror") or {}
+    if mirror.get("message_id"):
+        await safe_delete_message(mirror["chat_id"], mirror["message_id"])
+
+    clear_pending_mirror_tokens_for_company(data, wid, company_idx)
     await send_or_replace_ws_home_menu(data, wid)
     await save_data(data)
 
@@ -851,7 +1127,7 @@ async def add_task_prompt(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
 
     await set_prompt(
@@ -875,7 +1151,7 @@ async def rename_task_prompt(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
 
     await set_prompt(
@@ -900,7 +1176,7 @@ async def delete_task(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
     if company_idx < 0 or company_idx >= len(ws["companies"]):
         return
@@ -912,7 +1188,7 @@ async def delete_task(cb: types.CallbackQuery):
     company["tasks"].pop(task_idx)
     await save_data(data)
 
-    await update_company_card(ws, company_idx)
+    await sync_company_everywhere(ws, company_idx)
     await edit_company_menu(data, wid, company_idx)
 
 
@@ -925,7 +1201,7 @@ async def toggle_task_done(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
     if company_idx < 0 or company_idx >= len(ws["companies"]):
         return
@@ -937,7 +1213,7 @@ async def toggle_task_done(cb: types.CallbackQuery):
     company["tasks"][task_idx]["done"] = not company["tasks"][task_idx]["done"]
     await save_data(data)
 
-    await update_company_card(ws, company_idx)
+    await sync_company_everywhere(ws, company_idx)
     await edit_task_menu(data, wid, company_idx, task_idx)
 
 
@@ -952,7 +1228,7 @@ async def add_template_task_prompt(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
 
     await set_prompt(
@@ -974,7 +1250,7 @@ async def rename_template_task_prompt(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
 
     await set_prompt(
@@ -997,7 +1273,7 @@ async def delete_template_task(cb: types.CallbackQuery):
 
     data = await load_data()
     ws = data["workspaces"].get(wid)
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
     if template_idx < 0 or template_idx >= len(ws["template"]):
         return
@@ -1023,7 +1299,7 @@ async def handle_group_text(message: types.Message):
     wid = make_ws_id(message.chat.id, message.message_thread_id or 0)
     ws = data["workspaces"].get(wid)
 
-    if not ws:
+    if not ws or not ws.get("is_connected"):
         return
 
     awaiting = ws.get("awaiting") or {}
@@ -1046,23 +1322,16 @@ async def handle_group_text(message: types.Message):
             "name": text,
             "tasks": [{"text": t, "done": False} for t in ws["template"]],
             "card_msg_id": None,
+            "mirror": None,
         }
 
-        card_msg = await bot.send_message(
-            ws["chat_id"],
-            company_card_text(company),
-            **thread_kwargs(ws["thread_id"]),
-        )
-        company["card_msg_id"] = card_msg.message_id
         ws["companies"].append(company)
         ws["awaiting"] = None
-
         await save_data(data)
+
+        await sync_company_everywhere(ws, len(ws["companies"]) - 1)
         await safe_delete_message(ws["chat_id"], prompt_msg_id)
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await try_delete_user_message(message)
 
         await send_or_replace_ws_home_menu(data, wid)
         await save_data(data)
@@ -1084,12 +1353,9 @@ async def handle_group_text(message: types.Message):
         await save_data(data)
 
         await safe_delete_message(ws["chat_id"], prompt_msg_id)
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await try_delete_user_message(message)
 
-        await update_company_card(ws, company_idx)
+        await sync_company_everywhere(ws, company_idx)
         await edit_company_menu(data, wid, company_idx)
         await send_temp_message(ws["chat_id"], "✅ Новое название компании сохранено", ws["thread_id"], delay=6)
         return
@@ -1106,12 +1372,9 @@ async def handle_group_text(message: types.Message):
         await save_data(data)
 
         await safe_delete_message(ws["chat_id"], prompt_msg_id)
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await try_delete_user_message(message)
 
-        await update_company_card(ws, company_idx)
+        await sync_company_everywhere(ws, company_idx)
         await edit_company_menu(data, wid, company_idx)
         return
 
@@ -1135,12 +1398,9 @@ async def handle_group_text(message: types.Message):
         await save_data(data)
 
         await safe_delete_message(ws["chat_id"], prompt_msg_id)
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await try_delete_user_message(message)
 
-        await update_company_card(ws, company_idx)
+        await sync_company_everywhere(ws, company_idx)
         await edit_company_menu(data, wid, company_idx)
         await send_temp_message(ws["chat_id"], "✅ Название задачи обновлено", ws["thread_id"], delay=6)
         return
@@ -1151,10 +1411,7 @@ async def handle_group_text(message: types.Message):
         await save_data(data)
 
         await safe_delete_message(ws["chat_id"], prompt_msg_id)
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await try_delete_user_message(message)
 
         await edit_template_menu(data, wid)
         return
@@ -1171,10 +1428,7 @@ async def handle_group_text(message: types.Message):
         await save_data(data)
 
         await safe_delete_message(ws["chat_id"], prompt_msg_id)
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        await try_delete_user_message(message)
 
         await edit_template_menu(data, wid)
         return
