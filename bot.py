@@ -499,9 +499,9 @@ async def set_prompt(ws: dict, prompt_text: str, awaiting_payload: dict):
     ws["awaiting"] = awaiting_payload
 
 
-async def upsert_ws_menu(ws: dict, text: str, reply_markup) -> bool:
+async def upsert_ws_menu(ws: dict, text: str, reply_markup):
     if not ws or not ws.get("is_connected"):
-        return False
+        return
 
     menu_msg_id = ws.get("menu_msg_id")
     if menu_msg_id:
@@ -512,7 +512,7 @@ async def upsert_ws_menu(ws: dict, text: str, reply_markup) -> bool:
             reply_markup=reply_markup,
         )
         if ok:
-            return False
+            return
 
     msg = await bot.send_message(
         ws["chat_id"],
@@ -521,7 +521,6 @@ async def upsert_ws_menu(ws: dict, text: str, reply_markup) -> bool:
         **thread_kwargs(ws["thread_id"]),
     )
     ws["menu_msg_id"] = msg.message_id
-    return True
 
 
 async def send_or_replace_ws_home_menu(data: dict, wid: str):
@@ -529,13 +528,11 @@ async def send_or_replace_ws_home_menu(data: dict, wid: str):
     if not ws or not ws.get("is_connected"):
         return
 
-    created = await upsert_ws_menu(
+    await upsert_ws_menu(
         ws,
         "📂 Меню workspace",
         ws_home_kb(wid, ws),
     )
-    if created:
-        await save_data(data)
 
 
 async def edit_ws_home_menu(data: dict, wid: str):
@@ -543,13 +540,11 @@ async def edit_ws_home_menu(data: dict, wid: str):
     if not ws or not ws.get("is_connected"):
         return
 
-    created = await upsert_ws_menu(
+    await upsert_ws_menu(
         ws,
         "📂 Меню workspace",
         ws_home_kb(wid, ws),
     )
-    if created:
-        await save_data(data)
 
 
 async def edit_company_menu(data: dict, wid: str, company_idx: int):
@@ -562,13 +557,11 @@ async def edit_company_menu(data: dict, wid: str, company_idx: int):
         return
 
     company = ws["companies"][company_idx]
-    created = await upsert_ws_menu(
+    await upsert_ws_menu(
         ws,
         f"📁 {company['name']}",
         company_menu_kb(wid, company_idx, company),
     )
-    if created:
-        await save_data(data)
 
 
 async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
@@ -586,13 +579,11 @@ async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
         return
 
     task = company["tasks"][task_idx]
-    created = await upsert_ws_menu(
+    await upsert_ws_menu(
         ws,
         f"📌 {task['text']}",
         task_menu_kb(wid, company_idx, task_idx, task),
     )
-    if created:
-        await save_data(data)
 
 
 async def edit_template_menu(data: dict, wid: str):
@@ -600,13 +591,11 @@ async def edit_template_menu(data: dict, wid: str):
     if not ws or not ws.get("is_connected"):
         return
 
-    created = await upsert_ws_menu(
+    await upsert_ws_menu(
         ws,
         "⚙️ Шаблон задач",
         template_menu_kb(wid, ws),
     )
-    if created:
-        await save_data(data)
 
 
 async def edit_template_item_menu(data: dict, wid: str, template_idx: int):
@@ -618,13 +607,11 @@ async def edit_template_item_menu(data: dict, wid: str, template_idx: int):
         await edit_template_menu(data, wid)
         return
 
-    created = await upsert_ws_menu(
+    await upsert_ws_menu(
         ws,
         f"⚙️ {ws['template'][template_idx]}",
         template_item_kb(wid, template_idx),
     )
-    if created:
-        await save_data(data)
 
 
 def company_exists(ws: dict, name: str, exclude_idx: int | None = None) -> bool:
@@ -813,13 +800,17 @@ async def cmd_connect(message: types.Message):
     if message.chat.type == "private":
         return
 
+    uid = str(message.from_user.id)
+    thread_id = message.message_thread_id or 0
+    wid = make_ws_id(message.chat.id, thread_id)
+
+    old_menu_msg_id = None
+    old_prompt_msg_id = None
+    help_msg_id = None
+
     async with lock:
         data = await load_data_unlocked()
-        uid = str(message.from_user.id)
         ensure_user(data, uid)
-
-        thread_id = message.message_thread_id or 0
-        wid = make_ws_id(message.chat.id, thread_id)
 
         existing_ws = data["workspaces"].get(wid)
 
@@ -834,10 +825,9 @@ async def cmd_connect(message: types.Message):
         old_template = existing_ws["template"] if existing_ws else ["Создать договор", "Выставить счёт"]
 
         if existing_ws:
-            await safe_delete_message(existing_ws["chat_id"], existing_ws.get("menu_msg_id"))
+            old_menu_msg_id = existing_ws.get("menu_msg_id")
             old_awaiting = existing_ws.get("awaiting") or {}
-            if old_awaiting.get("prompt_msg_id"):
-                await safe_delete_message(existing_ws["chat_id"], old_awaiting["prompt_msg_id"])
+            old_prompt_msg_id = old_awaiting.get("prompt_msg_id")
 
         data["workspaces"][wid] = {
             "id": wid,
@@ -852,24 +842,38 @@ async def cmd_connect(message: types.Message):
             "awaiting": None,
             "is_connected": True,
         }
-        ws = data["workspaces"][wid]
 
         if wid not in data["users"][uid]["workspaces"]:
             data["users"][uid]["workspaces"].append(wid)
 
         help_msg_id = data["users"][uid].get("help_msg_id")
         if help_msg_id:
-            await safe_delete_message(int(uid), help_msg_id)
             data["users"][uid]["help_msg_id"] = None
 
+        await save_data_unlocked(data)
+
+    if old_menu_msg_id:
+        await safe_delete_message(message.chat.id, old_menu_msg_id)
+    if old_prompt_msg_id:
+        await safe_delete_message(message.chat.id, old_prompt_msg_id)
+    if help_msg_id:
+        await safe_delete_message(int(uid), help_msg_id)
+
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+
+    try:
         await ensure_all_company_cards(ws)
         for company in ws["companies"]:
             if company.get("mirror"):
                 await upsert_company_mirror(company)
-
         await send_or_replace_ws_home_menu(data, wid)
         await update_pm_menu(uid, data)
-        await save_data_unlocked(data)
+        await save_data(data)
+    except Exception:
+        pass
 
     try:
         await send_week_notice_pm(uid, f"Workspace «{ws_name}» подключён")
@@ -1547,3 +1551,4 @@ async def handle_group_text(message: types.Message):
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
+
