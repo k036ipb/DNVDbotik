@@ -4,6 +4,7 @@ import math
 import asyncio
 import time
 import uuid
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ TIMEZONE = ZoneInfo("Europe/Riga")
 FILE_LOCK = asyncio.Lock()
 MENU_LOCKS: dict[str, asyncio.Lock] = {}
 RUNTIME_MENU_IDS: dict[str, int] = {}
+RUNTIME_MENU_STATE: dict[str, dict] = {}
 RECENT_CALLBACKS: dict[tuple[int, int, str], float] = {}
 CALLBACK_DEBOUNCE_SECONDS = 0.9
 
@@ -184,6 +186,89 @@ def split_legacy_name(name: str | None, default_emoji: str = "📁") -> tuple[st
     return default_emoji, raw
 
 
+DATE_INPUT_RE = re.compile(r"^\s*(\d{1,2})\D+(\d{1,2})\D+(\d{2,4})(?:\D+(\d{1,2})(?:\D+(\d{1,2}))?)?\s*$")
+
+
+def normalize_two_digit_year(year: int) -> int:
+    return 2000 + year if year < 100 else year
+
+
+def parse_relative_duration_parts(text: str) -> tuple[int | None, int | None, int | None]:
+    raw = clean_text(text).lower()
+    if not raw:
+        return None, None, None
+
+    if raw.isdigit():
+        return int(raw), 0, 0
+
+    work = raw.replace(",", " ").replace(";", " ")
+    work = re.sub(r"(?<=\d)(?=[^\d\s])", " ", work)
+    work = re.sub(r"(?<=[^\d\s])(?=\d)", " ", work)
+    work = re.sub(r"\s+", " ", work).strip()
+    tokens = [t.strip(" .:-") for t in work.split() if t.strip(" .:-") and t.strip(" .:-") != "и"]
+    if len(tokens) < 2 or len(tokens) % 2 != 0:
+        return None, None, None
+
+    days = hours = minutes = 0
+
+    def kind(token: str) -> str | None:
+        t = token.lower().strip(" .:-")
+        if not t:
+            return None
+        if t.startswith("д"):
+            return "d"
+        if t.startswith("час") or t.startswith("ч"):
+            return "h"
+        if t.startswith("мин") or t == "м":
+            return "m"
+        return None
+
+    for i in range(0, len(tokens), 2):
+        if not tokens[i].isdigit():
+            return None, None, None
+        value = int(tokens[i])
+        unit = kind(tokens[i + 1])
+        if value < 0 or unit is None:
+            return None, None, None
+        if unit == "d":
+            days += value
+        elif unit == "h":
+            hours += value
+        elif unit == "m":
+            minutes += value
+
+    return days, hours, minutes
+
+
+def format_duration_compact(seconds: int) -> str:
+    if seconds <= 0:
+        return "срок вышел"
+    minutes_total = math.ceil(seconds / 60)
+    days, rem_minutes = divmod(minutes_total, 24 * 60)
+    hours, minutes = divmod(rem_minutes, 60)
+    parts = []
+    if days:
+        parts.append(f"{days} д.")
+    if days or hours:
+        parts.append(f"{hours} ч.")
+    parts.append(f"{minutes} м.")
+    return "; ".join(parts)
+
+
+def format_deadline_absolute(ts: int) -> str:
+    return datetime.fromtimestamp(ts, TIMEZONE).strftime("до %d.%m.%Y г. %H:%M")
+
+
+def deadline_suffix_for_task(company: dict, task: dict) -> str:
+    due_at = task.get("deadline_due_at")
+    if not due_at or task.get("done"):
+        return ""
+    view = company.get("deadline_view") or "relative"
+    if view == "date":
+        return f" ({format_deadline_absolute(due_at)})"
+    return f" ({format_duration_compact(due_at - now_ts())})"
+
+
 
 def ensure_task(task, is_template: bool = False):
     if not isinstance(task, dict):
@@ -234,6 +319,7 @@ def ensure_company(company):
     company.setdefault("mirror_history", [])
     company.setdefault("tasks", [])
     company.setdefault("categories", [])
+    company.setdefault("deadline_view", "relative")
 
     if not isinstance(company["tasks"], list):
         company["tasks"] = []
@@ -472,14 +558,6 @@ def display_category_name(category: dict) -> str:
 
 
 
-def display_task_days_left(task: dict) -> str:
-    due_at = task.get("deadline_due_at")
-    if not due_at:
-        return ""
-    delta_days = math.ceil((due_at - now_ts()) / 86400)
-    return f" ({delta_days} д.)"
-
-
 
 def task_deadline_icon(task: dict) -> str:
     if task.get("done"):
@@ -531,7 +609,7 @@ def company_card_text(company: dict) -> str:
     if uncategorized:
         for task in sort_company_tasks(uncategorized):
             icon = task_deadline_icon(task)
-            suffix = display_task_days_left(task) if not task.get("done") and task.get("deadline_due_at") else ""
+            suffix = deadline_suffix_for_task(company, task)
             lines.append(f"{icon} {task['text']}{suffix}")
 
     for category in company.get("categories", []):
@@ -540,7 +618,7 @@ def company_card_text(company: dict) -> str:
         if cat_tasks:
             for task in sort_company_tasks(cat_tasks):
                 icon = task_deadline_icon(task)
-                suffix = display_task_days_left(task) if not task.get("done") and task.get("deadline_due_at") else ""
+                suffix = deadline_suffix_for_task(company, task)
                 lines.append(f"        {icon} {task['text']}{suffix}")
 
     if len(lines) == 1:
@@ -844,6 +922,9 @@ def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"cmpren:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
+    mode = company.get("deadline_view") or "relative"
+    label = "📅 Формат дедлайнов: дата" if mode == "date" else "⏳ Формат дедлайнов: дни"
+    kb.add(InlineKeyboardButton(label, callback_data=f"cmpddlfmt:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("📤 Дублирование списка", callback_data=f"mirrormenu:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("🗑 Удалить компанию", callback_data=f"cmpdel:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cmp:{wid}:{company_idx}"))
@@ -1016,6 +1097,10 @@ def prompt_kb(wid: str):
 # VIEW HELPERS
 # =========================
 
+def set_runtime_menu_state(wid: str, state: dict):
+    RUNTIME_MENU_STATE[wid] = state
+
+
 async def persist_ws_menu_id(wid: str, message_id: int):
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -1166,6 +1251,7 @@ async def edit_ws_home_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
+    set_runtime_menu_state(wid, {"view": "ws"})
     await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
 
 
@@ -1173,6 +1259,7 @@ async def edit_company_create_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
+    set_runtime_menu_state(wid, {"view": "company_create"})
     await upsert_ws_menu(data, wid, "➕ Создать компанию", company_create_mode_kb(wid))
 
 
@@ -1184,6 +1271,7 @@ async def edit_company_menu(data: dict, wid: str, company_idx: int):
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
+    set_runtime_menu_state(wid, {"view": "company", "company_idx": company_idx})
     await upsert_ws_menu(data, wid, display_company_name(company), company_menu_kb(wid, company_idx, company))
 
 
@@ -1195,6 +1283,7 @@ async def edit_company_settings_menu(data: dict, wid: str, company_idx: int):
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
+    set_runtime_menu_state(wid, {"view": "company_settings", "company_idx": company_idx})
     await upsert_ws_menu(data, wid, f"⚙️ {display_company_name(company)}", company_settings_kb(wid, company_idx, company))
 
 
@@ -1237,6 +1326,7 @@ async def edit_category_menu(data: dict, wid: str, company_idx: int, category_id
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
+    set_runtime_menu_state(wid, {"view": "category", "company_idx": company_idx, "category_idx": category_idx})
     await upsert_ws_menu(data, wid, display_category_name(category), category_menu_kb(wid, company_idx, category_idx, company, category))
 
 
@@ -1252,6 +1342,7 @@ async def edit_category_settings_menu(data: dict, wid: str, company_idx: int, ca
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
+    set_runtime_menu_state(wid, {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx})
     await upsert_ws_menu(data, wid, f"⚙️ {display_category_name(category)}", category_settings_kb(wid, company_idx, category_idx))
 
 
@@ -1272,6 +1363,7 @@ async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
         cat_idx = find_category_index(company.get("categories", []), task.get("category_id"))
         if cat_idx is not None:
             category = company["categories"][cat_idx]
+    set_runtime_menu_state(wid, {"view": "task", "company_idx": company_idx, "task_idx": task_idx})
     await upsert_ws_menu(data, wid, task_menu_title(company, task, category), task_menu_kb(wid, company_idx, task_idx, task, company))
 
 
@@ -1289,6 +1381,7 @@ async def edit_task_move_menu(data: dict, wid: str, company_idx: int, task_idx: 
         await edit_company_menu(data, wid, company_idx)
         return
     task = company["tasks"][task_idx]
+    set_runtime_menu_state(wid, {"view": "task_move", "company_idx": company_idx, "task_idx": task_idx})
     await upsert_ws_menu(data, wid, f"📥 {task['text']}", task_move_kb(wid, company_idx, task_idx, company, task))
 
 
@@ -1296,6 +1389,7 @@ async def edit_template_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
+    set_runtime_menu_state(wid, {"view": "template"})
     await upsert_ws_menu(data, wid, "⚙️ Шаблон задач", template_menu_kb(wid, ws))
 
 
@@ -1307,6 +1401,7 @@ async def edit_template_category_menu(data: dict, wid: str, category_idx: int):
         await edit_template_menu(data, wid)
         return
     category = ws["template_categories"][category_idx]
+    set_runtime_menu_state(wid, {"view": "template_category", "category_idx": category_idx})
     await upsert_ws_menu(data, wid, display_category_name(category), template_category_menu_kb(wid, category_idx, ws, category))
 
 
@@ -1318,6 +1413,7 @@ async def edit_template_category_settings_menu(data: dict, wid: str, category_id
         await edit_template_menu(data, wid)
         return
     category = ws["template_categories"][category_idx]
+    set_runtime_menu_state(wid, {"view": "template_category_settings", "category_idx": category_idx})
     await upsert_ws_menu(data, wid, f"⚙️ {display_category_name(category)}", template_category_settings_kb(wid, category_idx))
 
 
@@ -1329,6 +1425,7 @@ async def edit_template_task_menu(data: dict, wid: str, task_idx: int):
         await edit_template_menu(data, wid)
         return
     task = ws["template_tasks"][task_idx]
+    set_runtime_menu_state(wid, {"view": "template_task", "task_idx": task_idx})
     await upsert_ws_menu(data, wid, template_task_label(task), template_task_menu_kb(wid, task_idx, task, ws))
 
 
@@ -1340,6 +1437,7 @@ async def edit_template_task_move_menu(data: dict, wid: str, task_idx: int):
         await edit_template_menu(data, wid)
         return
     task = ws["template_tasks"][task_idx]
+    set_runtime_menu_state(wid, {"view": "template_task_move", "task_idx": task_idx})
     await upsert_ws_menu(data, wid, f"📥 {task['text']}", template_task_move_kb(wid, task_idx, ws, task))
 
 
@@ -1841,6 +1939,26 @@ async def open_company_settings(cb: types.CallbackQuery):
     await edit_company_settings_menu(data, wid, int(company_idx))
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith("cmpddlfmt:"))
+async def toggle_company_deadline_view(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        company["deadline_view"] = "date" if (company.get("deadline_view") or "relative") == "relative" else "relative"
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    await edit_company_settings_menu(fresh, wid, company_idx)
+
+
 @dp.callback_query_handler(lambda c: c.data.startswith("cat:"))
 async def open_category(cb: types.CallbackQuery):
     await cb.answer()
@@ -1934,6 +2052,37 @@ async def open_template_task_move(cb: types.CallbackQuery):
 # =========================
 # CANCEL
 # =========================
+
+async def refresh_runtime_menu_state(data: dict, wid: str):
+    state = RUNTIME_MENU_STATE.get(wid) or {"view": "ws"}
+    view = state.get("view")
+    if view == "company":
+        await edit_company_menu(data, wid, state["company_idx"])
+    elif view == "company_settings":
+        await edit_company_settings_menu(data, wid, state["company_idx"])
+    elif view == "category":
+        await edit_category_menu(data, wid, state["company_idx"], state["category_idx"])
+    elif view == "category_settings":
+        await edit_category_settings_menu(data, wid, state["company_idx"], state["category_idx"])
+    elif view == "task":
+        await edit_task_menu(data, wid, state["company_idx"], state["task_idx"])
+    elif view == "task_move":
+        await edit_task_move_menu(data, wid, state["company_idx"], state["task_idx"])
+    elif view == "template":
+        await edit_template_menu(data, wid)
+    elif view == "template_category":
+        await edit_template_category_menu(data, wid, state["category_idx"])
+    elif view == "template_category_settings":
+        await edit_template_category_settings_menu(data, wid, state["category_idx"])
+    elif view == "template_task":
+        await edit_template_task_menu(data, wid, state["task_idx"])
+    elif view == "template_task_move":
+        await edit_template_task_move_menu(data, wid, state["task_idx"])
+    elif view == "company_create":
+        await edit_company_create_menu(data, wid)
+    else:
+        await edit_ws_home_menu(data, wid)
+
 
 async def show_back_view(data: dict, wid: str, back_to: dict):
     view = back_to.get("view", "ws")
@@ -2187,7 +2336,7 @@ async def task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰ Пришлите дату в формате ДД.ММ.ГГГГ или одно число дней, например 3.", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
+        await set_prompt(ws, "⏰ Пришлите дату/время или срок: 06.04.26 16:00, 3 дня, 7ч20м.", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
         await save_data_unlocked(data)
 
 
@@ -2463,7 +2612,7 @@ async def template_task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰ Пришлите число дней, например 3.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
+        await set_prompt(ws, "⏰ Пришлите срок в днях: 3, 3 д. или 3 дня.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
         await save_data_unlocked(data)
 
 
@@ -2821,8 +2970,46 @@ async def handle_group_text(message: types.Message):
 
 
 # =========================
+# DEADLINE REFRESH
+# =========================
+
+def seconds_until_next_deadline_refresh() -> float:
+    now = now_dt()
+    current = now.replace(second=0, microsecond=0)
+    minute = ((current.minute // 10) + 1) * 10
+    if minute >= 60:
+        target = (current + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    else:
+        target = current.replace(minute=minute, second=0, microsecond=0)
+    return max((target - now).total_seconds(), 1.0)
+
+
+async def deadline_refresh_loop():
+    while True:
+        await asyncio.sleep(seconds_until_next_deadline_refresh())
+        try:
+            data = await load_data()
+            changed = False
+            for wid, ws in data.get("workspaces", {}).items():
+                if not ws.get("is_connected"):
+                    continue
+                for company_idx in range(len(ws.get("companies", []))):
+                    await sync_company_everywhere(ws, company_idx)
+                    changed = True
+                await refresh_runtime_menu_state(data, wid)
+            if changed:
+                await save_data(data)
+        except Exception:
+            pass
+
+
+async def on_startup(_):
+    asyncio.create_task(deadline_refresh_loop())
+
+
+# =========================
 # RUN
 # =========================
 
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
