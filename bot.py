@@ -499,22 +499,18 @@ def company_menu_kb(wid: str, company_idx: int, company: dict):
     for task_idx, task in enumerate(company["tasks"]):
         if task.get("category_id") is None:
             kb.add(InlineKeyboardButton(task_button_text(task), callback_data=f"task:{wid}:{company_idx}:{task_idx}"))
-    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"tasknew:{wid}:{company_idx}:root"))
     for cat_idx, category in enumerate(company.get("categories", [])):
         kb.add(InlineKeyboardButton(category_display_name(category), callback_data=f"cat:{wid}:{company_idx}:{cat_idx}"))
+    kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"tasknew:{wid}:{company_idx}:root"))
+    kb.add(InlineKeyboardButton("➕ Добавить категорию", callback_data=f"catnew:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("⚙️ Настройки компании", callback_data=f"cmpset:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"backws:{wid}"))
     return kb
-
-
 
 def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"cmpren:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("➕ Добавить категорию", callback_data=f"catnew:{wid}:{company_idx}"))
-    for cat_idx, category in enumerate(company.get("categories", [])):
-        kb.add(InlineKeyboardButton(category_display_name(category), callback_data=f"catset:{wid}:{company_idx}:{cat_idx}"))
     if company.get("mirror"):
         kb.add(InlineKeyboardButton("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}"))
     else:
@@ -523,8 +519,6 @@ def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cmp:{wid}:{company_idx}"))
     return kb
 
-
-
 def category_menu_kb(wid: str, company_idx: int, category_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     category_id = company["categories"][category_idx]["id"]
@@ -532,10 +526,9 @@ def category_menu_kb(wid: str, company_idx: int, category_idx: int, company: dic
         if task.get("category_id") == category_id:
             kb.add(InlineKeyboardButton(task_button_text(task), callback_data=f"task:{wid}:{company_idx}:{task_idx}"))
     kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"tasknew:{wid}:{company_idx}:{category_idx}"))
+    kb.add(InlineKeyboardButton("⚙️ Настройки категории", callback_data=f"catset:{wid}:{company_idx}:{category_idx}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cmp:{wid}:{company_idx}"))
     return kb
-
-
 
 def category_settings_index_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
@@ -567,23 +560,25 @@ def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company:
     kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
     if company.get("categories"):
         if task.get("category_id"):
-            kb.add(InlineKeyboardButton("📤 Высунуть из категории", callback_data=f"taskuncat:{wid}:{company_idx}:{task_idx}"))
+            kb.add(InlineKeyboardButton("📥 Перевсунуть", callback_data=f"taskmovepick:{wid}:{company_idx}:{task_idx}"))
         else:
             kb.add(InlineKeyboardButton("📥 Всунуть в категорию", callback_data=f"taskmovepick:{wid}:{company_idx}:{task_idx}"))
     kb.add(InlineKeyboardButton("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cmp:{wid}:{company_idx}"))
+    back_to = f"cat:{wid}:{company_idx}:{find_category_index(company.get('categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(company.get("categories", []), task.get("category_id")) is not None else f"cmp:{wid}:{company_idx}"
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=back_to))
     return kb
-
-
 
 def task_move_category_kb(wid: str, company_idx: int, task_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
+    current_category_id = company["tasks"][task_idx].get("category_id")
     for cat_idx, category in enumerate(company.get("categories", [])):
+        if category.get("id") == current_category_id:
+            continue
         kb.add(InlineKeyboardButton(category_display_name(category), callback_data=f"taskmoveto:{wid}:{company_idx}:{task_idx}:{cat_idx}"))
+    if current_category_id:
+        kb.add(InlineKeyboardButton("📤 Высунуть", callback_data=f"taskuncat:{wid}:{company_idx}:{task_idx}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"task:{wid}:{company_idx}:{task_idx}"))
     return kb
-
-
 
 def template_menu_kb(wid: str, ws: dict):
     template = ws["template"]
@@ -1492,7 +1487,7 @@ async def create_category_prompt(cb: types.CallbackQuery):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
-    await set_prompt(ws, "✏️ Введите название категории:", {"type": "new_category", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}})
+    await set_prompt(ws, "✏️ Введите название категории:", {"type": "new_category", "company_idx": company_idx, "back_to": {"view": "company", "company_idx": company_idx}})
     await save_data(data)
 
 
@@ -1621,10 +1616,15 @@ async def move_task_to_category(cb: types.CallbackQuery):
     if not ws or not ws.get("is_connected"):
         return
     company = ws["companies"][company_idx]
+    old_category_id = company["tasks"][task_idx].get("category_id")
     company["tasks"][task_idx]["category_id"] = company["categories"][cat_idx]["id"]
     await save_data(data)
     await sync_company_everywhere(ws, company_idx)
-    await navigate(data, wid, {"view": "company", "company_idx": company_idx})
+    old_category_idx = find_category_index(company.get("categories", []), old_category_id) if old_category_id else None
+    if old_category_idx is not None:
+        await navigate(data, wid, {"view": "category", "company_idx": company_idx, "category_idx": old_category_idx})
+    else:
+        await navigate(data, wid, {"view": "company", "company_idx": company_idx})
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskuncat:"))
@@ -1680,7 +1680,12 @@ async def toggle_task_done(cb: types.CallbackQuery):
     company["tasks"][task_idx]["done"] = not company["tasks"][task_idx]["done"]
     await save_data(data)
     await sync_company_everywhere(ws, company_idx)
-    await navigate(data, wid, {"view": "company", "company_idx": company_idx})
+    category_id = company["tasks"][task_idx].get("category_id")
+    category_idx = find_category_index(company.get("categories", []), category_id) if category_id else None
+    if category_idx is not None:
+        await navigate(data, wid, {"view": "category", "company_idx": company_idx, "category_idx": category_idx})
+    else:
+        await navigate(data, wid, {"view": "company", "company_idx": company_idx})
 
 
 # =========================
@@ -1944,7 +1949,7 @@ async def handle_group_text(message: types.Message):
         await safe_delete_message(ws["chat_id"], prompt_msg_id)
         await try_delete_user_message(message)
         await sync_company_everywhere(ws, company_idx)
-        await navigate(data, wid, {"view": "company_settings", "company_idx": company_idx})
+        await navigate(data, wid, {"view": "company", "company_idx": company_idx})
         return
 
     if mode == "rename_category":
