@@ -2,7 +2,6 @@ import os
 import json
 import math
 import asyncio
-import re
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -231,17 +230,43 @@ def ensure_company(company):
     company["title"] = company.get("title") or title or "Компания"
     company.setdefault("card_msg_id", None)
     company.setdefault("mirror", None)
+    company.setdefault("mirrors", [])
     company.setdefault("mirror_history", [])
     company.setdefault("tasks", [])
     company.setdefault("categories", [])
-    company.setdefault("deadline_display_mode", "days")
 
     if not isinstance(company["tasks"], list):
         company["tasks"] = []
     if not isinstance(company["categories"], list):
         company["categories"] = []
+    if not isinstance(company["mirrors"], list):
+        company["mirrors"] = []
     if not isinstance(company["mirror_history"], list):
         company["mirror_history"] = []
+
+    if isinstance(company.get("mirror"), dict):
+        legacy = company["mirror"]
+        exists = any(
+            isinstance(m, dict)
+            and m.get("chat_id") == legacy.get("chat_id")
+            and (m.get("thread_id") or 0) == (legacy.get("thread_id") or 0)
+            for m in company["mirrors"]
+        )
+        if not exists:
+            company["mirrors"].append(legacy)
+
+    normalized_mirrors = []
+    for mirror in company["mirrors"]:
+        if not isinstance(mirror, dict):
+            continue
+        mirror.setdefault("chat_id", None)
+        mirror.setdefault("thread_id", 0)
+        mirror.setdefault("message_id", None)
+        mirror.setdefault("title", None)
+        if mirror.get("chat_id") is not None:
+            normalized_mirrors.append(mirror)
+    company["mirrors"] = normalized_mirrors
+    company["mirror"] = company["mirrors"][0] if company["mirrors"] else None
 
     company["tasks"] = [ensure_task(t, is_template=False) for t in company["tasks"]]
     company["categories"] = [ensure_category(c) for c in company["categories"]]
@@ -252,6 +277,7 @@ def ensure_company(company):
         history.setdefault("chat_id", None)
         history.setdefault("thread_id", 0)
         history.setdefault("message_id", None)
+        history.setdefault("title", None)
 
     company.pop("name", None)
     return company
@@ -313,6 +339,8 @@ def normalize_data(data: dict) -> dict:
         ws.setdefault("companies", [])
         ws.setdefault("awaiting", None)
         ws.setdefault("is_connected", True)
+        ws.setdefault("is_personal", False)
+        ws.setdefault("owner_user_id", None)
 
         if not isinstance(ws["companies"], list):
             ws["companies"] = []
@@ -444,33 +472,13 @@ def display_category_name(category: dict) -> str:
 
 
 
-def format_deadline_absolute(ts: int) -> str:
-    dt = datetime.fromtimestamp(ts, TIMEZONE)
-    return dt.strftime("%d.%m.%Y г. %H:%M")
-
-
-def format_deadline_remaining(ts: int) -> str:
-    remaining = max(ts - now_ts(), 0)
-    days, rem = divmod(remaining, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes = rem // 60
-    parts = []
-    if days:
-        parts.append(f"{days} д.")
-    if hours or days:
-        parts.append(f"{hours} ч.")
-    parts.append(f"{minutes} м.")
-    return "; ".join(parts) if parts else "0 м."
-
-
-def display_task_deadline_suffix(company: dict, task: dict) -> str:
+def display_task_days_left(task: dict) -> str:
     due_at = task.get("deadline_due_at")
-    if not due_at or task.get("done"):
+    if not due_at:
         return ""
-    mode = company.get("deadline_display_mode") or "days"
-    if mode == "date":
-        return f" (до {format_deadline_absolute(due_at)})"
-    return f" ({format_deadline_remaining(due_at)})"
+    delta_days = math.ceil((due_at - now_ts()) / 86400)
+    return f" ({delta_days} д.)"
+
 
 
 def task_deadline_icon(task: dict) -> str:
@@ -523,7 +531,7 @@ def company_card_text(company: dict) -> str:
     if uncategorized:
         for task in sort_company_tasks(uncategorized):
             icon = task_deadline_icon(task)
-            suffix = display_task_deadline_suffix(company, task)
+            suffix = display_task_days_left(task) if not task.get("done") and task.get("deadline_due_at") else ""
             lines.append(f"{icon} {task['text']}{suffix}")
 
     for category in company.get("categories", []):
@@ -532,7 +540,7 @@ def company_card_text(company: dict) -> str:
         if cat_tasks:
             for task in sort_company_tasks(cat_tasks):
                 icon = task_deadline_icon(task)
-                suffix = display_task_deadline_suffix(company, task)
+                suffix = display_task_days_left(task) if not task.get("done") and task.get("deadline_due_at") else ""
                 lines.append(f"        {icon} {task['text']}{suffix}")
 
     if len(lines) == 1:
@@ -544,14 +552,13 @@ def company_card_text(company: dict) -> str:
 def pm_main_text(user_id: str, data: dict) -> str:
     lines = ["📂 Ваши workspace:"]
     items = data["users"].get(user_id, {}).get("workspaces", [])
-    active_items = [wid for wid in items if data["workspaces"].get(wid, {}).get("is_connected")]
+    active_items = [
+        wid for wid in items
+        if data["workspaces"].get(wid, {}).get("is_connected")
+        and not data["workspaces"].get(wid, {}).get("is_personal")
+    ]
     if not active_items:
-        lines.append("Нет workspace")
-    else:
-        for wid in active_items:
-            ws = data["workspaces"].get(wid)
-            if ws:
-                lines.append(f"• {ws['name']}")
+        lines.append("Нет подключённых workspace")
     return "\n".join(lines)
 
 
@@ -574,6 +581,71 @@ def find_category_index(categories: list[dict], category_id: str) -> int | None:
         if category.get("id") == category_id:
             return idx
     return None
+
+
+
+def personal_ws_id(user_id: str) -> str:
+    return f"pm_{user_id}"
+
+
+def is_personal_workspace(ws: dict | None) -> bool:
+    return bool(ws and ws.get("is_personal"))
+
+
+def ensure_personal_workspace(data: dict, user_id: str) -> tuple[str, dict]:
+    ensure_user(data, user_id)
+    wid = personal_ws_id(user_id)
+    ws = data["workspaces"].get(wid)
+    if not isinstance(ws, dict):
+        ws = {
+            "id": wid,
+            "name": "Личный воркспейс",
+            "chat_title": "Личный воркспейс",
+            "topic_title": None,
+            "chat_id": int(user_id),
+            "thread_id": 0,
+            "menu_msg_id": None,
+            "template_tasks": [
+                ensure_task({"text": "Создать договор"}, is_template=True),
+                ensure_task({"text": "Выставить счёт"}, is_template=True),
+            ],
+            "template_categories": [],
+            "template": ["Создать договор", "Выставить счёт"],
+            "companies": [],
+            "awaiting": None,
+            "is_connected": True,
+            "is_personal": True,
+            "owner_user_id": user_id,
+        }
+        data["workspaces"][wid] = ws
+    else:
+        ws["chat_id"] = int(user_id)
+        ws["thread_id"] = 0
+        ws["name"] = "Личный воркспейс"
+        ws["chat_title"] = "Личный воркспейс"
+        ws["topic_title"] = None
+        ws["is_connected"] = True
+        ws["is_personal"] = True
+        ws["owner_user_id"] = user_id
+        normalize_template(ws)
+        ws.setdefault("companies", [])
+    return wid, ws
+
+
+def mirror_target_title_from_parts(chat_title: str | None, topic_title: str | None, thread_id: int) -> str:
+    base = (chat_title or "Чат").strip() or "Чат"
+    if thread_id:
+        return workspace_full_name(base, topic_title, thread_id)
+    return base
+
+
+def mirror_target_display(mirror: dict) -> str:
+    title = (mirror.get("title") or "").strip()
+    if title:
+        return title
+    chat_id = mirror.get("chat_id")
+    thread_id = mirror.get("thread_id") or 0
+    return mirror_target_title_from_parts(f"Чат {chat_id}" if chat_id is not None else "Чат", None, thread_id)
 
 
 
@@ -620,6 +692,7 @@ def make_company(title: str, with_template: bool, ws: dict) -> dict:
         "emoji": "📁",
         "card_msg_id": None,
         "mirror": None,
+        "mirrors": [],
         "mirror_history": [],
         "categories": [],
         "tasks": [],
@@ -668,70 +741,35 @@ def template_task_label(task: dict) -> str:
 
 
 def parse_deadline_input(text: str, keep_started_at: int | None = None) -> tuple[int | None, int | None, str | None]:
-    raw = clean_text(text).lower()
+    raw = clean_text(text)
     if not raw:
-        return None, None, "Пришлите дату или срок, например: 06.04.2026 16:00, 3 дня, 7ч20м."
+        return None, None, "Пришлите дату в формате ДД.ММ.ГГГГ или число дней."
 
-    date_match = re.match(r"^\s*(\d{1,2})\D+(\d{1,2})\D+(\d{2,4})(?:\D+(\d{1,2})(?:\D+(\d{1,2}))?)?\s*$", raw)
-    if date_match:
-        day, month, year, hour, minute = date_match.groups()
-        year = int(year)
-        if year < 100:
-            year += 2000
-        hour = int(hour) if hour is not None else 23
-        minute = int(minute) if minute is not None else 59
-        try:
-            dt = datetime(year, int(month), int(day), hour, minute, tzinfo=TIMEZONE)
-        except ValueError:
-            return None, None, "Не удалось распознать дату."
-        due_at = int(dt.timestamp())
+    if raw.isdigit():
+        days = int(raw)
+        if days <= 0:
+            return None, None, "Количество дней должно быть больше нуля."
+        started_at = keep_started_at or now_ts()
+        due_at = started_at + days * 86400
+        return started_at, due_at, None
+
+    try:
+        dt = datetime.strptime(raw, "%d.%m.%Y").replace(tzinfo=TIMEZONE)
+        due_at = int((dt + timedelta(days=1) - timedelta(seconds=1)).timestamp())
         started_at = keep_started_at or now_ts()
         if due_at <= started_at:
             return None, None, "Дата уже прошла."
         return started_at, due_at, None
+    except ValueError:
+        return None, None, "Пришлите дату в формате ДД.ММ.ГГГГ или число дней."
 
-    compact = raw
-    compact = compact.replace(",", " ").replace(";", " ")
-    compact = re.sub(r"\s+и\s+", " ", compact)
-    compact = re.sub(r"(?<=\d)(?=[^\d\s])", " ", compact)
-    compact = re.sub(r"(?<=[^\d\s])(?=\d)", " ", compact)
-    compact = re.sub(r"\s+", " ", compact).strip()
-
-    if compact.isdigit():
-        days = int(compact)
-        if days <= 0:
-            return None, None, "Количество дней должно быть больше нуля."
-        started_at = keep_started_at or now_ts()
-        return started_at, started_at + days * 86400, None
-
-    unit_pattern = re.compile(r"(\d+)\s*(д(?:н(?:ей|я)?)?\.?|д\.?|day|days|ч(?:ас(?:а|ов)?)?\.?|ч\.?|h|час\.?|часа|часов|м(?:ин(?:ут(?:а|ы)?)?)?\.?|м\.?|мин\.?|minute|minutes)")
-    total_seconds = 0
-    matched = False
-    for value, unit in unit_pattern.findall(compact):
-        matched = True
-        v = int(value)
-        if unit.startswith(("д", "day")):
-            total_seconds += v * 86400
-        elif unit.startswith(("ч", "h", "час")):
-            total_seconds += v * 3600
-        else:
-            total_seconds += v * 60
-
-    if matched and total_seconds > 0:
-        started_at = keep_started_at or now_ts()
-        return started_at, started_at + total_seconds, None
-
-    return None, None, "Пришлите дату или срок, например: 06.04.2026 16:00, 3 дня, 7ч20м."
 
 
 def parse_template_deadline_days(text: str) -> tuple[int | None, str | None]:
-    raw = clean_text(text).lower()
-    if not raw:
-        return None, "Пришлите число дней, например 3 или 3 д."
-    m = re.match(r"^\s*(\d+)\s*(?:д(?:н(?:ей|я)?)?\.?)?\s*$", raw)
-    if not m:
-        return None, "Пришлите число дней, например 3 или 3 д."
-    days = int(m.group(1))
+    raw = clean_text(text)
+    if not raw.isdigit():
+        return None, "Пришлите число дней, например 3."
+    days = int(raw)
     if days <= 0:
         return None, "Количество дней должно быть больше нуля."
     return days, None
@@ -743,9 +781,10 @@ def parse_template_deadline_days(text: str) -> tuple[int | None, str | None]:
 
 def pm_main_kb(user_id: str, data: dict):
     kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("👤 Личный воркспейс", callback_data="pmpersonal:root"))
     for wid in data["users"].get(user_id, {}).get("workspaces", []):
         ws = data["workspaces"].get(wid)
-        if ws and ws.get("is_connected"):
+        if ws and ws.get("is_connected") and not ws.get("is_personal"):
             kb.add(InlineKeyboardButton(ws["name"], callback_data=f"pmws:{wid}"))
     kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="pmhelp:root"))
     kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="pmrefresh:root"))
@@ -767,6 +806,8 @@ def ws_home_kb(wid: str, ws: dict):
         kb.add(InlineKeyboardButton(display_company_name(company), callback_data=f"cmp:{wid}:{idx}"))
     kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data=f"cmpnew:{wid}"))
     kb.add(InlineKeyboardButton("⚙️ Шаблон задач", callback_data=f"tpl:{wid}"))
+    if ws.get("is_personal"):
+        kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="pmrefresh:root"))
     return kb
 
 
@@ -803,14 +844,25 @@ def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"cmpren:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
-    mode_label = "📅 Формат дедлайнов: дата" if (company.get("deadline_display_mode") == "date") else "⏳ Формат дедлайнов: дни"
-    kb.add(InlineKeyboardButton(mode_label, callback_data=f"deadlinefmt:{wid}:{company_idx}"))
-    if company.get("mirror"):
-        kb.add(InlineKeyboardButton("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}"))
-    else:
-        kb.add(InlineKeyboardButton("📤 Дублировать список", callback_data=f"mirroron:{wid}:{company_idx}"))
+    kb.add(InlineKeyboardButton("📤 Дублирование списка", callback_data=f"mirrormenu:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("🗑 Удалить компанию", callback_data=f"cmpdel:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cmp:{wid}:{company_idx}"))
+    return kb
+
+
+def mirror_menu_kb(wid: str, company_idx: int, company: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for mirror_idx, mirror in enumerate(company.get("mirrors", [])):
+        kb.add(InlineKeyboardButton(mirror_target_display(mirror), callback_data=f"mirroritem:{wid}:{company_idx}:{mirror_idx}"))
+    kb.add(InlineKeyboardButton("➕ Добавить связку", callback_data=f"mirroron:{wid}:{company_idx}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cmpset:{wid}:{company_idx}"))
+    return kb
+
+
+def mirror_item_kb(wid: str, company_idx: int, mirror_idx: int):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"mirrormenu:{wid}:{company_idx}"))
     return kb
 
 
@@ -1039,29 +1091,34 @@ async def upsert_company_card(ws: dict, company_idx: int):
 
 
 async def upsert_company_mirror(company: dict):
-    mirror = company.get("mirror")
-    if not mirror:
+    mirrors = company.get("mirrors") or ([] if not company.get("mirror") else [company.get("mirror")])
+    company["mirrors"] = [m for m in mirrors if isinstance(m, dict) and m.get("chat_id") is not None]
+    company["mirror"] = company["mirrors"][0] if company["mirrors"] else None
+    if not company["mirrors"]:
         return
     text = company_card_text(company)
-    msg_id = mirror.get("message_id")
-    if msg_id:
-        ok = await try_edit_text(mirror["chat_id"], msg_id, text)
-        if ok:
-            return
-    msg = await send_message(mirror["chat_id"], text, thread_id=mirror.get("thread_id") or 0)
-    mirror["message_id"] = msg.message_id
-    found = False
-    for item in company.get("mirror_history", []):
-        if item.get("chat_id") == mirror.get("chat_id") and (item.get("thread_id") or 0) == (mirror.get("thread_id") or 0):
-            item["message_id"] = msg.message_id
-            found = True
-            break
-    if not found:
-        company.setdefault("mirror_history", []).append({
-            "chat_id": mirror.get("chat_id"),
-            "thread_id": mirror.get("thread_id") or 0,
-            "message_id": msg.message_id,
-        })
+    for mirror in company["mirrors"]:
+        msg_id = mirror.get("message_id")
+        if msg_id:
+            ok = await try_edit_text(mirror["chat_id"], msg_id, text)
+            if ok:
+                continue
+        msg = await send_message(mirror["chat_id"], text, thread_id=mirror.get("thread_id") or 0)
+        mirror["message_id"] = msg.message_id
+        found = False
+        for item in company.get("mirror_history", []):
+            if item.get("chat_id") == mirror.get("chat_id") and (item.get("thread_id") or 0) == (mirror.get("thread_id") or 0):
+                item["message_id"] = msg.message_id
+                item["title"] = mirror.get("title")
+                found = True
+                break
+        if not found:
+            company.setdefault("mirror_history", []).append({
+                "chat_id": mirror.get("chat_id"),
+                "thread_id": mirror.get("thread_id") or 0,
+                "message_id": msg.message_id,
+                "title": mirror.get("title"),
+            })
 
 
 async def ensure_all_company_cards(ws: dict):
@@ -1139,6 +1196,33 @@ async def edit_company_settings_menu(data: dict, wid: str, company_idx: int):
         return
     company = ws["companies"][company_idx]
     await upsert_ws_menu(data, wid, f"⚙️ {display_company_name(company)}", company_settings_kb(wid, company_idx, company))
+
+
+
+async def edit_mirror_menu(data: dict, wid: str, company_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        await edit_ws_home_menu(data, wid)
+        return
+    company = ws["companies"][company_idx]
+    await upsert_ws_menu(data, wid, f"📤 Дублирование списка • {display_company_name(company)}", mirror_menu_kb(wid, company_idx, company))
+
+
+async def edit_mirror_item_menu(data: dict, wid: str, company_idx: int, mirror_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        await edit_ws_home_menu(data, wid)
+        return
+    company = ws["companies"][company_idx]
+    mirrors = company.get("mirrors", [])
+    if mirror_idx < 0 or mirror_idx >= len(mirrors):
+        await edit_mirror_menu(data, wid, company_idx)
+        return
+    await upsert_ws_menu(data, wid, mirror_target_display(mirrors[mirror_idx]), mirror_item_kb(wid, company_idx, mirror_idx))
 
 
 async def edit_category_menu(data: dict, wid: str, company_idx: int, category_idx: int):
@@ -1284,7 +1368,12 @@ async def cmd_start(message: types.Message):
         data = await load_data_unlocked()
         uid = str(message.from_user.id)
         user = ensure_user(data, uid)
+        existing_pm = user.get("pm_menu_msg_id")
         await save_data_unlocked(data)
+    if existing_pm:
+        ok = await try_edit_text(int(uid), existing_pm, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
+        if ok:
+            return
     try:
         msg = await send_message(message.chat.id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
         async with FILE_LOCK:
@@ -1330,6 +1419,23 @@ async def pm_help(cb: types.CallbackQuery):
         await save_data_unlocked(data)
 
 
+
+@dp.callback_query_handler(lambda c: c.data == "pmpersonal:root")
+async def pm_open_personal_workspace(cb: types.CallbackQuery):
+    await cb.answer()
+    if cb.message.chat.type != "private" or should_ignore_callback(cb):
+        return
+    uid = str(cb.from_user.id)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        wid, ws = ensure_personal_workspace(data, uid)
+        ws["menu_msg_id"] = cb.message.message_id
+        ensure_user(data, uid)["pm_menu_msg_id"] = cb.message.message_id
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_ws_home_menu(fresh, wid)
+
+
 @dp.callback_query_handler(lambda c: c.data.startswith("pmws:"))
 async def pm_open_workspace(cb: types.CallbackQuery):
     await cb.answer()
@@ -1339,7 +1445,7 @@ async def pm_open_workspace(cb: types.CallbackQuery):
     uid = str(cb.from_user.id)
     wid = cb.data.split(":", 1)[1]
     ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected") or wid not in data["users"].get(uid, {}).get("workspaces", []):
+    if not ws or ws.get("is_personal") or not ws.get("is_connected") or wid not in data["users"].get(uid, {}).get("workspaces", []):
         await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
         return
     await safe_edit_text(int(uid), cb.message.message_id, f"📂 {ws['name']}", reply_markup=pm_ws_manage_kb(wid))
@@ -1463,7 +1569,7 @@ async def cmd_connect(message: types.Message):
 
     await ensure_all_company_cards(ws)
     for company in ws.get("companies", []):
-        if company.get("mirror"):
+        if company.get("mirrors") or company.get("mirror"):
             await upsert_company_mirror(company)
     await send_or_replace_ws_home_menu(fresh, wid)
     await update_pm_menu(uid, fresh)
@@ -1505,6 +1611,26 @@ async def track_forum_topic_updates(message: types.Message):
 # MIRROR
 # =========================
 
+@dp.callback_query_handler(lambda c: c.data.startswith("mirrormenu:"))
+async def open_mirror_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_mirror_menu(data, wid, int(company_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("mirroritem:"))
+async def open_mirror_item(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, mirror_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_mirror_item_menu(data, wid, int(company_idx), int(mirror_idx))
+
+
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroron:"))
 async def mirror_on(cb: types.CallbackQuery):
     await cb.answer()
@@ -1519,10 +1645,6 @@ async def mirror_on(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        if company.get("mirror"):
-            await save_data_unlocked(data)
-            asyncio.create_task(send_temp_message(ws["chat_id"], "Этот список уже дублируется.", ws["thread_id"], delay=8))
-            return
         company_id = company["id"]
         clear_pending_mirror_tokens_for_company(data, wid, company_id)
         token = generate_mirror_token()
@@ -1538,7 +1660,7 @@ async def mirror_on(cb: types.CallbackQuery):
 
     msg = await send_message(
         ws["chat_id"],
-        "📤 Чтобы привязать дубликат:\n1) Перейдите в целевой чат/тред\n2) Отправьте команду:\n/mirror " + token,
+        "📤 Чтобы добавить связку:\n1) Перейдите в целевой чат/тред\n2) Отправьте команду:\n/mirror " + token,
         thread_id=ws["thread_id"],
     )
     async with FILE_LOCK:
@@ -1547,7 +1669,7 @@ async def mirror_on(cb: types.CallbackQuery):
             data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
             await save_data_unlocked(data)
     fresh = await load_data()
-    await edit_company_settings_menu(fresh, wid, company_idx)
+    await edit_mirror_menu(fresh, wid, company_idx)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroroff:"))
@@ -1555,8 +1677,12 @@ async def mirror_off(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx = cb.data.split(":")
+    parts = cb.data.split(":")
+    if len(parts) < 4:
+        return
+    _, wid, company_idx, mirror_idx = parts[:4]
     company_idx = int(company_idx)
+    mirror_idx = int(mirror_idx)
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -1564,15 +1690,17 @@ async def mirror_off(cb: types.CallbackQuery):
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        mirror = company.get("mirror") or {}
-        company["mirror"] = None
-        clear_pending_mirror_tokens_for_company(data, wid, company["id"])
+        mirrors = company.setdefault("mirrors", [])
+        if mirror_idx < 0 or mirror_idx >= len(mirrors):
+            return
+        mirror = mirrors.pop(mirror_idx)
+        company["mirror"] = mirrors[0] if mirrors else None
         await save_data_unlocked(data)
 
     if mirror.get("message_id"):
         await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
     fresh = await load_data()
-    await edit_company_settings_menu(fresh, wid, company_idx)
+    await edit_mirror_menu(fresh, wid, company_idx)
     await send_temp_message(ws["chat_id"], "🔌 Список отвязан", ws["thread_id"], delay=8)
 
 
@@ -1582,8 +1710,8 @@ async def cmd_mirror(message: types.Message):
         return
     code = (message.get_args() or "").strip().upper()
     if not code:
-        await send_temp_message(message.chat.id, "Укажите код: /mirror CODE", message.message_thread_id or 0, delay=10)
         await try_delete_user_message(message)
+        await send_temp_message(message.chat.id, "Укажите код: /mirror CODE", message.message_thread_id or 0, delay=10)
         return
 
     async with FILE_LOCK:
@@ -1591,6 +1719,7 @@ async def cmd_mirror(message: types.Message):
         payload = data.get("mirror_tokens", {}).get(code)
         if not payload:
             await save_data_unlocked(data)
+            asyncio.create_task(try_delete_user_message(message))
             asyncio.create_task(send_temp_message(message.chat.id, "Код не найден или уже использован.", message.message_thread_id or 0, delay=10))
             return
         source_wid = payload["source_wid"]
@@ -1599,27 +1728,40 @@ async def cmd_mirror(message: types.Message):
         if not ws:
             data["mirror_tokens"].pop(code, None)
             await save_data_unlocked(data)
+            asyncio.create_task(try_delete_user_message(message))
             asyncio.create_task(send_temp_message(message.chat.id, "Исходный workspace не найден.", message.message_thread_id or 0, delay=10))
             return
         company_idx = find_company_index_by_id(ws, company_id)
         if company_idx is None:
             data["mirror_tokens"].pop(code, None)
             await save_data_unlocked(data)
+            asyncio.create_task(try_delete_user_message(message))
             asyncio.create_task(send_temp_message(message.chat.id, "Компания не найдена.", message.message_thread_id or 0, delay=10))
             return
         company = ws["companies"][company_idx]
 
+        target_thread_id = message.message_thread_id or 0
+        target_title = mirror_target_title_from_parts(message.chat.title, extract_topic_title(message), target_thread_id)
         reused_message_id = None
         for item in company.get("mirror_history", []):
-            if item.get("chat_id") == message.chat.id and (item.get("thread_id") or 0) == (message.message_thread_id or 0):
+            if item.get("chat_id") == message.chat.id and (item.get("thread_id") or 0) == target_thread_id:
                 reused_message_id = item.get("message_id")
                 break
 
-        company["mirror"] = {
-            "chat_id": message.chat.id,
-            "thread_id": message.message_thread_id or 0,
-            "message_id": reused_message_id,
-        }
+        mirrors = company.setdefault("mirrors", [])
+        existing = None
+        for mirror in mirrors:
+            if mirror.get("chat_id") == message.chat.id and (mirror.get("thread_id") or 0) == target_thread_id:
+                existing = mirror
+                break
+        if existing is None:
+            existing = {"chat_id": message.chat.id, "thread_id": target_thread_id, "message_id": reused_message_id, "title": target_title}
+            mirrors.append(existing)
+        else:
+            existing["message_id"] = existing.get("message_id") or reused_message_id
+            existing["title"] = target_title
+        company["mirror"] = mirrors[0] if mirrors else None
+
         instruction_msg_id = payload.get("instruction_msg_id")
         source_chat_id = payload.get("source_chat_id")
         source_thread_id = payload.get("source_thread_id") or 0
@@ -1637,7 +1779,7 @@ async def cmd_mirror(message: types.Message):
         await safe_delete_message(source_chat_id, instruction_msg_id)
     await send_temp_message(ws["chat_id"], f"📤 Список «{company['title']}» дублируется в другой тред/чат", source_thread_id, delay=10)
     if ws.get("is_connected"):
-        await edit_company_settings_menu(fresh, source_wid, company_idx)
+        await edit_mirror_menu(fresh, source_wid, company_idx)
 
 
 # =========================
@@ -1843,26 +1985,6 @@ async def cancel_input(cb: types.CallbackQuery):
 # COMPANY / CATEGORY ACTIONS
 # =========================
 
-@dp.callback_query_handler(lambda c: c.data.startswith("deadlinefmt:"))
-async def toggle_deadline_format(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    company_idx = int(company_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-            return
-        company = ws["companies"][company_idx]
-        company["deadline_display_mode"] = "date" if company.get("deadline_display_mode") != "date" else "days"
-        await save_data_unlocked(data)
-    fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
-    await edit_company_settings_menu(fresh, wid, company_idx)
-
-
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpren:"))
 async def rename_company_prompt(cb: types.CallbackQuery):
     await cb.answer()
@@ -1910,12 +2032,13 @@ async def delete_company(cb: types.CallbackQuery):
         company = ws["companies"].pop(company_idx)
         company_id = company["id"]
         card_msg_id = company.get("card_msg_id")
-        mirror = company.get("mirror") or {}
+        mirrors = list(company.get("mirrors") or ([] if not company.get("mirror") else [company.get("mirror")]))
         clear_pending_mirror_tokens_for_company(data, wid, company_id)
         await save_data_unlocked(data)
     await safe_delete_message(ws["chat_id"], card_msg_id)
-    if mirror.get("message_id"):
-        await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
+    for mirror in mirrors:
+        if mirror.get("message_id"):
+            await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
     fresh = await load_data()
     await send_or_replace_ws_home_menu(fresh, wid)
 
@@ -2064,7 +2187,7 @@ async def task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰ Пришлите дату или срок. Примеры: 06.04.2026 16:00, 3 дня, 7ч20м.", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
+        await set_prompt(ws, "⏰ Пришлите дату в формате ДД.ММ.ГГГГ или одно число дней, например 3.", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
         await save_data_unlocked(data)
 
 
@@ -2440,12 +2563,13 @@ async def move_template_task_out_of_category(cb: types.CallbackQuery):
 
 @dp.message_handler(content_types=types.ContentTypes.TEXT)
 async def handle_group_text(message: types.Message):
-    if message.chat.type == "private":
-        return
     if is_known_command(message.text):
         return
 
-    wid = make_ws_id(message.chat.id, message.message_thread_id or 0)
+    if message.chat.type == "private":
+        wid = personal_ws_id(str(message.from_user.id))
+    else:
+        wid = make_ws_id(message.chat.id, message.message_thread_id or 0)
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -2469,6 +2593,7 @@ async def handle_group_text(message: types.Message):
         if mode == "new_company":
             if company_exists(ws, text):
                 await save_data_unlocked(data)
+                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6))
                 return
             company = make_company(text, awaiting.get("use_template", False), ws)
@@ -2486,6 +2611,7 @@ async def handle_group_text(message: types.Message):
                 return
             if company_exists(ws, text, exclude_idx=company_idx):
                 await save_data_unlocked(data)
+                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6))
                 return
             ws["companies"][company_idx]["title"] = text
@@ -2495,8 +2621,8 @@ async def handle_group_text(message: types.Message):
         elif mode == "company_emoji":
             if not is_single_emoji(text):
                 await save_data_unlocked(data)
-                asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 asyncio.create_task(try_delete_user_message(message))
+                asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 return
             company_idx = awaiting["company_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
@@ -2516,6 +2642,7 @@ async def handle_group_text(message: types.Message):
             company = ws["companies"][company_idx]
             if category_exists(company.get("categories", []), text):
                 await save_data_unlocked(data)
+                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             company.setdefault("categories", []).append({"id": uuid.uuid4().hex, "title": text, "emoji": "📁"})
@@ -2533,6 +2660,7 @@ async def handle_group_text(message: types.Message):
             category = company["categories"][category_idx]
             if category_exists(company.get("categories", []), text, exclude_id=category["id"]):
                 await save_data_unlocked(data)
+                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             category["title"] = text
@@ -2540,8 +2668,8 @@ async def handle_group_text(message: types.Message):
         elif mode == "category_emoji":
             if not is_single_emoji(text):
                 await save_data_unlocked(data)
-                asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 asyncio.create_task(try_delete_user_message(message))
+                asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 return
             company_idx = awaiting["company_idx"]
             category_idx = awaiting["category_idx"]
@@ -2595,8 +2723,8 @@ async def handle_group_text(message: types.Message):
             started_at, due_at, err = parse_deadline_input(text, task.get("deadline_started_at"))
             if err:
                 await save_data_unlocked(data)
-                asyncio.create_task(send_temp_message(ws["chat_id"], err, ws["thread_id"], delay=6))
                 asyncio.create_task(try_delete_user_message(message))
+                asyncio.create_task(send_temp_message(ws["chat_id"], err, ws["thread_id"], delay=6))
                 return
             task["deadline_started_at"] = started_at
             task["deadline_due_at"] = due_at
@@ -2604,6 +2732,7 @@ async def handle_group_text(message: types.Message):
         elif mode == "new_template_category":
             if category_exists(ws.get("template_categories", []), text):
                 await save_data_unlocked(data)
+                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             ws.setdefault("template_categories", []).append({"id": uuid.uuid4().hex, "title": text, "emoji": "📁"})
@@ -2615,6 +2744,7 @@ async def handle_group_text(message: types.Message):
             category = ws["template_categories"][category_idx]
             if category_exists(ws.get("template_categories", []), text, exclude_id=category["id"]):
                 await save_data_unlocked(data)
+                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             category["title"] = text
@@ -2622,8 +2752,8 @@ async def handle_group_text(message: types.Message):
         elif mode == "template_category_emoji":
             if not is_single_emoji(text):
                 await save_data_unlocked(data)
-                asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 asyncio.create_task(try_delete_user_message(message))
+                asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 return
             category_idx = awaiting["category_idx"]
             if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
@@ -2658,8 +2788,8 @@ async def handle_group_text(message: types.Message):
             days, err = parse_template_deadline_days(text)
             if err:
                 await save_data_unlocked(data)
-                asyncio.create_task(send_temp_message(ws["chat_id"], err, ws["thread_id"], delay=6))
                 asyncio.create_task(try_delete_user_message(message))
+                asyncio.create_task(send_temp_message(ws["chat_id"], err, ws["thread_id"], delay=6))
                 return
             ws["template_tasks"][task_idx]["deadline_days"] = days
             finish(); await save_data_unlocked(data); created_company = False
@@ -2690,41 +2820,9 @@ async def handle_group_text(message: types.Message):
     await show_back_view(fresh, wid, back_to)
 
 
-async def seconds_until_next_10_minutes() -> int:
-    now = now_dt()
-    total_seconds = now.minute * 60 + now.second
-    next_slot = ((total_seconds // 600) + 1) * 600
-    delta = next_slot - total_seconds
-    if delta <= 0:
-        delta = 600
-    return delta
-
-
-async def deadline_refresh_loop(_dp: Dispatcher):
-    while True:
-        await asyncio.sleep(await seconds_until_next_10_minutes())
-        try:
-            data = await load_data()
-            changed = False
-            for wid, ws in data.get("workspaces", {}).items():
-                if not ws.get("is_connected"):
-                    continue
-                for idx in range(len(ws.get("companies", []))):
-                    await sync_company_everywhere(ws, idx)
-                    changed = True
-            if changed:
-                await save_data(data)
-        except Exception:
-            pass
-
-
-async def on_startup(dp: Dispatcher):
-    asyncio.create_task(deadline_refresh_loop(dp))
-
-
 # =========================
 # RUN
 # =========================
 
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    executor.start_polling(dp, skip_updates=True)
