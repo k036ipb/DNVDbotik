@@ -1,6 +1,7 @@
 import os
 import json
 import math
+import re
 import asyncio
 import time
 import uuid
@@ -24,8 +25,10 @@ TIMEZONE = ZoneInfo("Europe/Riga")
 FILE_LOCK = asyncio.Lock()
 MENU_LOCKS: dict[str, asyncio.Lock] = {}
 RUNTIME_MENU_IDS: dict[str, int] = {}
+RUNTIME_MENU_VIEWS: dict[str, dict] = {}
 RECENT_CALLBACKS: dict[tuple[int, int, str], float] = {}
 CALLBACK_DEBOUNCE_SECONDS = 0.9
+DEADLINE_REFRESH_TASK = None
 
 
 # =========================
@@ -43,6 +46,10 @@ def now_dt() -> datetime:
 def today_local() -> datetime:
     n = now_dt()
     return datetime(n.year, n.month, n.day, tzinfo=TIMEZONE)
+
+
+def now_minute_ts() -> int:
+    return int(now_dt().replace(second=0, microsecond=0).timestamp())
 
 
 async def tg_call(factory, retries: int = 2):
@@ -146,6 +153,10 @@ def should_ignore_callback(cb: types.CallbackQuery) -> bool:
     return prev is not None and ts - prev < CALLBACK_DEBOUNCE_SECONDS
 
 
+def remember_menu_view(wid: str, view: dict):
+    RUNTIME_MENU_VIEWS[wid] = view
+
+
 # =========================
 # DATA
 # =========================
@@ -200,6 +211,7 @@ def ensure_task(task, is_template: bool = False):
         task.setdefault("done", False)
         task.setdefault("deadline_due_at", None)
         task.setdefault("deadline_started_at", None)
+        task.setdefault("deadline_mode", "relative" if task.get("deadline_due_at") else None)
     return task
 
 
@@ -233,7 +245,6 @@ def ensure_company(company):
     company.setdefault("mirror_history", [])
     company.setdefault("tasks", [])
     company.setdefault("categories", [])
-    company.setdefault("deadline_format", "days")
 
     if not isinstance(company["tasks"], list):
         company["tasks"] = []
@@ -437,24 +448,38 @@ def display_company_name(company: dict) -> str:
     return f"{company.get('emoji') or '📁'}{company.get('title') or 'Компания'}"
 
 
-
 def display_category_name(category: dict) -> str:
     return f"{category.get('emoji') or '📁'}{category.get('title') or 'Категория'}"
 
 
+def format_deadline_absolute(due_at: int) -> str:
+    return datetime.fromtimestamp(due_at, TIMEZONE).strftime("до %d.%m.%Y г. %H:%M")
 
-def display_task_days_left(task: dict, mode: str = "days") -> str:
+
+def format_deadline_remaining(due_at: int) -> str:
+    remaining_seconds = due_at - now_ts()
+    if remaining_seconds <= 0:
+        return "просрочено"
+    total_minutes = max(1, math.ceil(remaining_seconds / 60))
+    days, rem = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days} д.")
+    if hours:
+        parts.append(f"{hours} ч.")
+    if minutes or not parts:
+        parts.append(f"{minutes} м.")
+    return "; ".join(parts)
+
+
+def display_task_deadline(task: dict) -> str:
     due_at = task.get("deadline_due_at")
     if not due_at:
         return ""
-    if mode == "date":
-        try:
-            return f" (до {datetime.fromtimestamp(due_at, TIMEZONE).strftime('%d.%m.%Y')})"
-        except Exception:
-            pass
-    delta_days = math.ceil((due_at - now_ts()) / 86400)
-    return f" ({delta_days} д.)"
-
+    if task.get("deadline_mode") == "absolute":
+        return f" ({format_deadline_absolute(due_at)})"
+    return f" ({format_deadline_remaining(due_at)})"
 
 
 def task_deadline_icon(task: dict) -> str:
@@ -464,8 +489,8 @@ def task_deadline_icon(task: dict) -> str:
     started_at = task.get("deadline_started_at")
     if not due_at or not started_at:
         return "⬜"
-    total = max(due_at - started_at, 1)
-    elapsed = now_ts() - started_at
+    total = max(due_at - started_at, 60)
+    elapsed = max(0, now_ts() - started_at)
     if now_ts() >= due_at:
         return "🟥"
     part = elapsed / total
@@ -478,7 +503,6 @@ def task_deadline_icon(task: dict) -> str:
     return "🟫"
 
 
-
 def sort_company_tasks(tasks: list[dict]) -> list[dict]:
     def key(task: dict):
         done = 1 if task.get("done") else 0
@@ -487,7 +511,6 @@ def sort_company_tasks(tasks: list[dict]) -> list[dict]:
         return (done, no_due, due_at or 10**18, task.get("created_at") or 0)
 
     return sorted(tasks, key=key)
-
 
 
 def sort_template_tasks(tasks: list[dict]) -> list[dict]:
@@ -499,16 +522,14 @@ def sort_template_tasks(tasks: list[dict]) -> list[dict]:
     return sorted(tasks, key=key)
 
 
-
 def company_card_text(company: dict) -> str:
     lines = [f"{display_company_name(company)}:"]
-    mode = company.get("deadline_format") or "days"
 
     uncategorized = [t for t in company["tasks"] if not t.get("category_id")]
     if uncategorized:
         for task in sort_company_tasks(uncategorized):
             icon = task_deadline_icon(task)
-            suffix = display_task_days_left(task, mode) if not task.get("done") and task.get("deadline_due_at") else ""
+            suffix = display_task_deadline(task) if not task.get("done") and task.get("deadline_due_at") else ""
             lines.append(f"{icon} {task['text']}{suffix}")
 
     for category in company.get("categories", []):
@@ -517,13 +538,12 @@ def company_card_text(company: dict) -> str:
         if cat_tasks:
             for task in sort_company_tasks(cat_tasks):
                 icon = task_deadline_icon(task)
-                suffix = display_task_days_left(task, mode) if not task.get("done") and task.get("deadline_due_at") else ""
+                suffix = display_task_deadline(task) if not task.get("done") and task.get("deadline_due_at") else ""
                 lines.append(f"        {icon} {task['text']}{suffix}")
 
     if len(lines) == 1:
         lines.append("—")
     return "\n".join(lines)
-
 
 
 def pm_main_text(user_id: str, data: dict) -> str:
@@ -540,10 +560,8 @@ def pm_main_text(user_id: str, data: dict) -> str:
     return "\n".join(lines)
 
 
-
 def generate_mirror_token() -> str:
     return uuid.uuid4().hex[:8].upper()
-
 
 
 def find_company_index_by_id(ws: dict, company_id: str) -> int | None:
@@ -553,13 +571,11 @@ def find_company_index_by_id(ws: dict, company_id: str) -> int | None:
     return None
 
 
-
 def find_category_index(categories: list[dict], category_id: str) -> int | None:
     for idx, category in enumerate(categories):
         if category.get("id") == category_id:
             return idx
     return None
-
 
 
 def company_exists(ws: dict, title: str, exclude_idx: int | None = None) -> bool:
@@ -572,7 +588,6 @@ def company_exists(ws: dict, title: str, exclude_idx: int | None = None) -> bool
     return False
 
 
-
 def category_exists(categories: list[dict], title: str, exclude_id: str | None = None) -> bool:
     target = title.casefold()
     for category in categories:
@@ -583,7 +598,6 @@ def category_exists(categories: list[dict], title: str, exclude_id: str | None =
     return False
 
 
-
 def delete_category_keep_tasks(tasks: list[dict], categories: list[dict], category_id: str):
     for task in tasks:
         if task.get("category_id") == category_id:
@@ -591,11 +605,9 @@ def delete_category_keep_tasks(tasks: list[dict], categories: list[dict], catego
     categories[:] = [c for c in categories if c.get("id") != category_id]
 
 
-
 def delete_category_with_tasks(tasks: list[dict], categories: list[dict], category_id: str):
     tasks[:] = [t for t in tasks if t.get("category_id") != category_id]
     categories[:] = [c for c in categories if c.get("id") != category_id]
-
 
 
 def make_company(title: str, with_template: bool, ws: dict) -> dict:
@@ -622,7 +634,7 @@ def make_company(title: str, with_template: bool, ws: dict) -> dict:
         category_map[template_category["id"]] = new_cat["id"]
         company["categories"].append(new_cat)
 
-    now_value = now_ts()
+    now_value = now_minute_ts()
     for template_task in ws.get("template_tasks", []):
         deadline_days = template_task.get("deadline_days")
         due_at = now_value + deadline_days * 86400 if isinstance(deadline_days, int) and deadline_days > 0 else None
@@ -634,9 +646,9 @@ def make_company(title: str, with_template: bool, ws: dict) -> dict:
             "created_at": now_value,
             "deadline_due_at": due_at,
             "deadline_started_at": now_value if due_at else None,
+            "deadline_mode": "relative" if due_at else None,
         })
     return company
-
 
 
 def task_menu_title(company: dict, task: dict, category: dict | None = None) -> str:
@@ -645,48 +657,115 @@ def task_menu_title(company: dict, task: dict, category: dict | None = None) -> 
     return f"{display_company_name(company)}/📌 {task['text']}"
 
 
-
 def template_task_label(task: dict) -> str:
     suffix = f" ({task['deadline_days']} д.)" if isinstance(task.get("deadline_days"), int) and task.get("deadline_days") > 0 else ""
     return f"📌 {task['text']}{suffix}"
 
 
+DEADLINE_DURATION_RE = re.compile(
+    r"(?P<value>\d+)\s*(?P<unit>д(?:н(?:ей|я)?)?\.?|день|дня|дней|д\.?|ч(?:ас(?:а|ов)?)?\.?|ч\.?|час|часа|часов|м(?:ин(?:ут(?:а|ы|ов)?)?)?\.?|м\.?|мин\.?|минута|минуты|минут)",
+    re.IGNORECASE,
+)
+DEADLINE_DATE_RE = re.compile(r"^\s*(?P<day>\d{1,2})\D+(?P<month>\d{1,2})\D+(?P<year>\d{2,4})(?:\D+(?P<hour>\d{1,2})(?:\D+(?P<minute>\d{1,2}))?)?\s*$")
 
-def parse_deadline_input(text: str, keep_started_at: int | None = None) -> tuple[int | None, int | None, str | None]:
-    raw = clean_text(text)
+
+def normalize_duration_unit(unit: str) -> str | None:
+    u = unit.lower().replace("ё", "е").strip(" .")
+    if u.startswith("д"):
+        return "days"
+    if u.startswith("ч") or u.startswith("час"):
+        return "hours"
+    if u.startswith("м") or u.startswith("мин"):
+        return "minutes"
+    return None
+
+
+def parse_duration_components(text: str) -> tuple[dict | None, str | None]:
+    raw = clean_text(text).lower().replace("ё", "е")
     if not raw:
-        return None, None, "Пришлите дату в формате ДД.ММ.ГГГГ или число дней."
+        return None, "Пришлите дедлайн датой или длительностью."
 
     if raw.isdigit():
         days = int(raw)
         if days <= 0:
-            return None, None, "Количество дней должно быть больше нуля."
-        started_at = keep_started_at or now_ts()
-        due_at = started_at + days * 86400
-        return started_at, due_at, None
+            return None, "Количество дней должно быть больше нуля."
+        return {"days": days, "hours": 0, "minutes": 0}, None
 
-    try:
-        dt = datetime.strptime(raw, "%d.%m.%Y").replace(tzinfo=TIMEZONE)
-        due_at = int((dt + timedelta(days=1) - timedelta(seconds=1)).timestamp())
-        started_at = keep_started_at or now_ts()
-        if due_at <= started_at:
-            return None, None, "Дата уже прошла."
-        return started_at, due_at, None
-    except ValueError:
-        return None, None, "Пришлите дату в формате ДД.ММ.ГГГГ или число дней."
+    matches = list(DEADLINE_DURATION_RE.finditer(raw))
+    if not matches:
+        return None, "Пришлите дедлайн датой или длительностью."
 
+    remainder = DEADLINE_DURATION_RE.sub(" ", raw)
+    remainder = re.sub(r"[,:;.!?\-_/\\]+", " ", remainder)
+    remainder = re.sub(r"\bи\b", " ", remainder)
+    if re.sub(r"\s+", "", remainder):
+        return None, "Пришлите дедлайн датой или длительностью."
+
+    result = {"days": 0, "hours": 0, "minutes": 0}
+    for match in matches:
+        value = int(match.group("value"))
+        unit = normalize_duration_unit(match.group("unit"))
+        if unit is None:
+            return None, "Пришлите дедлайн датой или длительностью."
+        result[unit] += value
+
+    if result["days"] == 0 and result["hours"] == 0 and result["minutes"] == 0:
+        return None, "Дедлайн должен быть больше нуля."
+    return result, None
+
+
+def parse_deadline_input(text: str, keep_started_at: int | None = None) -> tuple[int | None, int | None, str | None, str | None]:
+    raw = clean_text(text)
+    if not raw:
+        return None, None, None, "Пришлите дедлайн датой или длительностью."
+
+    m = DEADLINE_DATE_RE.fullmatch(raw)
+    if m:
+        day = int(m.group("day"))
+        month = int(m.group("month"))
+        year = int(m.group("year"))
+        if year < 100:
+            year += 2000
+        hour = int(m.group("hour") or 23)
+        minute = int(m.group("minute") or 59)
+        try:
+            dt = datetime(year, month, day, hour, minute, tzinfo=TIMEZONE)
+        except ValueError:
+            return None, None, None, "Не удалось разобрать дату. Проверьте формат."
+        due_at = int(dt.timestamp())
+        started_at = keep_started_at or now_minute_ts()
+        if due_at <= now_ts():
+            return None, None, None, "Дата уже прошла."
+        if keep_started_at and due_at <= keep_started_at:
+            return None, None, None, "Новый дедлайн должен быть позже текущей точки отсчёта."
+        return started_at, due_at, "absolute", None
+
+    parts, err = parse_duration_components(raw)
+    if err:
+        return None, None, None, "Пришлите дату вроде 06.04.26 16:00, либо длительность вроде 3 дня или 7ч20м."
+    total_minutes = parts["days"] * 24 * 60 + parts["hours"] * 60 + parts["minutes"]
+    if total_minutes <= 0:
+        return None, None, None, "Дедлайн должен быть больше нуля."
+    started_at = keep_started_at or now_minute_ts()
+    due_at = started_at + total_minutes * 60
+    return started_at, due_at, "relative", None
 
 
 def parse_template_deadline_days(text: str) -> tuple[int | None, str | None]:
     raw = clean_text(text)
-    if not raw.isdigit():
-        return None, "Пришлите число дней, например 3."
-    days = int(raw)
+    if not raw:
+        return None, "Пришлите число дней, например 3 или 3 д."
+    if DEADLINE_DATE_RE.fullmatch(raw):
+        return None, "Для шаблона пришлите только количество дней."
+    parts, err = parse_duration_components(raw)
+    if err:
+        return None, "Пришлите число дней, например 3 или 3 д."
+    if parts["hours"] or parts["minutes"]:
+        return None, "Для шаблона можно указать только дни."
+    days = parts["days"]
     if days <= 0:
         return None, "Количество дней должно быть больше нуля."
     return days, None
-
-
 # =========================
 # KEYBOARDS
 # =========================
@@ -753,9 +832,6 @@ def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"cmpren:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
-    mode = company.get("deadline_format") or "days"
-    title = "📅 Формат дедлайнов: дата" if mode == "date" else "⏳ Формат дедлайнов: дни"
-    kb.add(InlineKeyboardButton(title, callback_data=f"cmpdlfmt:{wid}:{company_idx}"))
     if company.get("mirror"):
         kb.add(InlineKeyboardButton("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}"))
     else:
@@ -1042,6 +1118,7 @@ async def send_or_replace_ws_home_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
+    remember_menu_view(wid, {"view": "ws"})
     await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
 
 
@@ -1052,6 +1129,7 @@ async def recreate_ws_home_menu(data: dict, wid: str):
     old_id = ws.get("menu_msg_id")
     ws["menu_msg_id"] = None
     RUNTIME_MENU_IDS.pop(wid, None)
+    remember_menu_view(wid, {"view": "ws"})
     await safe_delete_message(ws["chat_id"], old_id)
     await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
 
@@ -1060,6 +1138,7 @@ async def edit_ws_home_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
+    remember_menu_view(wid, {"view": "ws"})
     await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
 
 
@@ -1067,6 +1146,7 @@ async def edit_company_create_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
+    remember_menu_view(wid, {"view": "company_create"})
     await upsert_ws_menu(data, wid, "➕ Создать компанию", company_create_mode_kb(wid))
 
 
@@ -1078,6 +1158,7 @@ async def edit_company_menu(data: dict, wid: str, company_idx: int):
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
+    remember_menu_view(wid, {"view": "company", "company_idx": company_idx})
     await upsert_ws_menu(data, wid, display_company_name(company), company_menu_kb(wid, company_idx, company))
 
 
@@ -1089,6 +1170,7 @@ async def edit_company_settings_menu(data: dict, wid: str, company_idx: int):
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
+    remember_menu_view(wid, {"view": "company_settings", "company_idx": company_idx})
     await upsert_ws_menu(data, wid, f"⚙️ {display_company_name(company)}", company_settings_kb(wid, company_idx, company))
 
 
@@ -1104,6 +1186,7 @@ async def edit_category_menu(data: dict, wid: str, company_idx: int, category_id
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
+    remember_menu_view(wid, {"view": "category", "company_idx": company_idx, "category_idx": category_idx})
     await upsert_ws_menu(data, wid, display_category_name(category), category_menu_kb(wid, company_idx, category_idx, company, category))
 
 
@@ -1119,6 +1202,7 @@ async def edit_category_settings_menu(data: dict, wid: str, company_idx: int, ca
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
+    remember_menu_view(wid, {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx})
     await upsert_ws_menu(data, wid, f"⚙️ {display_category_name(category)}", category_settings_kb(wid, company_idx, category_idx))
 
 
@@ -1139,6 +1223,7 @@ async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
         cat_idx = find_category_index(company.get("categories", []), task.get("category_id"))
         if cat_idx is not None:
             category = company["categories"][cat_idx]
+    remember_menu_view(wid, {"view": "task", "company_idx": company_idx, "task_idx": task_idx})
     await upsert_ws_menu(data, wid, task_menu_title(company, task, category), task_menu_kb(wid, company_idx, task_idx, task, company))
 
 
@@ -1163,6 +1248,7 @@ async def edit_template_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
+    remember_menu_view(wid, {"view": "template"})
     await upsert_ws_menu(data, wid, "⚙️ Шаблон задач", template_menu_kb(wid, ws))
 
 
@@ -1174,6 +1260,7 @@ async def edit_template_category_menu(data: dict, wid: str, category_idx: int):
         await edit_template_menu(data, wid)
         return
     category = ws["template_categories"][category_idx]
+    remember_menu_view(wid, {"view": "template_category", "category_idx": category_idx})
     await upsert_ws_menu(data, wid, display_category_name(category), template_category_menu_kb(wid, category_idx, ws, category))
 
 
@@ -1185,6 +1272,7 @@ async def edit_template_category_settings_menu(data: dict, wid: str, category_id
         await edit_template_menu(data, wid)
         return
     category = ws["template_categories"][category_idx]
+    remember_menu_view(wid, {"view": "template_category_settings", "category_idx": category_idx})
     await upsert_ws_menu(data, wid, f"⚙️ {display_category_name(category)}", template_category_settings_kb(wid, category_idx))
 
 
@@ -1196,6 +1284,7 @@ async def edit_template_task_menu(data: dict, wid: str, task_idx: int):
         await edit_template_menu(data, wid)
         return
     task = ws["template_tasks"][task_idx]
+    remember_menu_view(wid, {"view": "template_task", "task_idx": task_idx})
     await upsert_ws_menu(data, wid, template_task_label(task), template_task_menu_kb(wid, task_idx, task, ws))
 
 
@@ -1235,16 +1324,9 @@ async def cmd_start(message: types.Message):
         data = await load_data_unlocked()
         uid = str(message.from_user.id)
         user = ensure_user(data, uid)
-        pm_id = user.get("pm_menu_msg_id")
         await save_data_unlocked(data)
-    text = pm_main_text(uid, data)
-    kb = pm_main_kb(uid, data)
-    if pm_id:
-        ok = await try_edit_text(int(uid), pm_id, text, reply_markup=kb)
-        if ok:
-            return
     try:
-        msg = await send_message(message.chat.id, text, reply_markup=kb)
+        msg = await send_message(message.chat.id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
         async with FILE_LOCK:
             fresh = await load_data_unlocked()
             ensure_user(fresh, uid)["pm_menu_msg_id"] = msg.message_id
@@ -1364,62 +1446,50 @@ async def cmd_connect(message: types.Message):
     old_menu_id = None
     old_prompt_id = None
     help_msg_id = None
-    already_connected_name = None
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ensure_user(data, uid)
         existing_ws = data["workspaces"].get(wid)
 
-        if existing_ws and existing_ws.get("is_connected"):
-            already_connected_name = existing_ws.get("name") or workspace_full_name(
-                message.chat.title or "Workspace",
-                topic_title or existing_ws.get("topic_title"),
-                thread_id,
-            )
-            await save_data_unlocked(data)
-        else:
-            if not topic_title and existing_ws:
-                topic_title = existing_ws.get("topic_title")
+        if not topic_title and existing_ws:
+            topic_title = existing_ws.get("topic_title")
 
-            chat_title = message.chat.title or "Workspace"
-            ws_name = workspace_full_name(chat_title, topic_title, thread_id)
+        chat_title = message.chat.title or "Workspace"
+        ws_name = workspace_full_name(chat_title, topic_title, thread_id)
 
-            old_companies = existing_ws["companies"] if existing_ws else []
-            old_template_tasks = existing_ws.get("template_tasks") if existing_ws else [
-                ensure_task({"text": "Создать договор"}, is_template=True),
-                ensure_task({"text": "Выставить счёт"}, is_template=True),
-            ]
-            old_template_categories = existing_ws.get("template_categories") if existing_ws else []
+        old_companies = existing_ws["companies"] if existing_ws else []
+        old_template_tasks = existing_ws.get("template_tasks") if existing_ws else [
+            ensure_task({"text": "Создать договор"}, is_template=True),
+            ensure_task({"text": "Выставить счёт"}, is_template=True),
+        ]
+        old_template_categories = existing_ws.get("template_categories") if existing_ws else []
 
-            if existing_ws:
-                old_menu_id = existing_ws.get("menu_msg_id")
-                old_prompt_id = (existing_ws.get("awaiting") or {}).get("prompt_msg_id")
+        if existing_ws:
+            old_menu_id = existing_ws.get("menu_msg_id")
+            old_prompt_id = (existing_ws.get("awaiting") or {}).get("prompt_msg_id")
 
-            data["workspaces"][wid] = {
-                "id": wid,
-                "name": ws_name,
-                "chat_title": chat_title,
-                "topic_title": topic_title,
-                "chat_id": message.chat.id,
-                "thread_id": thread_id,
-                "menu_msg_id": existing_ws.get("menu_msg_id") if existing_ws else None,
-                "template_tasks": old_template_tasks,
-                "template_categories": old_template_categories,
-                "template": [t["text"] for t in old_template_tasks if not t.get("category_id")],
-                "companies": old_companies,
-                "awaiting": None,
-                "is_connected": True,
-            }
-            if wid not in data["users"][uid]["workspaces"]:
-                data["users"][uid]["workspaces"].append(wid)
-            help_msg_id = data["users"][uid].get("help_msg_id")
-            data["users"][uid]["help_msg_id"] = None
-            await save_data_unlocked(data)
-
-    if already_connected_name:
-        await send_temp_message(message.chat.id, f"Workspace «{already_connected_name}» уже подключён", thread_id, delay=8)
-        return
+        data["workspaces"][wid] = {
+            "id": wid,
+            "name": ws_name,
+            "chat_title": chat_title,
+            "topic_title": topic_title,
+            "chat_id": message.chat.id,
+            "thread_id": thread_id,
+            "menu_msg_id": existing_ws.get("menu_msg_id") if existing_ws else None,
+            "template_tasks": old_template_tasks,
+            "template_categories": old_template_categories,
+            "template": [t["text"] for t in old_template_tasks if not t.get("category_id")],
+            "companies": old_companies,
+            "awaiting": None,
+            "is_connected": True,
+        }
+        ws = data["workspaces"][wid]
+        if wid not in data["users"][uid]["workspaces"]:
+            data["users"][uid]["workspaces"].append(wid)
+        help_msg_id = data["users"][uid].get("help_msg_id")
+        data["users"][uid]["help_msg_id"] = None
+        await save_data_unlocked(data)
 
     await safe_delete_message(message.chat.id, old_menu_id)
     await safe_delete_message(message.chat.id, old_prompt_id)
@@ -1667,27 +1737,6 @@ async def open_company_settings(cb: types.CallbackQuery):
     _, wid, company_idx = cb.data.split(":")
     data = await load_data()
     await edit_company_settings_menu(data, wid, int(company_idx))
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("cmpdlfmt:"))
-async def toggle_company_deadline_format(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    company_idx = int(company_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-            return
-        company = ws["companies"][company_idx]
-        current = company.get("deadline_format") or "days"
-        company["deadline_format"] = "date" if current == "days" else "days"
-        await save_data_unlocked(data)
-    fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
-    await edit_company_settings_menu(fresh, wid, company_idx)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cat:"))
@@ -2035,7 +2084,7 @@ async def task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰ Пришлите дату в формате ДД.ММ.ГГГГ или одно число дней, например 3.", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
+        await set_prompt(ws, "⏰ Пришлите дедлайн. Примеры: 06.04.26 16:00, 6.4.2026, 3 дня, 7ч 20м. Можно датой или длительностью.", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
         await save_data_unlocked(data)
 
 
@@ -2056,6 +2105,7 @@ async def delete_task_deadline(cb: types.CallbackQuery):
             return
         company["tasks"][task_idx]["deadline_due_at"] = None
         company["tasks"][task_idx]["deadline_started_at"] = None
+        company["tasks"][task_idx]["deadline_mode"] = None
         await save_data_unlocked(data)
     fresh = await load_data()
     await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
@@ -2311,7 +2361,7 @@ async def template_task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰ Пришлите число дней, например 3.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
+        await set_prompt(ws, "⏰ Пришлите количество дней для шаблона, например 3 или 3 д.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
         await save_data_unlocked(data)
 
 
@@ -2440,6 +2490,7 @@ async def handle_group_text(message: types.Message):
         if mode == "new_company":
             if company_exists(ws, text):
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6))
                 return
             company = make_company(text, awaiting.get("use_template", False), ws)
@@ -2457,6 +2508,7 @@ async def handle_group_text(message: types.Message):
                 return
             if company_exists(ws, text, exclude_idx=company_idx):
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6))
                 return
             ws["companies"][company_idx]["title"] = text
@@ -2466,6 +2518,7 @@ async def handle_group_text(message: types.Message):
         elif mode == "company_emoji":
             if not is_single_emoji(text):
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 return
             company_idx = awaiting["company_idx"]
@@ -2486,6 +2539,7 @@ async def handle_group_text(message: types.Message):
             company = ws["companies"][company_idx]
             if category_exists(company.get("categories", []), text):
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             company.setdefault("categories", []).append({"id": uuid.uuid4().hex, "title": text, "emoji": "📁"})
@@ -2503,6 +2557,7 @@ async def handle_group_text(message: types.Message):
             category = company["categories"][category_idx]
             if category_exists(company.get("categories", []), text, exclude_id=category["id"]):
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             category["title"] = text
@@ -2510,6 +2565,7 @@ async def handle_group_text(message: types.Message):
         elif mode == "category_emoji":
             if not is_single_emoji(text):
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 return
             company_idx = awaiting["company_idx"]
@@ -2540,6 +2596,7 @@ async def handle_group_text(message: types.Message):
                 "created_at": now_ts(),
                 "deadline_due_at": None,
                 "deadline_started_at": None,
+                "deadline_mode": None,
             })
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "rename_task":
@@ -2561,17 +2618,20 @@ async def handle_group_text(message: types.Message):
             if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
                 finish(); await save_data_unlocked(data); return
             task = company["tasks"][task_idx]
-            started_at, due_at, err = parse_deadline_input(text, task.get("deadline_started_at"))
+            started_at, due_at, deadline_mode, err = parse_deadline_input(text, task.get("deadline_started_at"))
             if err:
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], err, ws["thread_id"], delay=6))
                 return
             task["deadline_started_at"] = started_at
             task["deadline_due_at"] = due_at
+            task["deadline_mode"] = deadline_mode
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "new_template_category":
             if category_exists(ws.get("template_categories", []), text):
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             ws.setdefault("template_categories", []).append({"id": uuid.uuid4().hex, "title": text, "emoji": "📁"})
@@ -2583,6 +2643,7 @@ async def handle_group_text(message: types.Message):
             category = ws["template_categories"][category_idx]
             if category_exists(ws.get("template_categories", []), text, exclude_id=category["id"]):
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             category["title"] = text
@@ -2590,6 +2651,7 @@ async def handle_group_text(message: types.Message):
         elif mode == "template_category_emoji":
             if not is_single_emoji(text):
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 return
             category_idx = awaiting["category_idx"]
@@ -2625,6 +2687,7 @@ async def handle_group_text(message: types.Message):
             days, err = parse_template_deadline_days(text)
             if err:
                 await save_data_unlocked(data)
+                await try_delete_user_message(message)
                 asyncio.create_task(send_temp_message(ws["chat_id"], err, ws["thread_id"], delay=6))
                 return
             ws["template_tasks"][task_idx]["deadline_days"] = days
@@ -2656,9 +2719,62 @@ async def handle_group_text(message: types.Message):
     await show_back_view(fresh, wid, back_to)
 
 
+
+
+def company_has_active_deadlines(company: dict) -> bool:
+    return any((not task.get("done")) and task.get("deadline_due_at") for task in company.get("tasks", []))
+
+
+def seconds_until_next_deadline_tick() -> int:
+    now = now_dt()
+    base = now.replace(second=0, microsecond=0)
+    next_minute = ((now.minute // 10) + 1) * 10
+    if next_minute >= 60:
+        target = (base + timedelta(hours=1)).replace(minute=0)
+    else:
+        target = base.replace(minute=next_minute)
+    return max(1, int((target - now).total_seconds()))
+
+
+async def refresh_deadline_views_once():
+    data = await load_data()
+    changed = False
+    for wid, ws in data.get("workspaces", {}).items():
+        if not ws.get("is_connected"):
+            continue
+        has_deadlines = False
+        for idx, company in enumerate(ws.get("companies", [])):
+            if company_has_active_deadlines(company):
+                has_deadlines = True
+                await sync_company_everywhere(ws, idx)
+                changed = True
+        if not has_deadlines:
+            continue
+        view = RUNTIME_MENU_VIEWS.get(wid)
+        if view:
+            await show_back_view(data, wid, view)
+    if changed:
+        await save_data(data)
+
+
+async def deadline_refresh_loop():
+    while True:
+        await asyncio.sleep(seconds_until_next_deadline_tick())
+        try:
+            await refresh_deadline_views_once()
+        except Exception:
+            pass
+
+
+async def on_startup(_dp):
+    global DEADLINE_REFRESH_TASK
+    if DEADLINE_REFRESH_TASK is None or DEADLINE_REFRESH_TASK.done():
+        DEADLINE_REFRESH_TASK = asyncio.create_task(deadline_refresh_loop())
+
+
 # =========================
 # RUN
 # =========================
 
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
