@@ -280,6 +280,9 @@ def ensure_task(task, is_template: bool = False):
     task.setdefault("created_at", now_ts())
 
     if is_template:
+        if task.get("deadline_seconds") is None and isinstance(task.get("deadline_days"), int) and task.get("deadline_days") > 0:
+            task["deadline_seconds"] = task["deadline_days"] * 86400
+        task.setdefault("deadline_seconds", None)
         task.setdefault("deadline_days", None)
     else:
         task.setdefault("done", False)
@@ -594,9 +597,11 @@ def sort_company_tasks(tasks: list[dict]) -> list[dict]:
 
 def sort_template_tasks(tasks: list[dict]) -> list[dict]:
     def key(task: dict):
-        days = task.get("deadline_days")
-        no_due = 1 if days is None else 0
-        return (no_due, days if days is not None else 10**9, task.get("created_at") or 0)
+        seconds = task.get("deadline_seconds")
+        if seconds is None and isinstance(task.get("deadline_days"), int) and task.get("deadline_days") > 0:
+            seconds = task.get("deadline_days") * 86400
+        no_due = 1 if seconds is None else 0
+        return (no_due, seconds if seconds is not None else 10**18, task.get("created_at") or 0)
 
     return sorted(tasks, key=key)
 
@@ -790,8 +795,10 @@ def make_company(title: str, with_template: bool, ws: dict) -> dict:
 
     now_value = now_ts()
     for template_task in ws.get("template_tasks", []):
-        deadline_days = template_task.get("deadline_days")
-        due_at = now_value + deadline_days * 86400 if isinstance(deadline_days, int) and deadline_days > 0 else None
+        deadline_seconds = template_task.get("deadline_seconds")
+        if deadline_seconds is None and isinstance(template_task.get("deadline_days"), int) and template_task.get("deadline_days") > 0:
+            deadline_seconds = template_task.get("deadline_days") * 86400
+        due_at = now_value + deadline_seconds if isinstance(deadline_seconds, int) and deadline_seconds > 0 else None
         company["tasks"].append({
             "id": uuid.uuid4().hex,
             "text": template_task.get("text") or "",
@@ -813,7 +820,10 @@ def task_menu_title(company: dict, task: dict, category: dict | None = None) -> 
 
 
 def template_task_label(task: dict) -> str:
-    suffix = f" ({task['deadline_days']} д.)" if isinstance(task.get("deadline_days"), int) and task.get("deadline_days") > 0 else ""
+    seconds = task.get("deadline_seconds")
+    if seconds is None and isinstance(task.get("deadline_days"), int) and task.get("deadline_days") > 0:
+        seconds = task.get("deadline_days") * 86400
+    suffix = f" ({format_duration_compact(seconds)})" if isinstance(seconds, int) and seconds > 0 else ""
     return f"📌 {task['text']}{suffix}"
 
 
@@ -821,36 +831,50 @@ def template_task_label(task: dict) -> str:
 def parse_deadline_input(text: str, keep_started_at: int | None = None) -> tuple[int | None, int | None, str | None]:
     raw = clean_text(text)
     if not raw:
-        return None, None, "Пришлите дату в формате ДД.ММ.ГГГГ или число дней."
+        return None, None, "Пришлите дату или срок: 06.04.2026, 6.4.26 16:00, 3 дня, 7ч20м."
 
-    if raw.isdigit():
-        days = int(raw)
-        if days <= 0:
-            return None, None, "Количество дней должно быть больше нуля."
-        started_at = keep_started_at or now_ts()
-        due_at = started_at + days * 86400
-        return started_at, due_at, None
+    started_at = keep_started_at or now_ts()
 
-    try:
-        dt = datetime.strptime(raw, "%d.%m.%Y").replace(tzinfo=TIMEZONE)
-        due_at = int((dt + timedelta(days=1) - timedelta(seconds=1)).timestamp())
-        started_at = keep_started_at or now_ts()
+    m = DATE_INPUT_RE.match(raw)
+    if m:
+        day = int(m.group(1))
+        month = int(m.group(2))
+        year = normalize_two_digit_year(int(m.group(3)))
+        hour = int(m.group(4) or 23)
+        minute = int(m.group(5) or (59 if m.group(4) is None else 0))
+        try:
+            dt = datetime(year, month, day, hour, minute, tzinfo=TIMEZONE)
+        except ValueError:
+            return None, None, "Не удалось распознать дату."
+        due_at = int(dt.timestamp())
         if due_at <= started_at:
             return None, None, "Дата уже прошла."
         return started_at, due_at, None
-    except ValueError:
-        return None, None, "Пришлите дату в формате ДД.ММ.ГГГГ или число дней."
+
+    days, hours, minutes = parse_relative_duration_parts(raw)
+    if days is not None:
+        total_seconds = days * 86400 + hours * 3600 + minutes * 60
+        if total_seconds <= 0:
+            return None, None, "Срок должен быть больше нуля."
+        return started_at, started_at + total_seconds, None
+
+    return None, None, "Пришлите дату или срок: 06.04.2026, 6.4.26 16:00, 3 дня, 7ч20м."
 
 
 
-def parse_template_deadline_days(text: str) -> tuple[int | None, str | None]:
+def parse_template_deadline_duration(text: str) -> tuple[int | None, str | None]:
     raw = clean_text(text)
-    if not raw.isdigit():
-        return None, "Пришлите число дней, например 3."
-    days = int(raw)
-    if days <= 0:
-        return None, "Количество дней должно быть больше нуля."
-    return days, None
+    if not raw:
+        return None, "Пришлите срок: 3 дня, 7ч20м, 45 минут."
+
+    days, hours, minutes = parse_relative_duration_parts(raw)
+    if days is None:
+        return None, "Пришлите срок: 3 дня, 7ч20м, 45 минут."
+
+    total_seconds = days * 86400 + hours * 3600 + minutes * 60
+    if total_seconds <= 0:
+        return None, "Срок должен быть больше нуля."
+    return total_seconds, None
 
 
 # =========================
@@ -1056,7 +1080,7 @@ def template_category_settings_kb(wid: str, category_idx: int):
 def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"tpltaskren:{wid}:{task_idx}"))
-    if task.get("deadline_days"):
+    if task.get("deadline_seconds") or task.get("deadline_days"):
         kb.add(InlineKeyboardButton("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}"))
         kb.add(InlineKeyboardButton("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}"))
     else:
@@ -2612,7 +2636,7 @@ async def template_task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰ Пришлите срок в днях: 3, 3 д. или 3 дня.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
+        await set_prompt(ws, "⏰ Пришлите срок: 3 дня, 7ч20м, 45 минут.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
         await save_data_unlocked(data)
 
 
@@ -2629,6 +2653,7 @@ async def delete_template_task_deadline(cb: types.CallbackQuery):
         if not ws or task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
             return
         ws["template_tasks"][task_idx]["deadline_days"] = None
+        ws["template_tasks"][task_idx]["deadline_seconds"] = None
         await save_data_unlocked(data)
     fresh = await load_data()
     await edit_template_task_menu(fresh, wid, task_idx)
@@ -2922,6 +2947,7 @@ async def handle_group_text(message: types.Message):
                 "category_id": category_id,
                 "created_at": now_ts(),
                 "deadline_days": None,
+                "deadline_seconds": None,
             })
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "rename_template_task":
@@ -2934,13 +2960,14 @@ async def handle_group_text(message: types.Message):
             task_idx = awaiting["task_idx"]
             if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
                 finish(); await save_data_unlocked(data); return
-            days, err = parse_template_deadline_days(text)
+            seconds, err = parse_template_deadline_duration(text)
             if err:
                 await save_data_unlocked(data)
                 asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], err, ws["thread_id"], delay=6))
                 return
-            ws["template_tasks"][task_idx]["deadline_days"] = days
+            ws["template_tasks"][task_idx]["deadline_seconds"] = seconds
+            ws["template_tasks"][task_idx]["deadline_days"] = seconds // 86400 if seconds % 86400 == 0 else None
             finish(); await save_data_unlocked(data); created_company = False
         else:
             await save_data_unlocked(data)
@@ -3013,3 +3040,4 @@ async def on_startup(_):
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+
