@@ -4,7 +4,6 @@ import math
 import asyncio
 import time
 import uuid
-import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,7 +24,6 @@ TIMEZONE = ZoneInfo("Europe/Riga")
 FILE_LOCK = asyncio.Lock()
 MENU_LOCKS: dict[str, asyncio.Lock] = {}
 RUNTIME_MENU_IDS: dict[str, int] = {}
-RUNTIME_MENU_STATE: dict[str, dict] = {}
 RECENT_CALLBACKS: dict[tuple[int, int, str], float] = {}
 CALLBACK_DEBOUNCE_SECONDS = 0.9
 
@@ -186,89 +184,6 @@ def split_legacy_name(name: str | None, default_emoji: str = "📁") -> tuple[st
     return default_emoji, raw
 
 
-DATE_INPUT_RE = re.compile(r"^\s*(\d{1,2})\D+(\d{1,2})\D+(\d{2,4})(?:\D+(\d{1,2})(?:\D+(\d{1,2}))?)?\s*$")
-
-
-def normalize_two_digit_year(year: int) -> int:
-    return 2000 + year if year < 100 else year
-
-
-def parse_relative_duration_parts(text: str) -> tuple[int | None, int | None, int | None]:
-    raw = clean_text(text).lower()
-    if not raw:
-        return None, None, None
-
-    if raw.isdigit():
-        return int(raw), 0, 0
-
-    work = raw.replace(",", " ").replace(";", " ")
-    work = re.sub(r"(?<=\d)(?=[^\d\s])", " ", work)
-    work = re.sub(r"(?<=[^\d\s])(?=\d)", " ", work)
-    work = re.sub(r"\s+", " ", work).strip()
-    tokens = [t.strip(" .:-") for t in work.split() if t.strip(" .:-") and t.strip(" .:-") != "и"]
-    if len(tokens) < 2 or len(tokens) % 2 != 0:
-        return None, None, None
-
-    days = hours = minutes = 0
-
-    def kind(token: str) -> str | None:
-        t = token.lower().strip(" .:-")
-        if not t:
-            return None
-        if t.startswith("д"):
-            return "d"
-        if t.startswith("час") or t.startswith("ч"):
-            return "h"
-        if t.startswith("мин") or t == "м":
-            return "m"
-        return None
-
-    for i in range(0, len(tokens), 2):
-        if not tokens[i].isdigit():
-            return None, None, None
-        value = int(tokens[i])
-        unit = kind(tokens[i + 1])
-        if value < 0 or unit is None:
-            return None, None, None
-        if unit == "d":
-            days += value
-        elif unit == "h":
-            hours += value
-        elif unit == "m":
-            minutes += value
-
-    return days, hours, minutes
-
-
-def format_duration_compact(seconds: int) -> str:
-    if seconds <= 0:
-        return "срок вышел"
-    minutes_total = math.ceil(seconds / 60)
-    days, rem_minutes = divmod(minutes_total, 24 * 60)
-    hours, minutes = divmod(rem_minutes, 60)
-    parts = []
-    if days:
-        parts.append(f"{days} д.")
-    if days or hours:
-        parts.append(f"{hours} ч.")
-    parts.append(f"{minutes} м.")
-    return "; ".join(parts)
-
-
-def format_deadline_absolute(ts: int) -> str:
-    return datetime.fromtimestamp(ts, TIMEZONE).strftime("до %d.%m.%Y г. %H:%M")
-
-
-def deadline_suffix_for_task(company: dict, task: dict) -> str:
-    due_at = task.get("deadline_due_at")
-    if not due_at or task.get("done"):
-        return ""
-    view = company.get("deadline_view") or "relative"
-    if view == "date":
-        return f" ({format_deadline_absolute(due_at)})"
-    return f" ({format_duration_compact(due_at - now_ts())})"
-
-
 
 def ensure_task(task, is_template: bool = False):
     if not isinstance(task, dict):
@@ -280,9 +195,6 @@ def ensure_task(task, is_template: bool = False):
     task.setdefault("created_at", now_ts())
 
     if is_template:
-        if task.get("deadline_seconds") is None and isinstance(task.get("deadline_days"), int) and task.get("deadline_days") > 0:
-            task["deadline_seconds"] = task["deadline_days"] * 86400
-        task.setdefault("deadline_seconds", None)
         task.setdefault("deadline_days", None)
     else:
         task.setdefault("done", False)
@@ -318,7 +230,6 @@ def ensure_company(company):
     company["title"] = company.get("title") or title or "Компания"
     company.setdefault("card_msg_id", None)
     company.setdefault("mirror", None)
-    company.setdefault("mirrors", [])
     company.setdefault("mirror_history", [])
     company.setdefault("tasks", [])
     company.setdefault("categories", [])
@@ -328,34 +239,8 @@ def ensure_company(company):
         company["tasks"] = []
     if not isinstance(company["categories"], list):
         company["categories"] = []
-    if not isinstance(company["mirrors"], list):
-        company["mirrors"] = []
     if not isinstance(company["mirror_history"], list):
         company["mirror_history"] = []
-
-    if isinstance(company.get("mirror"), dict):
-        legacy = company["mirror"]
-        exists = any(
-            isinstance(m, dict)
-            and m.get("chat_id") == legacy.get("chat_id")
-            and (m.get("thread_id") or 0) == (legacy.get("thread_id") or 0)
-            for m in company["mirrors"]
-        )
-        if not exists:
-            company["mirrors"].append(legacy)
-
-    normalized_mirrors = []
-    for mirror in company["mirrors"]:
-        if not isinstance(mirror, dict):
-            continue
-        mirror.setdefault("chat_id", None)
-        mirror.setdefault("thread_id", 0)
-        mirror.setdefault("message_id", None)
-        mirror.setdefault("title", None)
-        if mirror.get("chat_id") is not None:
-            normalized_mirrors.append(mirror)
-    company["mirrors"] = normalized_mirrors
-    company["mirror"] = company["mirrors"][0] if company["mirrors"] else None
 
     company["tasks"] = [ensure_task(t, is_template=False) for t in company["tasks"]]
     company["categories"] = [ensure_category(c) for c in company["categories"]]
@@ -366,31 +251,194 @@ def ensure_company(company):
         history.setdefault("chat_id", None)
         history.setdefault("thread_id", 0)
         history.setdefault("message_id", None)
-        history.setdefault("title", None)
 
     company.pop("name", None)
     return company
 
 
+def ensure_template(template, index: int = 0):
+    if not isinstance(template, dict):
+        template = {}
+    legacy_name = template.get("name") or template.get("title") or template.get("label")
+    emoji, title = split_legacy_name(legacy_name, template.get("emoji") or "📁")
+    template.setdefault("id", uuid.uuid4().hex)
+    template["emoji"] = template.get("emoji") or emoji or "📁"
+    template["title"] = template.get("title") or title or f"Шаблон {index + 1}"
+    template.setdefault("deadline_view", "relative")
+    template.setdefault("tasks", [])
+    template.setdefault("categories", [])
+    if not isinstance(template["tasks"], list):
+        template["tasks"] = []
+    if not isinstance(template["categories"], list):
+        template["categories"] = []
+    template["tasks"] = [ensure_task(t, is_template=True) for t in template["tasks"]]
+    template["categories"] = [ensure_category(c) for c in template["categories"]]
+    template.pop("name", None)
+    template.pop("label", None)
+    return template
+
+
+def get_active_template_index(ws: dict) -> int | None:
+    templates = ws.get("templates", [])
+    if not templates:
+        return None
+    active_id = ws.get("active_template_id")
+    for idx, template in enumerate(templates):
+        if template.get("id") == active_id:
+            return idx
+    ws["active_template_id"] = templates[0].get("id")
+    return 0
+
+
+def get_active_template(ws: dict) -> dict | None:
+    idx = get_active_template_index(ws)
+    if idx is None:
+        return None
+    return ws["templates"][idx]
+
+
+def display_template_name(template: dict) -> str:
+    return f"{template.get('emoji') or '📁'}{template.get('title') or 'Шаблон'}"
+
+
+def clone_template(template: dict, new_title: str | None = None) -> dict:
+    category_map = {}
+    new_categories = []
+    for category in template.get("categories", []):
+        new_id = uuid.uuid4().hex
+        category_map[category.get("id")] = new_id
+        new_categories.append({
+            "id": new_id,
+            "title": category.get("title") or "Категория",
+            "emoji": category.get("emoji") or "📁",
+        })
+    new_tasks = []
+    for task in template.get("tasks", []):
+        new_tasks.append(ensure_task({
+            "id": uuid.uuid4().hex,
+            "text": task.get("text") or "",
+            "category_id": category_map.get(task.get("category_id")),
+            "created_at": task.get("created_at") or now_ts(),
+            "deadline_days": task.get("deadline_days"),
+        }, is_template=True))
+    return ensure_template({
+        "id": uuid.uuid4().hex,
+        "title": new_title or template.get("title") or "Шаблон",
+        "emoji": template.get("emoji") or "📁",
+        "deadline_view": template.get("deadline_view") or "relative",
+        "tasks": new_tasks,
+        "categories": new_categories,
+    })
+
+
+def clone_company(company: dict, new_title: str | None = None) -> dict:
+    category_map = {}
+    new_categories = []
+    for category in company.get("categories", []):
+        new_id = uuid.uuid4().hex
+        category_map[category.get("id")] = new_id
+        new_categories.append({
+            "id": new_id,
+            "title": category.get("title") or "Категория",
+            "emoji": category.get("emoji") or "📁",
+        })
+    new_tasks = []
+    for task in company.get("tasks", []):
+        new_tasks.append(ensure_task({
+            "id": uuid.uuid4().hex,
+            "text": task.get("text") or "",
+            "done": False,
+            "category_id": category_map.get(task.get("category_id")),
+            "created_at": now_ts(),
+            "deadline_due_at": task.get("deadline_due_at"),
+            "deadline_started_at": task.get("deadline_started_at"),
+        }, is_template=False))
+    return ensure_company({
+        "id": uuid.uuid4().hex,
+        "title": new_title or company.get("title") or "Компания",
+        "emoji": company.get("emoji") or "📁",
+        "deadline_view": company.get("deadline_view") or "relative",
+        "card_msg_id": None,
+        "mirror": None,
+        "mirror_history": [],
+        "tasks": new_tasks,
+        "categories": new_categories,
+    })
+
+
+def clone_category(company: dict, category: dict, new_title: str | None = None) -> tuple[dict, list[dict]]:
+    new_category = ensure_category({
+        "id": uuid.uuid4().hex,
+        "title": new_title or category.get("title") or "Категория",
+        "emoji": category.get("emoji") or "📁",
+    })
+    new_tasks = []
+    for task in company.get("tasks", []):
+        if task.get("category_id") != category.get("id"):
+            continue
+        new_tasks.append(ensure_task({
+            "id": uuid.uuid4().hex,
+            "text": task.get("text") or "",
+            "done": False,
+            "category_id": new_category["id"],
+            "created_at": now_ts(),
+            "deadline_due_at": task.get("deadline_due_at"),
+            "deadline_started_at": task.get("deadline_started_at"),
+        }, is_template=False))
+    return new_category, new_tasks
+
+
+def template_exists(ws: dict, title: str, exclude_id: str | None = None) -> bool:
+    target = (title or "").casefold()
+    for template in ws.get("templates", []):
+        if exclude_id is not None and template.get("id") == exclude_id:
+            continue
+        if (template.get("title") or "").casefold() == target:
+            return True
+    return False
+
 
 def normalize_template(ws: dict):
     legacy_template = ws.get("template")
-    if "template_tasks" not in ws:
-        if isinstance(legacy_template, list):
-            ws["template_tasks"] = [ensure_task({"text": item}, is_template=True) for item in legacy_template]
+    if "templates" not in ws:
+        if "template_tasks" in ws or "template_categories" in ws or isinstance(legacy_template, list):
+            tasks = ws.get("template_tasks") if isinstance(ws.get("template_tasks"), list) else []
+            if not tasks and isinstance(legacy_template, list):
+                tasks = [ensure_task({"text": item}, is_template=True) for item in legacy_template]
+            categories = ws.get("template_categories") if isinstance(ws.get("template_categories"), list) else []
+            ws["templates"] = [ensure_template({
+                "id": uuid.uuid4().hex,
+                "title": "Шаблон 1",
+                "emoji": "📁",
+                "deadline_view": "relative",
+                "tasks": tasks,
+                "categories": categories,
+            }, 0)]
         else:
-            ws["template_tasks"] = []
-    if "template_categories" not in ws:
-        ws["template_categories"] = []
+            ws["templates"] = [ensure_template({
+                "id": uuid.uuid4().hex,
+                "title": "Шаблон 1",
+                "emoji": "📁",
+                "deadline_view": "relative",
+                "tasks": [],
+                "categories": [],
+            }, 0)]
 
-    if not isinstance(ws["template_tasks"], list):
-        ws["template_tasks"] = []
-    if not isinstance(ws["template_categories"], list):
-        ws["template_categories"] = []
+    if not isinstance(ws.get("templates"), list):
+        ws["templates"] = []
+    ws["templates"] = [ensure_template(t, idx) for idx, t in enumerate(ws["templates"])]
 
-    ws["template_tasks"] = [ensure_task(t, is_template=True) for t in ws["template_tasks"]]
-    ws["template_categories"] = [ensure_category(c) for c in ws["template_categories"]]
-    if isinstance(legacy_template, list):
+    if ws["templates"]:
+        if not ws.get("active_template_id") or all(t.get("id") != ws.get("active_template_id") for t in ws["templates"]):
+            ws["active_template_id"] = ws["templates"][0]["id"]
+        active = get_active_template(ws)
+    else:
+        ws["active_template_id"] = None
+        active = None
+
+    ws["template_tasks"] = active["tasks"] if active else []
+    ws["template_categories"] = active["categories"] if active else []
+    if isinstance(legacy_template, list) or active is not None:
         ws["template"] = [t["text"] for t in ws["template_tasks"] if not t.get("category_id")]
     else:
         ws.setdefault("template", [])
@@ -428,8 +476,6 @@ def normalize_data(data: dict) -> dict:
         ws.setdefault("companies", [])
         ws.setdefault("awaiting", None)
         ws.setdefault("is_connected", True)
-        ws.setdefault("is_personal", False)
-        ws.setdefault("owner_user_id", None)
 
         if not isinstance(ws["companies"], list):
             ws["companies"] = []
@@ -561,6 +607,34 @@ def display_category_name(category: dict) -> str:
 
 
 
+def format_relative_seconds(seconds: int) -> str:
+    if seconds <= 0:
+        return "0 м."
+    days = seconds // 86400
+    seconds %= 86400
+    hours = seconds // 3600
+    seconds %= 3600
+    minutes = math.ceil(seconds / 60)
+    parts = []
+    if days:
+        parts.append(f"{days} д.")
+    if hours:
+        parts.append(f"{hours} ч.")
+    if minutes or not parts:
+        parts.append(f"{minutes} м.")
+    return "; ".join(parts)
+
+
+def display_task_deadline(task: dict, view: str = "relative") -> str:
+    due_at = task.get("deadline_due_at")
+    if not due_at:
+        return ""
+    if view == "date":
+        dt = datetime.fromtimestamp(due_at, tz=TIMEZONE)
+        return f" (до {dt.strftime('%d.%m.%Y г. %H:%M')})"
+    return f" ({format_relative_seconds(max(due_at - now_ts(), 0))})"
+
+
 
 def task_deadline_icon(task: dict) -> str:
     if task.get("done"):
@@ -597,11 +671,9 @@ def sort_company_tasks(tasks: list[dict]) -> list[dict]:
 
 def sort_template_tasks(tasks: list[dict]) -> list[dict]:
     def key(task: dict):
-        seconds = task.get("deadline_seconds")
-        if seconds is None and isinstance(task.get("deadline_days"), int) and task.get("deadline_days") > 0:
-            seconds = task.get("deadline_days") * 86400
-        no_due = 1 if seconds is None else 0
-        return (no_due, seconds if seconds is not None else 10**18, task.get("created_at") or 0)
+        days = task.get("deadline_days")
+        no_due = 1 if days is None else 0
+        return (no_due, days if days is not None else 10**9, task.get("created_at") or 0)
 
     return sorted(tasks, key=key)
 
@@ -609,12 +681,13 @@ def sort_template_tasks(tasks: list[dict]) -> list[dict]:
 
 def company_card_text(company: dict) -> str:
     lines = [f"{display_company_name(company)}:"]
+    deadline_view = company.get("deadline_view") or "relative"
 
     uncategorized = [t for t in company["tasks"] if not t.get("category_id")]
     if uncategorized:
         for task in sort_company_tasks(uncategorized):
             icon = task_deadline_icon(task)
-            suffix = deadline_suffix_for_task(company, task)
+            suffix = display_task_deadline(task, deadline_view) if not task.get("done") and task.get("deadline_due_at") else ""
             lines.append(f"{icon} {task['text']}{suffix}")
 
     for category in company.get("categories", []):
@@ -623,7 +696,7 @@ def company_card_text(company: dict) -> str:
         if cat_tasks:
             for task in sort_company_tasks(cat_tasks):
                 icon = task_deadline_icon(task)
-                suffix = deadline_suffix_for_task(company, task)
+                suffix = display_task_deadline(task, deadline_view) if not task.get("done") and task.get("deadline_due_at") else ""
                 lines.append(f"        {icon} {task['text']}{suffix}")
 
     if len(lines) == 1:
@@ -632,16 +705,18 @@ def company_card_text(company: dict) -> str:
 
 
 
+
 def pm_main_text(user_id: str, data: dict) -> str:
     lines = ["📂 Ваши workspace:"]
     items = data["users"].get(user_id, {}).get("workspaces", [])
-    active_items = [
-        wid for wid in items
-        if data["workspaces"].get(wid, {}).get("is_connected")
-        and not data["workspaces"].get(wid, {}).get("is_personal")
-    ]
+    active_items = [wid for wid in items if data["workspaces"].get(wid, {}).get("is_connected")]
     if not active_items:
-        lines.append("Нет подключённых workspace")
+        lines.append("Нет workspace")
+    else:
+        for wid in active_items:
+            ws = data["workspaces"].get(wid)
+            if ws:
+                lines.append(f"• {ws['name']}")
     return "\n".join(lines)
 
 
@@ -664,71 +739,6 @@ def find_category_index(categories: list[dict], category_id: str) -> int | None:
         if category.get("id") == category_id:
             return idx
     return None
-
-
-
-def personal_ws_id(user_id: str) -> str:
-    return f"pm_{user_id}"
-
-
-def is_personal_workspace(ws: dict | None) -> bool:
-    return bool(ws and ws.get("is_personal"))
-
-
-def ensure_personal_workspace(data: dict, user_id: str) -> tuple[str, dict]:
-    ensure_user(data, user_id)
-    wid = personal_ws_id(user_id)
-    ws = data["workspaces"].get(wid)
-    if not isinstance(ws, dict):
-        ws = {
-            "id": wid,
-            "name": "Личный воркспейс",
-            "chat_title": "Личный воркспейс",
-            "topic_title": None,
-            "chat_id": int(user_id),
-            "thread_id": 0,
-            "menu_msg_id": None,
-            "template_tasks": [
-                ensure_task({"text": "Создать договор"}, is_template=True),
-                ensure_task({"text": "Выставить счёт"}, is_template=True),
-            ],
-            "template_categories": [],
-            "template": ["Создать договор", "Выставить счёт"],
-            "companies": [],
-            "awaiting": None,
-            "is_connected": True,
-            "is_personal": True,
-            "owner_user_id": user_id,
-        }
-        data["workspaces"][wid] = ws
-    else:
-        ws["chat_id"] = int(user_id)
-        ws["thread_id"] = 0
-        ws["name"] = "Личный воркспейс"
-        ws["chat_title"] = "Личный воркспейс"
-        ws["topic_title"] = None
-        ws["is_connected"] = True
-        ws["is_personal"] = True
-        ws["owner_user_id"] = user_id
-        normalize_template(ws)
-        ws.setdefault("companies", [])
-    return wid, ws
-
-
-def mirror_target_title_from_parts(chat_title: str | None, topic_title: str | None, thread_id: int) -> str:
-    base = (chat_title or "Чат").strip() or "Чат"
-    if thread_id:
-        return workspace_full_name(base, topic_title, thread_id)
-    return base
-
-
-def mirror_target_display(mirror: dict) -> str:
-    title = (mirror.get("title") or "").strip()
-    if title:
-        return title
-    chat_id = mirror.get("chat_id")
-    thread_id = mirror.get("thread_id") or 0
-    return mirror_target_title_from_parts(f"Чат {chat_id}" if chat_id is not None else "Чат", None, thread_id)
 
 
 
@@ -775,7 +785,6 @@ def make_company(title: str, with_template: bool, ws: dict) -> dict:
         "emoji": "📁",
         "card_msg_id": None,
         "mirror": None,
-        "mirrors": [],
         "mirror_history": [],
         "categories": [],
         "tasks": [],
@@ -795,10 +804,8 @@ def make_company(title: str, with_template: bool, ws: dict) -> dict:
 
     now_value = now_ts()
     for template_task in ws.get("template_tasks", []):
-        deadline_seconds = template_task.get("deadline_seconds")
-        if deadline_seconds is None and isinstance(template_task.get("deadline_days"), int) and template_task.get("deadline_days") > 0:
-            deadline_seconds = template_task.get("deadline_days") * 86400
-        due_at = now_value + deadline_seconds if isinstance(deadline_seconds, int) and deadline_seconds > 0 else None
+        deadline_days = template_task.get("deadline_days")
+        due_at = now_value + deadline_days * 86400 if isinstance(deadline_days, int) and deadline_days > 0 else None
         company["tasks"].append({
             "id": uuid.uuid4().hex,
             "text": template_task.get("text") or "",
@@ -819,11 +826,11 @@ def task_menu_title(company: dict, task: dict, category: dict | None = None) -> 
 
 
 
-def template_task_label(task: dict) -> str:
-    seconds = task.get("deadline_seconds")
-    if seconds is None and isinstance(task.get("deadline_days"), int) and task.get("deadline_days") > 0:
-        seconds = task.get("deadline_days") * 86400
-    suffix = f" ({format_duration_compact(seconds)})" if isinstance(seconds, int) and seconds > 0 else ""
+def template_task_label(task: dict, template: dict | None = None) -> str:
+    days = task.get("deadline_days")
+    suffix = f" ({days} д.)" if isinstance(days, int) and days > 0 else ""
+    if template and template.get("deadline_view") == "date" and isinstance(days, int) and days > 0:
+        suffix = f" (до +{days} д.)"
     return f"📌 {task['text']}{suffix}"
 
 
@@ -831,50 +838,36 @@ def template_task_label(task: dict) -> str:
 def parse_deadline_input(text: str, keep_started_at: int | None = None) -> tuple[int | None, int | None, str | None]:
     raw = clean_text(text)
     if not raw:
-        return None, None, "Пришлите дату или срок: 06.04.2026, 6.4.26 16:00, 3 дня, 7ч20м."
+        return None, None, "Пришлите дату в формате ДД.ММ.ГГГГ или число дней."
 
-    started_at = keep_started_at or now_ts()
+    if raw.isdigit():
+        days = int(raw)
+        if days <= 0:
+            return None, None, "Количество дней должно быть больше нуля."
+        started_at = keep_started_at or now_ts()
+        due_at = started_at + days * 86400
+        return started_at, due_at, None
 
-    m = DATE_INPUT_RE.match(raw)
-    if m:
-        day = int(m.group(1))
-        month = int(m.group(2))
-        year = normalize_two_digit_year(int(m.group(3)))
-        hour = int(m.group(4) or 23)
-        minute = int(m.group(5) or (59 if m.group(4) is None else 0))
-        try:
-            dt = datetime(year, month, day, hour, minute, tzinfo=TIMEZONE)
-        except ValueError:
-            return None, None, "Не удалось распознать дату."
-        due_at = int(dt.timestamp())
+    try:
+        dt = datetime.strptime(raw, "%d.%m.%Y").replace(tzinfo=TIMEZONE)
+        due_at = int((dt + timedelta(days=1) - timedelta(seconds=1)).timestamp())
+        started_at = keep_started_at or now_ts()
         if due_at <= started_at:
             return None, None, "Дата уже прошла."
         return started_at, due_at, None
-
-    days, hours, minutes = parse_relative_duration_parts(raw)
-    if days is not None:
-        total_seconds = days * 86400 + hours * 3600 + minutes * 60
-        if total_seconds <= 0:
-            return None, None, "Срок должен быть больше нуля."
-        return started_at, started_at + total_seconds, None
-
-    return None, None, "Пришлите дату или срок: 06.04.2026, 6.4.26 16:00, 3 дня, 7ч20м."
+    except ValueError:
+        return None, None, "Пришлите дату в формате ДД.ММ.ГГГГ или число дней."
 
 
 
-def parse_template_deadline_duration(text: str) -> tuple[int | None, str | None]:
+def parse_template_deadline_days(text: str) -> tuple[int | None, str | None]:
     raw = clean_text(text)
-    if not raw:
-        return None, "Пришлите срок: 3 дня, 7ч20м, 45 минут."
-
-    days, hours, minutes = parse_relative_duration_parts(raw)
-    if days is None:
-        return None, "Пришлите срок: 3 дня, 7ч20м, 45 минут."
-
-    total_seconds = days * 86400 + hours * 3600 + minutes * 60
-    if total_seconds <= 0:
-        return None, "Срок должен быть больше нуля."
-    return total_seconds, None
+    if not raw.isdigit():
+        return None, "Пришлите число дней, например 3."
+    days = int(raw)
+    if days <= 0:
+        return None, "Количество дней должно быть больше нуля."
+    return days, None
 
 
 # =========================
@@ -883,10 +876,9 @@ def parse_template_deadline_duration(text: str) -> tuple[int | None, str | None]
 
 def pm_main_kb(user_id: str, data: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("👤 Личный воркспейс", callback_data="pmpersonal:root"))
     for wid in data["users"].get(user_id, {}).get("workspaces", []):
         ws = data["workspaces"].get(wid)
-        if ws and ws.get("is_connected") and not ws.get("is_personal"):
+        if ws and ws.get("is_connected"):
             kb.add(InlineKeyboardButton(ws["name"], callback_data=f"pmws:{wid}"))
     kb.add(InlineKeyboardButton("➕ Подключить workspace", callback_data="pmhelp:root"))
     kb.add(InlineKeyboardButton("🔄 Обновить", callback_data="pmrefresh:root"))
@@ -908,8 +900,6 @@ def ws_home_kb(wid: str, ws: dict):
         kb.add(InlineKeyboardButton(display_company_name(company), callback_data=f"cmp:{wid}:{idx}"))
     kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data=f"cmpnew:{wid}"))
     kb.add(InlineKeyboardButton("⚙️ Шаблон задач", callback_data=f"tpl:{wid}"))
-    if ws.get("is_personal"):
-        kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="pmrefresh:root"))
     return kb
 
 
@@ -944,30 +934,17 @@ def company_menu_kb(wid: str, company_idx: int, company: dict):
 
 def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
+    dl_text = "📅 Формат дедлайнов: дата" if company.get("deadline_view") == "date" else "⏳ Формат дедлайнов: срок"
     kb.add(InlineKeyboardButton("✍️ Переименовать компанию", callback_data=f"cmpren:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
-    mode = company.get("deadline_view") or "relative"
-    label = "📅 Формат дедлайнов: дата" if mode == "date" else "⏳ Формат дедлайнов: дни"
-    kb.add(InlineKeyboardButton(label, callback_data=f"cmpddlfmt:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("📤 Дублирование списка", callback_data=f"mirrormenu:{wid}:{company_idx}"))
+    kb.add(InlineKeyboardButton(dl_text, callback_data=f"cmpdlv:{wid}:{company_idx}"))
+    kb.add(InlineKeyboardButton("🧬 Копия Компании", callback_data=f"cmpcopy:{wid}:{company_idx}"))
+    if company.get("mirror"):
+        kb.add(InlineKeyboardButton("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}"))
+    else:
+        kb.add(InlineKeyboardButton("📤 Дублировать список", callback_data=f"mirroron:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("🗑 Удалить компанию", callback_data=f"cmpdel:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cmp:{wid}:{company_idx}"))
-    return kb
-
-
-def mirror_menu_kb(wid: str, company_idx: int, company: dict):
-    kb = InlineKeyboardMarkup(row_width=1)
-    for mirror_idx, mirror in enumerate(company.get("mirrors", [])):
-        kb.add(InlineKeyboardButton(mirror_target_display(mirror), callback_data=f"mirroritem:{wid}:{company_idx}:{mirror_idx}"))
-    kb.add(InlineKeyboardButton("➕ Добавить связку", callback_data=f"mirroron:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cmpset:{wid}:{company_idx}"))
-    return kb
-
-
-def mirror_item_kb(wid: str, company_idx: int, mirror_idx: int):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"mirrormenu:{wid}:{company_idx}"))
     return kb
 
 
@@ -989,6 +966,7 @@ def category_settings_kb(wid: str, company_idx: int, category_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"catren:{wid}:{company_idx}:{category_idx}"))
     kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_idx}"))
+    kb.add(InlineKeyboardButton("🧬 Копия Категории", callback_data=f"catcopy:{wid}:{company_idx}:{category_idx}"))
     kb.add(InlineKeyboardButton("🗑 Удалить", callback_data=f"catdel:{wid}:{company_idx}:{category_idx}"))
     kb.add(InlineKeyboardButton("🗑 Удалить с задачами", callback_data=f"catdelall:{wid}:{company_idx}:{category_idx}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"cat:{wid}:{company_idx}:{category_idx}"))
@@ -1038,17 +1016,40 @@ def task_move_kb(wid: str, company_idx: int, task_idx: int, company: dict, task:
 
 
 
+def template_index_kb(wid: str, ws: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for idx, template in enumerate(ws.get("templates", [])):
+        kb.add(InlineKeyboardButton(display_template_name(template), callback_data=f"tplopen:{wid}:{idx}"))
+    kb.add(InlineKeyboardButton("➕ Добавить шаблон", callback_data=f"tpladd:{wid}"))
+    kb.add(InlineKeyboardButton("⚙️ Настройки шаблона", callback_data=f"tplset:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"backws:{wid}"))
+    return kb
+
+
 def template_menu_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
+    active = get_active_template(ws) or {}
     uncat = [t for t in ws.get("template_tasks", []) if not t.get("category_id")]
     for task in sort_template_tasks(uncat):
         idx = ws["template_tasks"].index(task)
-        kb.add(InlineKeyboardButton(template_task_label(task), callback_data=f"tpltask:{wid}:{idx}"))
+        kb.add(InlineKeyboardButton(template_task_label(task, active), callback_data=f"tpltask:{wid}:{idx}"))
     for category_idx, category in enumerate(ws.get("template_categories", [])):
         kb.add(InlineKeyboardButton(display_category_name(category), callback_data=f"tplcat:{wid}:{category_idx}"))
     kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"tpltasknew:{wid}:root"))
     kb.add(InlineKeyboardButton("➕ Добавить категорию", callback_data=f"tplcatnew:{wid}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"backws:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"tpl:{wid}"))
+    return kb
+
+
+def template_settings_kb(wid: str, template: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    dl_text = "📅 Формат дедлайнов: дата" if template.get("deadline_view") == "date" else "⏳ Формат дедлайнов: срок"
+    kb.add(InlineKeyboardButton("✍️ Переименовать шаблон", callback_data=f"tplsetren:{wid}"))
+    kb.add(InlineKeyboardButton("😀 Переназначить смайлик", callback_data=f"tplsetemoji:{wid}"))
+    kb.add(InlineKeyboardButton(dl_text, callback_data=f"tplsetdlv:{wid}"))
+    kb.add(InlineKeyboardButton("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
+    kb.add(InlineKeyboardButton("🗑 Удалить шаблон", callback_data=f"tpldelset:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"tpl:{wid}"))
     return kb
 
 
@@ -1058,10 +1059,10 @@ def template_category_menu_kb(wid: str, category_idx: int, ws: dict, category: d
     tasks = [t for t in ws.get("template_tasks", []) if t.get("category_id") == category.get("id")]
     for task in sort_template_tasks(tasks):
         idx = ws["template_tasks"].index(task)
-        kb.add(InlineKeyboardButton(template_task_label(task), callback_data=f"tpltask:{wid}:{idx}"))
+        kb.add(InlineKeyboardButton(template_task_label(task, get_active_template(ws)), callback_data=f"tpltask:{wid}:{idx}"))
     kb.add(InlineKeyboardButton("➕ Добавить задачу", callback_data=f"tpltasknew:{wid}:{category_idx}"))
     kb.add(InlineKeyboardButton("⚙️ Настройки категории", callback_data=f"tplcatset:{wid}:{category_idx}"))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"tpl:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"tplhome:{wid}"))
     return kb
 
 
@@ -1080,7 +1081,7 @@ def template_category_settings_kb(wid: str, category_idx: int):
 def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"tpltaskren:{wid}:{task_idx}"))
-    if task.get("deadline_seconds") or task.get("deadline_days"):
+    if task.get("deadline_days"):
         kb.add(InlineKeyboardButton("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}"))
         kb.add(InlineKeyboardButton("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}"))
     else:
@@ -1091,7 +1092,7 @@ def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
         else:
             kb.add(InlineKeyboardButton("📥 Всунуть в категорию", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
     kb.add(InlineKeyboardButton("🗑 Удалить", callback_data=f"tpltaskdel:{wid}:{task_idx}"))
-    back = f"tplcat:{wid}:{find_category_index(ws.get('template_categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(ws.get('template_categories', []), task.get('category_id')) is not None else f"tpl:{wid}"
+    back = f"tplcat:{wid}:{find_category_index(ws.get('template_categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(ws.get('template_categories', []), task.get('category_id')) is not None else f"tplhome:{wid}"
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=back))
     return kb
 
@@ -1120,10 +1121,6 @@ def prompt_kb(wid: str):
 # =========================
 # VIEW HELPERS
 # =========================
-
-def set_runtime_menu_state(wid: str, state: dict):
-    RUNTIME_MENU_STATE[wid] = state
-
 
 async def persist_ws_menu_id(wid: str, message_id: int):
     async with FILE_LOCK:
@@ -1200,34 +1197,29 @@ async def upsert_company_card(ws: dict, company_idx: int):
 
 
 async def upsert_company_mirror(company: dict):
-    mirrors = company.get("mirrors") or ([] if not company.get("mirror") else [company.get("mirror")])
-    company["mirrors"] = [m for m in mirrors if isinstance(m, dict) and m.get("chat_id") is not None]
-    company["mirror"] = company["mirrors"][0] if company["mirrors"] else None
-    if not company["mirrors"]:
+    mirror = company.get("mirror")
+    if not mirror:
         return
     text = company_card_text(company)
-    for mirror in company["mirrors"]:
-        msg_id = mirror.get("message_id")
-        if msg_id:
-            ok = await try_edit_text(mirror["chat_id"], msg_id, text)
-            if ok:
-                continue
-        msg = await send_message(mirror["chat_id"], text, thread_id=mirror.get("thread_id") or 0)
-        mirror["message_id"] = msg.message_id
-        found = False
-        for item in company.get("mirror_history", []):
-            if item.get("chat_id") == mirror.get("chat_id") and (item.get("thread_id") or 0) == (mirror.get("thread_id") or 0):
-                item["message_id"] = msg.message_id
-                item["title"] = mirror.get("title")
-                found = True
-                break
-        if not found:
-            company.setdefault("mirror_history", []).append({
-                "chat_id": mirror.get("chat_id"),
-                "thread_id": mirror.get("thread_id") or 0,
-                "message_id": msg.message_id,
-                "title": mirror.get("title"),
-            })
+    msg_id = mirror.get("message_id")
+    if msg_id:
+        ok = await try_edit_text(mirror["chat_id"], msg_id, text)
+        if ok:
+            return
+    msg = await send_message(mirror["chat_id"], text, thread_id=mirror.get("thread_id") or 0)
+    mirror["message_id"] = msg.message_id
+    found = False
+    for item in company.get("mirror_history", []):
+        if item.get("chat_id") == mirror.get("chat_id") and (item.get("thread_id") or 0) == (mirror.get("thread_id") or 0):
+            item["message_id"] = msg.message_id
+            found = True
+            break
+    if not found:
+        company.setdefault("mirror_history", []).append({
+            "chat_id": mirror.get("chat_id"),
+            "thread_id": mirror.get("thread_id") or 0,
+            "message_id": msg.message_id,
+        })
 
 
 async def ensure_all_company_cards(ws: dict):
@@ -1275,7 +1267,6 @@ async def edit_ws_home_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
-    set_runtime_menu_state(wid, {"view": "ws"})
     await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
 
 
@@ -1283,7 +1274,6 @@ async def edit_company_create_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
-    set_runtime_menu_state(wid, {"view": "company_create"})
     await upsert_ws_menu(data, wid, "➕ Создать компанию", company_create_mode_kb(wid))
 
 
@@ -1295,7 +1285,6 @@ async def edit_company_menu(data: dict, wid: str, company_idx: int):
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
-    set_runtime_menu_state(wid, {"view": "company", "company_idx": company_idx})
     await upsert_ws_menu(data, wid, display_company_name(company), company_menu_kb(wid, company_idx, company))
 
 
@@ -1307,35 +1296,7 @@ async def edit_company_settings_menu(data: dict, wid: str, company_idx: int):
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
-    set_runtime_menu_state(wid, {"view": "company_settings", "company_idx": company_idx})
     await upsert_ws_menu(data, wid, f"⚙️ {display_company_name(company)}", company_settings_kb(wid, company_idx, company))
-
-
-
-async def edit_mirror_menu(data: dict, wid: str, company_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
-        return
-    if company_idx < 0 or company_idx >= len(ws["companies"]):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    await upsert_ws_menu(data, wid, f"📤 Дублирование списка • {display_company_name(company)}", mirror_menu_kb(wid, company_idx, company))
-
-
-async def edit_mirror_item_menu(data: dict, wid: str, company_idx: int, mirror_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
-        return
-    if company_idx < 0 or company_idx >= len(ws["companies"]):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    mirrors = company.get("mirrors", [])
-    if mirror_idx < 0 or mirror_idx >= len(mirrors):
-        await edit_mirror_menu(data, wid, company_idx)
-        return
-    await upsert_ws_menu(data, wid, mirror_target_display(mirrors[mirror_idx]), mirror_item_kb(wid, company_idx, mirror_idx))
 
 
 async def edit_category_menu(data: dict, wid: str, company_idx: int, category_idx: int):
@@ -1350,7 +1311,6 @@ async def edit_category_menu(data: dict, wid: str, company_idx: int, category_id
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
-    set_runtime_menu_state(wid, {"view": "category", "company_idx": company_idx, "category_idx": category_idx})
     await upsert_ws_menu(data, wid, display_category_name(category), category_menu_kb(wid, company_idx, category_idx, company, category))
 
 
@@ -1366,7 +1326,6 @@ async def edit_category_settings_menu(data: dict, wid: str, company_idx: int, ca
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
-    set_runtime_menu_state(wid, {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx})
     await upsert_ws_menu(data, wid, f"⚙️ {display_category_name(category)}", category_settings_kb(wid, company_idx, category_idx))
 
 
@@ -1387,7 +1346,6 @@ async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
         cat_idx = find_category_index(company.get("categories", []), task.get("category_id"))
         if cat_idx is not None:
             category = company["categories"][cat_idx]
-    set_runtime_menu_state(wid, {"view": "task", "company_idx": company_idx, "task_idx": task_idx})
     await upsert_ws_menu(data, wid, task_menu_title(company, task, category), task_menu_kb(wid, company_idx, task_idx, task, company))
 
 
@@ -1405,16 +1363,34 @@ async def edit_task_move_menu(data: dict, wid: str, company_idx: int, task_idx: 
         await edit_company_menu(data, wid, company_idx)
         return
     task = company["tasks"][task_idx]
-    set_runtime_menu_state(wid, {"view": "task_move", "company_idx": company_idx, "task_idx": task_idx})
     await upsert_ws_menu(data, wid, f"📥 {task['text']}", task_move_kb(wid, company_idx, task_idx, company, task))
+
+
+async def edit_template_index_menu(data: dict, wid: str):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    await upsert_ws_menu(data, wid, "⚙️ Шаблоны задач", template_index_kb(wid, ws))
 
 
 async def edit_template_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
-    set_runtime_menu_state(wid, {"view": "template"})
-    await upsert_ws_menu(data, wid, "⚙️ Шаблон задач", template_menu_kb(wid, ws))
+    template = get_active_template(ws)
+    title = display_template_name(template) if template else "⚙️ Шаблон задач"
+    await upsert_ws_menu(data, wid, title, template_menu_kb(wid, ws))
+
+
+async def edit_template_settings_menu(data: dict, wid: str):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    template = get_active_template(ws)
+    if not template:
+        await edit_template_index_menu(data, wid)
+        return
+    await upsert_ws_menu(data, wid, f"⚙️ {display_template_name(template)}", template_settings_kb(wid, template))
 
 
 async def edit_template_category_menu(data: dict, wid: str, category_idx: int):
@@ -1425,7 +1401,6 @@ async def edit_template_category_menu(data: dict, wid: str, category_idx: int):
         await edit_template_menu(data, wid)
         return
     category = ws["template_categories"][category_idx]
-    set_runtime_menu_state(wid, {"view": "template_category", "category_idx": category_idx})
     await upsert_ws_menu(data, wid, display_category_name(category), template_category_menu_kb(wid, category_idx, ws, category))
 
 
@@ -1437,7 +1412,6 @@ async def edit_template_category_settings_menu(data: dict, wid: str, category_id
         await edit_template_menu(data, wid)
         return
     category = ws["template_categories"][category_idx]
-    set_runtime_menu_state(wid, {"view": "template_category_settings", "category_idx": category_idx})
     await upsert_ws_menu(data, wid, f"⚙️ {display_category_name(category)}", template_category_settings_kb(wid, category_idx))
 
 
@@ -1449,8 +1423,7 @@ async def edit_template_task_menu(data: dict, wid: str, task_idx: int):
         await edit_template_menu(data, wid)
         return
     task = ws["template_tasks"][task_idx]
-    set_runtime_menu_state(wid, {"view": "template_task", "task_idx": task_idx})
-    await upsert_ws_menu(data, wid, template_task_label(task), template_task_menu_kb(wid, task_idx, task, ws))
+    await upsert_ws_menu(data, wid, template_task_label(task, get_active_template(ws)), template_task_menu_kb(wid, task_idx, task, ws))
 
 
 async def edit_template_task_move_menu(data: dict, wid: str, task_idx: int):
@@ -1461,7 +1434,6 @@ async def edit_template_task_move_menu(data: dict, wid: str, task_idx: int):
         await edit_template_menu(data, wid)
         return
     task = ws["template_tasks"][task_idx]
-    set_runtime_menu_state(wid, {"view": "template_task_move", "task_idx": task_idx})
     await upsert_ws_menu(data, wid, f"📥 {task['text']}", template_task_move_kb(wid, task_idx, ws, task))
 
 
@@ -1490,12 +1462,7 @@ async def cmd_start(message: types.Message):
         data = await load_data_unlocked()
         uid = str(message.from_user.id)
         user = ensure_user(data, uid)
-        existing_pm = user.get("pm_menu_msg_id")
         await save_data_unlocked(data)
-    if existing_pm:
-        ok = await try_edit_text(int(uid), existing_pm, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
-        if ok:
-            return
     try:
         msg = await send_message(message.chat.id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
         async with FILE_LOCK:
@@ -1541,23 +1508,6 @@ async def pm_help(cb: types.CallbackQuery):
         await save_data_unlocked(data)
 
 
-
-@dp.callback_query_handler(lambda c: c.data == "pmpersonal:root")
-async def pm_open_personal_workspace(cb: types.CallbackQuery):
-    await cb.answer()
-    if cb.message.chat.type != "private" or should_ignore_callback(cb):
-        return
-    uid = str(cb.from_user.id)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        wid, ws = ensure_personal_workspace(data, uid)
-        ws["menu_msg_id"] = cb.message.message_id
-        ensure_user(data, uid)["pm_menu_msg_id"] = cb.message.message_id
-        await save_data_unlocked(data)
-    fresh = await load_data()
-    await edit_ws_home_menu(fresh, wid)
-
-
 @dp.callback_query_handler(lambda c: c.data.startswith("pmws:"))
 async def pm_open_workspace(cb: types.CallbackQuery):
     await cb.answer()
@@ -1567,7 +1517,7 @@ async def pm_open_workspace(cb: types.CallbackQuery):
     uid = str(cb.from_user.id)
     wid = cb.data.split(":", 1)[1]
     ws = data["workspaces"].get(wid)
-    if not ws or ws.get("is_personal") or not ws.get("is_connected") or wid not in data["users"].get(uid, {}).get("workspaces", []):
+    if not ws or not ws.get("is_connected") or wid not in data["users"].get(uid, {}).get("workspaces", []):
         await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
         return
     await safe_edit_text(int(uid), cb.message.message_id, f"📂 {ws['name']}", reply_markup=pm_ws_manage_kb(wid))
@@ -1691,7 +1641,7 @@ async def cmd_connect(message: types.Message):
 
     await ensure_all_company_cards(ws)
     for company in ws.get("companies", []):
-        if company.get("mirrors") or company.get("mirror"):
+        if company.get("mirror"):
             await upsert_company_mirror(company)
     await send_or_replace_ws_home_menu(fresh, wid)
     await update_pm_menu(uid, fresh)
@@ -1733,26 +1683,6 @@ async def track_forum_topic_updates(message: types.Message):
 # MIRROR
 # =========================
 
-@dp.callback_query_handler(lambda c: c.data.startswith("mirrormenu:"))
-async def open_mirror_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_mirror_menu(data, wid, int(company_idx))
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("mirroritem:"))
-async def open_mirror_item(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, mirror_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_mirror_item_menu(data, wid, int(company_idx), int(mirror_idx))
-
-
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroron:"))
 async def mirror_on(cb: types.CallbackQuery):
     await cb.answer()
@@ -1767,6 +1697,10 @@ async def mirror_on(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        if company.get("mirror"):
+            await save_data_unlocked(data)
+            asyncio.create_task(send_temp_message(ws["chat_id"], "Этот список уже дублируется.", ws["thread_id"], delay=8))
+            return
         company_id = company["id"]
         clear_pending_mirror_tokens_for_company(data, wid, company_id)
         token = generate_mirror_token()
@@ -1782,7 +1716,7 @@ async def mirror_on(cb: types.CallbackQuery):
 
     msg = await send_message(
         ws["chat_id"],
-        "📤 Чтобы добавить связку:\n1) Перейдите в целевой чат/тред\n2) Отправьте команду:\n/mirror " + token,
+        "📤 Чтобы привязать дубликат:\n1) Перейдите в целевой чат/тред\n2) Отправьте команду:\n/mirror " + token,
         thread_id=ws["thread_id"],
     )
     async with FILE_LOCK:
@@ -1791,7 +1725,7 @@ async def mirror_on(cb: types.CallbackQuery):
             data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
             await save_data_unlocked(data)
     fresh = await load_data()
-    await edit_mirror_menu(fresh, wid, company_idx)
+    await edit_company_settings_menu(fresh, wid, company_idx)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroroff:"))
@@ -1799,12 +1733,8 @@ async def mirror_off(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    parts = cb.data.split(":")
-    if len(parts) < 4:
-        return
-    _, wid, company_idx, mirror_idx = parts[:4]
+    _, wid, company_idx = cb.data.split(":")
     company_idx = int(company_idx)
-    mirror_idx = int(mirror_idx)
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -1812,17 +1742,15 @@ async def mirror_off(cb: types.CallbackQuery):
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        mirrors = company.setdefault("mirrors", [])
-        if mirror_idx < 0 or mirror_idx >= len(mirrors):
-            return
-        mirror = mirrors.pop(mirror_idx)
-        company["mirror"] = mirrors[0] if mirrors else None
+        mirror = company.get("mirror") or {}
+        company["mirror"] = None
+        clear_pending_mirror_tokens_for_company(data, wid, company["id"])
         await save_data_unlocked(data)
 
     if mirror.get("message_id"):
         await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
     fresh = await load_data()
-    await edit_mirror_menu(fresh, wid, company_idx)
+    await edit_company_settings_menu(fresh, wid, company_idx)
     await send_temp_message(ws["chat_id"], "🔌 Список отвязан", ws["thread_id"], delay=8)
 
 
@@ -1832,8 +1760,8 @@ async def cmd_mirror(message: types.Message):
         return
     code = (message.get_args() or "").strip().upper()
     if not code:
-        await try_delete_user_message(message)
         await send_temp_message(message.chat.id, "Укажите код: /mirror CODE", message.message_thread_id or 0, delay=10)
+        await try_delete_user_message(message)
         return
 
     async with FILE_LOCK:
@@ -1841,7 +1769,6 @@ async def cmd_mirror(message: types.Message):
         payload = data.get("mirror_tokens", {}).get(code)
         if not payload:
             await save_data_unlocked(data)
-            asyncio.create_task(try_delete_user_message(message))
             asyncio.create_task(send_temp_message(message.chat.id, "Код не найден или уже использован.", message.message_thread_id or 0, delay=10))
             return
         source_wid = payload["source_wid"]
@@ -1850,40 +1777,27 @@ async def cmd_mirror(message: types.Message):
         if not ws:
             data["mirror_tokens"].pop(code, None)
             await save_data_unlocked(data)
-            asyncio.create_task(try_delete_user_message(message))
             asyncio.create_task(send_temp_message(message.chat.id, "Исходный workspace не найден.", message.message_thread_id or 0, delay=10))
             return
         company_idx = find_company_index_by_id(ws, company_id)
         if company_idx is None:
             data["mirror_tokens"].pop(code, None)
             await save_data_unlocked(data)
-            asyncio.create_task(try_delete_user_message(message))
             asyncio.create_task(send_temp_message(message.chat.id, "Компания не найдена.", message.message_thread_id or 0, delay=10))
             return
         company = ws["companies"][company_idx]
 
-        target_thread_id = message.message_thread_id or 0
-        target_title = mirror_target_title_from_parts(message.chat.title, extract_topic_title(message), target_thread_id)
         reused_message_id = None
         for item in company.get("mirror_history", []):
-            if item.get("chat_id") == message.chat.id and (item.get("thread_id") or 0) == target_thread_id:
+            if item.get("chat_id") == message.chat.id and (item.get("thread_id") or 0) == (message.message_thread_id or 0):
                 reused_message_id = item.get("message_id")
                 break
 
-        mirrors = company.setdefault("mirrors", [])
-        existing = None
-        for mirror in mirrors:
-            if mirror.get("chat_id") == message.chat.id and (mirror.get("thread_id") or 0) == target_thread_id:
-                existing = mirror
-                break
-        if existing is None:
-            existing = {"chat_id": message.chat.id, "thread_id": target_thread_id, "message_id": reused_message_id, "title": target_title}
-            mirrors.append(existing)
-        else:
-            existing["message_id"] = existing.get("message_id") or reused_message_id
-            existing["title"] = target_title
-        company["mirror"] = mirrors[0] if mirrors else None
-
+        company["mirror"] = {
+            "chat_id": message.chat.id,
+            "thread_id": message.message_thread_id or 0,
+            "message_id": reused_message_id,
+        }
         instruction_msg_id = payload.get("instruction_msg_id")
         source_chat_id = payload.get("source_chat_id")
         source_thread_id = payload.get("source_thread_id") or 0
@@ -1901,7 +1815,7 @@ async def cmd_mirror(message: types.Message):
         await safe_delete_message(source_chat_id, instruction_msg_id)
     await send_temp_message(ws["chat_id"], f"📤 Список «{company['title']}» дублируется в другой тред/чат", source_thread_id, delay=10)
     if ws.get("is_connected"):
-        await edit_mirror_menu(fresh, source_wid, company_idx)
+        await edit_company_settings_menu(fresh, source_wid, company_idx)
 
 
 # =========================
@@ -1963,26 +1877,6 @@ async def open_company_settings(cb: types.CallbackQuery):
     await edit_company_settings_menu(data, wid, int(company_idx))
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith("cmpddlfmt:"))
-async def toggle_company_deadline_view(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    company_idx = int(company_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-            return
-        company = ws["companies"][company_idx]
-        company["deadline_view"] = "date" if (company.get("deadline_view") or "relative") == "relative" else "relative"
-        await save_data_unlocked(data)
-    fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
-    await edit_company_settings_menu(fresh, wid, company_idx)
-
-
 @dp.callback_query_handler(lambda c: c.data.startswith("cat:"))
 async def open_category(cb: types.CallbackQuery):
     await cb.answer()
@@ -2024,13 +1918,52 @@ async def open_task_move_menu(cb: types.CallbackQuery):
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpl:"))
-async def open_template_menu(cb: types.CallbackQuery):
+async def open_template_index(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    await edit_template_index_menu(data, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplhome:"))
+async def open_active_template_home(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
     wid = cb.data.split(":", 1)[1]
     data = await load_data()
     await edit_template_menu(data, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplopen:"))
+async def open_template_from_index(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, template_idx = cb.data.split(":")
+    template_idx = int(template_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or template_idx < 0 or template_idx >= len(ws.get("templates", [])):
+            return
+        ws["active_template_id"] = ws["templates"][template_idx]["id"]
+        normalize_template(ws)
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_template_menu(fresh, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplset:"))
+async def open_template_settings(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    await edit_template_settings_menu(data, wid)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcat:"))
@@ -2077,37 +2010,6 @@ async def open_template_task_move(cb: types.CallbackQuery):
 # CANCEL
 # =========================
 
-async def refresh_runtime_menu_state(data: dict, wid: str):
-    state = RUNTIME_MENU_STATE.get(wid) or {"view": "ws"}
-    view = state.get("view")
-    if view == "company":
-        await edit_company_menu(data, wid, state["company_idx"])
-    elif view == "company_settings":
-        await edit_company_settings_menu(data, wid, state["company_idx"])
-    elif view == "category":
-        await edit_category_menu(data, wid, state["company_idx"], state["category_idx"])
-    elif view == "category_settings":
-        await edit_category_settings_menu(data, wid, state["company_idx"], state["category_idx"])
-    elif view == "task":
-        await edit_task_menu(data, wid, state["company_idx"], state["task_idx"])
-    elif view == "task_move":
-        await edit_task_move_menu(data, wid, state["company_idx"], state["task_idx"])
-    elif view == "template":
-        await edit_template_menu(data, wid)
-    elif view == "template_category":
-        await edit_template_category_menu(data, wid, state["category_idx"])
-    elif view == "template_category_settings":
-        await edit_template_category_settings_menu(data, wid, state["category_idx"])
-    elif view == "template_task":
-        await edit_template_task_menu(data, wid, state["task_idx"])
-    elif view == "template_task_move":
-        await edit_template_task_move_menu(data, wid, state["task_idx"])
-    elif view == "company_create":
-        await edit_company_create_menu(data, wid)
-    else:
-        await edit_ws_home_menu(data, wid)
-
-
 async def show_back_view(data: dict, wid: str, back_to: dict):
     view = back_to.get("view", "ws")
     if view == "company":
@@ -2120,8 +2022,12 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
         await edit_category_settings_menu(data, wid, back_to["company_idx"], back_to["category_idx"])
     elif view == "task":
         await edit_task_menu(data, wid, back_to["company_idx"], back_to["task_idx"])
+    elif view == "template_index":
+        await edit_template_index_menu(data, wid)
     elif view == "template":
         await edit_template_menu(data, wid)
+    elif view == "template_settings":
+        await edit_template_settings_menu(data, wid)
     elif view == "template_category":
         await edit_template_category_menu(data, wid, back_to["category_idx"])
     elif view == "template_category_settings":
@@ -2190,6 +2096,42 @@ async def company_emoji_prompt(cb: types.CallbackQuery):
         await save_data_unlocked(data)
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith("cmpdlv:"))
+async def toggle_company_deadline_view(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        company["deadline_view"] = "date" if company.get("deadline_view") != "date" else "relative"
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    await edit_company_settings_menu(fresh, wid, company_idx)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("cmpcopy:"))
+async def copy_company_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        await set_prompt(ws, "✏️ Введите название для копии компании:", {"type": "copy_company", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}})
+        await save_data_unlocked(data)
+
+
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpdel:"))
 async def delete_company(cb: types.CallbackQuery):
     await cb.answer()
@@ -2205,13 +2147,12 @@ async def delete_company(cb: types.CallbackQuery):
         company = ws["companies"].pop(company_idx)
         company_id = company["id"]
         card_msg_id = company.get("card_msg_id")
-        mirrors = list(company.get("mirrors") or ([] if not company.get("mirror") else [company.get("mirror")]))
+        mirror = company.get("mirror") or {}
         clear_pending_mirror_tokens_for_company(data, wid, company_id)
         await save_data_unlocked(data)
     await safe_delete_message(ws["chat_id"], card_msg_id)
-    for mirror in mirrors:
-        if mirror.get("message_id"):
-            await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
+    if mirror.get("message_id"):
+        await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
     fresh = await load_data()
     await send_or_replace_ws_home_menu(fresh, wid)
 
@@ -2261,6 +2202,22 @@ async def category_emoji_prompt(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected"):
             return
         await set_prompt(ws, "😀 Пришлите один смайлик для категории:", {"type": "category_emoji", "company_idx": company_idx, "category_idx": category_idx, "back_to": {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx}})
+        await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("catcopy:"))
+async def copy_category_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, category_idx = cb.data.split(":")
+    company_idx, category_idx = int(company_idx), int(category_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        await set_prompt(ws, "✏️ Введите название для копии категории:", {"type": "copy_category", "company_idx": company_idx, "category_idx": category_idx, "back_to": {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx}})
         await save_data_unlocked(data)
 
 
@@ -2360,7 +2317,7 @@ async def task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰ Пришлите дату/время или срок: 06.04.26 16:00, 3 дня, 7ч20м.", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
+        await set_prompt(ws, "⏰ Пришлите дату в формате ДД.ММ.ГГГГ или одно число дней, например 3.", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
         await save_data_unlocked(data)
 
 
@@ -2506,6 +2463,117 @@ async def move_task_out_of_category(cb: types.CallbackQuery):
 # TEMPLATE ACTIONS
 # =========================
 
+@dp.callback_query_handler(lambda c: c.data.startswith("tpladd:"))
+async def add_template_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        await set_prompt(ws, "✏️ Введите название нового шаблона:", {"type": "new_template", "back_to": {"view": "template_index"}})
+        await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplsetren:"))
+async def rename_template_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        await set_prompt(ws, "✏️ Введите новое название шаблона:", {"type": "rename_template", "back_to": {"view": "template_settings"}})
+        await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplsetemoji:"))
+async def template_emoji_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        await set_prompt(ws, "😀 Пришлите один смайлик для шаблона:", {"type": "template_emoji", "back_to": {"view": "template_settings"}})
+        await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplsetdlv:"))
+async def toggle_template_deadline_view(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws:
+            return
+        template = get_active_template(ws)
+        if not template:
+            return
+        template["deadline_view"] = "date" if template.get("deadline_view") != "date" else "relative"
+        normalize_template(ws)
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_template_settings_menu(fresh, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplcopy:"))
+async def copy_template_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        await set_prompt(ws, "✏️ Введите название для копии шаблона:", {"type": "copy_template", "back_to": {"view": "template_settings"}})
+        await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tpldelset:"))
+async def delete_active_template(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    blocked = False
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws:
+            return
+        templates = ws.get("templates", [])
+        active_idx = get_active_template_index(ws)
+        if active_idx is None:
+            return
+        if len(templates) <= 1:
+            blocked = True
+        else:
+            templates.pop(active_idx)
+            ws["active_template_id"] = templates[max(0, active_idx - 1)]["id"]
+            normalize_template(ws)
+            await save_data_unlocked(data)
+    if blocked:
+        await send_temp_message(cb.message.chat.id, "Должен остаться хотя бы один шаблон.", cb.message.message_thread_id or 0, delay=6)
+        return
+    fresh = await load_data()
+    await edit_template_index_menu(fresh, wid)
+
+
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatnew:"))
 async def add_template_category_prompt(cb: types.CallbackQuery):
     await cb.answer()
@@ -2636,7 +2704,7 @@ async def template_task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰ Пришлите срок: 3 дня, 7ч20м, 45 минут.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
+        await set_prompt(ws, "⏰ Пришлите число дней, например 3.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
         await save_data_unlocked(data)
 
 
@@ -2653,7 +2721,6 @@ async def delete_template_task_deadline(cb: types.CallbackQuery):
         if not ws or task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
             return
         ws["template_tasks"][task_idx]["deadline_days"] = None
-        ws["template_tasks"][task_idx]["deadline_seconds"] = None
         await save_data_unlocked(data)
     fresh = await load_data()
     await edit_template_task_menu(fresh, wid, task_idx)
@@ -2737,13 +2804,12 @@ async def move_template_task_out_of_category(cb: types.CallbackQuery):
 
 @dp.message_handler(content_types=types.ContentTypes.TEXT)
 async def handle_group_text(message: types.Message):
+    if message.chat.type == "private":
+        return
     if is_known_command(message.text):
         return
 
-    if message.chat.type == "private":
-        wid = personal_ws_id(str(message.from_user.id))
-    else:
-        wid = make_ws_id(message.chat.id, message.message_thread_id or 0)
+    wid = make_ws_id(message.chat.id, message.message_thread_id or 0)
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -2767,7 +2833,6 @@ async def handle_group_text(message: types.Message):
         if mode == "new_company":
             if company_exists(ws, text):
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6))
                 return
             company = make_company(text, awaiting.get("use_template", False), ws)
@@ -2785,7 +2850,6 @@ async def handle_group_text(message: types.Message):
                 return
             if company_exists(ws, text, exclude_idx=company_idx):
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6))
                 return
             ws["companies"][company_idx]["title"] = text
@@ -2795,7 +2859,6 @@ async def handle_group_text(message: types.Message):
         elif mode == "company_emoji":
             if not is_single_emoji(text):
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 return
             company_idx = awaiting["company_idx"]
@@ -2807,6 +2870,18 @@ async def handle_group_text(message: types.Message):
             finish()
             await save_data_unlocked(data)
             created_company = False
+        elif mode == "copy_company":
+            source_company_idx = awaiting["company_idx"]
+            if source_company_idx < 0 or source_company_idx >= len(ws["companies"]):
+                finish(); await save_data_unlocked(data); return
+            if company_exists(ws, text):
+                await save_data_unlocked(data)
+                asyncio.create_task(send_temp_message(ws["chat_id"], "Такая компания уже существует.", ws["thread_id"], delay=6))
+                return
+            new_company = clone_company(ws["companies"][source_company_idx], text)
+            ws["companies"].append(new_company)
+            created_company_idx = len(ws["companies"]) - 1
+            finish(); await save_data_unlocked(data); created_company = True
         elif mode == "new_category":
             company_idx = awaiting["company_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
@@ -2816,7 +2891,6 @@ async def handle_group_text(message: types.Message):
             company = ws["companies"][company_idx]
             if category_exists(company.get("categories", []), text):
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             company.setdefault("categories", []).append({"id": uuid.uuid4().hex, "title": text, "emoji": "📁"})
@@ -2834,7 +2908,6 @@ async def handle_group_text(message: types.Message):
             category = company["categories"][category_idx]
             if category_exists(company.get("categories", []), text, exclude_id=category["id"]):
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             category["title"] = text
@@ -2842,7 +2915,6 @@ async def handle_group_text(message: types.Message):
         elif mode == "category_emoji":
             if not is_single_emoji(text):
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 return
             company_idx = awaiting["company_idx"]
@@ -2897,16 +2969,75 @@ async def handle_group_text(message: types.Message):
             started_at, due_at, err = parse_deadline_input(text, task.get("deadline_started_at"))
             if err:
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], err, ws["thread_id"], delay=6))
                 return
             task["deadline_started_at"] = started_at
             task["deadline_due_at"] = due_at
             finish(); await save_data_unlocked(data); created_company = False
+        elif mode == "copy_category":
+            company_idx = awaiting["company_idx"]
+            category_idx = awaiting["category_idx"]
+            if company_idx < 0 or company_idx >= len(ws["companies"]):
+                finish(); await save_data_unlocked(data); return
+            company = ws["companies"][company_idx]
+            if category_idx < 0 or category_idx >= len(company.get("categories", [])):
+                finish(); await save_data_unlocked(data); return
+            if category_exists(company.get("categories", []), text):
+                await save_data_unlocked(data)
+                asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
+                return
+            new_category, new_tasks = clone_category(company, company["categories"][category_idx], text)
+            company.setdefault("categories", []).append(new_category)
+            company.setdefault("tasks", []).extend(new_tasks)
+            finish(); await save_data_unlocked(data); created_company = False
+        elif mode == "new_template":
+            if template_exists(ws, text):
+                await save_data_unlocked(data)
+                asyncio.create_task(send_temp_message(ws["chat_id"], "Такой шаблон уже существует.", ws["thread_id"], delay=6))
+                return
+            template = ensure_template({"title": text, "emoji": "📁", "deadline_view": "relative", "tasks": [], "categories": []}, len(ws.get("templates", [])))
+            ws.setdefault("templates", []).append(template)
+            ws["active_template_id"] = template["id"]
+            normalize_template(ws)
+            finish(); await save_data_unlocked(data); created_company = False
+        elif mode == "rename_template":
+            template = get_active_template(ws)
+            if not template:
+                finish(); await save_data_unlocked(data); return
+            if template_exists(ws, text, exclude_id=template.get("id")):
+                await save_data_unlocked(data)
+                asyncio.create_task(send_temp_message(ws["chat_id"], "Такой шаблон уже существует.", ws["thread_id"], delay=6))
+                return
+            template["title"] = text
+            normalize_template(ws)
+            finish(); await save_data_unlocked(data); created_company = False
+        elif mode == "template_emoji":
+            if not is_single_emoji(text):
+                await save_data_unlocked(data)
+                asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
+                return
+            template = get_active_template(ws)
+            if not template:
+                finish(); await save_data_unlocked(data); return
+            template["emoji"] = text
+            normalize_template(ws)
+            finish(); await save_data_unlocked(data); created_company = False
+        elif mode == "copy_template":
+            template = get_active_template(ws)
+            if not template:
+                finish(); await save_data_unlocked(data); return
+            if template_exists(ws, text):
+                await save_data_unlocked(data)
+                asyncio.create_task(send_temp_message(ws["chat_id"], "Такой шаблон уже существует.", ws["thread_id"], delay=6))
+                return
+            new_template = clone_template(template, text)
+            ws.setdefault("templates", []).append(new_template)
+            ws["active_template_id"] = new_template["id"]
+            normalize_template(ws)
+            finish(); await save_data_unlocked(data); created_company = False
         elif mode == "new_template_category":
             if category_exists(ws.get("template_categories", []), text):
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             ws.setdefault("template_categories", []).append({"id": uuid.uuid4().hex, "title": text, "emoji": "📁"})
@@ -2918,7 +3049,6 @@ async def handle_group_text(message: types.Message):
             category = ws["template_categories"][category_idx]
             if category_exists(ws.get("template_categories", []), text, exclude_id=category["id"]):
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такая категория уже существует.", ws["thread_id"], delay=6))
                 return
             category["title"] = text
@@ -2926,7 +3056,6 @@ async def handle_group_text(message: types.Message):
         elif mode == "template_category_emoji":
             if not is_single_emoji(text):
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Пришлите один смайлик.", ws["thread_id"], delay=6))
                 return
             category_idx = awaiting["category_idx"]
@@ -2947,7 +3076,6 @@ async def handle_group_text(message: types.Message):
                 "category_id": category_id,
                 "created_at": now_ts(),
                 "deadline_days": None,
-                "deadline_seconds": None,
             })
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "rename_template_task":
@@ -2960,14 +3088,12 @@ async def handle_group_text(message: types.Message):
             task_idx = awaiting["task_idx"]
             if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
                 finish(); await save_data_unlocked(data); return
-            seconds, err = parse_template_deadline_duration(text)
+            days, err = parse_template_deadline_days(text)
             if err:
                 await save_data_unlocked(data)
-                asyncio.create_task(try_delete_user_message(message))
                 asyncio.create_task(send_temp_message(ws["chat_id"], err, ws["thread_id"], delay=6))
                 return
-            ws["template_tasks"][task_idx]["deadline_seconds"] = seconds
-            ws["template_tasks"][task_idx]["deadline_days"] = seconds // 86400 if seconds % 86400 == 0 else None
+            ws["template_tasks"][task_idx]["deadline_days"] = days
             finish(); await save_data_unlocked(data); created_company = False
         else:
             await save_data_unlocked(data)
@@ -2980,13 +3106,13 @@ async def handle_group_text(message: types.Message):
     if not ws or not ws.get("is_connected"):
         return
 
-    if mode == "new_company":
+    if mode in {"new_company", "copy_company"}:
         await sync_company_everywhere(ws, created_company_idx)
         await recreate_ws_home_menu(fresh, wid)
         await save_data(fresh)
         return
 
-    company_modes = {"rename_company", "company_emoji", "new_category", "rename_category", "category_emoji", "new_task", "rename_task", "task_deadline"}
+    company_modes = {"rename_company", "company_emoji", "new_category", "rename_category", "category_emoji", "new_task", "rename_task", "task_deadline", "copy_category"}
     if mode in company_modes:
         company_idx = awaiting.get("company_idx")
         if company_idx is not None and 0 <= company_idx < len(ws.get("companies", [])):
@@ -2997,47 +3123,8 @@ async def handle_group_text(message: types.Message):
 
 
 # =========================
-# DEADLINE REFRESH
-# =========================
-
-def seconds_until_next_deadline_refresh() -> float:
-    now = now_dt()
-    current = now.replace(second=0, microsecond=0)
-    minute = ((current.minute // 10) + 1) * 10
-    if minute >= 60:
-        target = (current + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-    else:
-        target = current.replace(minute=minute, second=0, microsecond=0)
-    return max((target - now).total_seconds(), 1.0)
-
-
-async def deadline_refresh_loop():
-    while True:
-        await asyncio.sleep(seconds_until_next_deadline_refresh())
-        try:
-            data = await load_data()
-            changed = False
-            for wid, ws in data.get("workspaces", {}).items():
-                if not ws.get("is_connected"):
-                    continue
-                for company_idx in range(len(ws.get("companies", []))):
-                    await sync_company_everywhere(ws, company_idx)
-                    changed = True
-                await refresh_runtime_menu_state(data, wid)
-            if changed:
-                await save_data(data)
-        except Exception:
-            pass
-
-
-async def on_startup(_):
-    asyncio.create_task(deadline_refresh_loop())
-
-
-# =========================
 # RUN
 # =========================
 
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
-
+    executor.start_polling(dp, skip_updates=True)
