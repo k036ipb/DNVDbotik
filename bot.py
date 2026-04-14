@@ -804,11 +804,30 @@ def sort_template_tasks(tasks: list[dict]) -> list[dict]:
 
 
 
+def build_progress_bar(done_count: int, total_count: int) -> str:
+    if total_count <= 0:
+        filled = 0
+        percent = 0.0
+    else:
+        percent = (done_count / total_count) * 100
+        filled = max(0, min(10, round((done_count / total_count) * 10)))
+    cells = ["🟩"] * filled + ["⬜️"] * (10 - filled)
+    return f"{' '.join(cells)} {percent:.1f} %"
+
+
+def task_progress_bar_line(tasks: list[dict], indent: str = "") -> str:
+    total = len(tasks)
+    done = sum(1 for task in tasks if task.get("done"))
+    return f"{indent}{build_progress_bar(done, total)}"
+
+
 def company_card_text(company: dict) -> str:
     lines = [f"{display_company_name(company)}:"]
     company_deadline_format = company.get("deadline_format") or "relative"
+    all_tasks = company.get("tasks", [])
+    lines.append(task_progress_bar_line(all_tasks))
 
-    uncategorized = [t for t in company["tasks"] if not t.get("category_id")]
+    uncategorized = [t for t in all_tasks if not t.get("category_id")]
     if uncategorized:
         for task in sort_company_tasks(uncategorized):
             icon = task_deadline_icon(task)
@@ -816,19 +835,18 @@ def company_card_text(company: dict) -> str:
             lines.append(f"{icon} {task['text']}{suffix}")
 
     for category in company.get("categories", []):
+        cat_tasks = [t for t in all_tasks if t.get("category_id") == category["id"]]
         lines.append(f"    {display_category_name(category)}:")
-        cat_deadline_format = category.get("deadline_format") or company_deadline_format
-        cat_tasks = [t for t in company["tasks"] if t.get("category_id") == category["id"]]
+        lines.append(task_progress_bar_line(cat_tasks, indent="    "))
         if cat_tasks:
             for task in sort_company_tasks(cat_tasks):
                 icon = task_deadline_icon(task)
-                suffix = display_task_deadline_suffix(task, cat_deadline_format) if not task.get("done") and task.get("deadline_due_at") else ""
+                suffix = display_task_deadline_suffix(task, category.get("deadline_format") or company_deadline_format) if not task.get("done") and task.get("deadline_due_at") else ""
                 lines.append(f"        {icon} {task['text']}{suffix}")
 
-    if len(lines) == 1:
+    if len(lines) == 2 and not all_tasks and not company.get("categories"):
         lines.append("—")
     return "\n".join(lines)
-
 
 
 def pm_main_text(user_id: str, data: dict) -> str:
@@ -1050,8 +1068,16 @@ def pm_main_kb(user_id: str, data: dict):
 
 def pm_ws_manage_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🧹 Очистить воркспейс", callback_data=f"pmwsclearask:{wid}"))
     kb.add(InlineKeyboardButton("🗑 Удалить workspace", callback_data=f"pmwsdelask:{wid}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="pmrefresh:root"))
+    return kb
+
+
+def ws_settings_kb(wid: str):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🧹 Очистить воркспейс", callback_data=f"wsclearask:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"backws:{wid}"))
     return kb
 
 
@@ -1063,6 +1089,7 @@ def ws_home_kb(wid: str, ws: dict):
     kb.add(InlineKeyboardButton("➕ Создать компанию", callback_data=f"cmpnew:{wid}"))
     kb.add(InlineKeyboardButton("⚙️ Шаблон задач", callback_data=f"tplroot:{wid}"))
     if str(wid).startswith("pm_"):
+        kb.add(InlineKeyboardButton("⚙️ Настройка воркспейса", callback_data=f"wsset:{wid}"))
         kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="pmrefresh:root"))
     return kb
 
@@ -1206,12 +1233,9 @@ def template_menu_kb(wid: str, ws: dict):
 
 
 def template_settings_kb(wid: str, ws: dict):
-    active = get_active_template(ws)
-    fmt = "📅 Формат дедлайнов: дата" if active.get("deadline_format") == "date" else "⏳ Формат дедлайнов: дни"
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("✍️ Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
     kb.add(InlineKeyboardButton("😀 Переназначить смайлик", callback_data=f"tplemojiset:{wid}"))
-    kb.add(InlineKeyboardButton(fmt, callback_data=f"tpldeadlinefmt:{wid}"))
     kb.add(InlineKeyboardButton("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
     kb.add(InlineKeyboardButton("🗑 Удалить шаблон", callback_data=f"tpldelsetask:{wid}"))
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"tpl:{wid}"))
@@ -1451,6 +1475,13 @@ async def edit_ws_home_menu(data: dict, wid: str):
     if not ws or not ws.get("is_connected"):
         return
     await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
+
+
+async def edit_ws_settings_menu(data: dict, wid: str):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Настройка воркспейса"), ws_settings_kb(wid))
 
 
 async def edit_company_create_menu(data: dict, wid: str):
@@ -1751,6 +1782,87 @@ async def pm_open_workspace(cb: types.CallbackQuery):
         await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
         return
     await safe_edit_text(int(uid), cb.message.message_id, f"📂 {ws['name']}", reply_markup=pm_ws_manage_kb(wid))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("wsset:"))
+async def open_ws_settings(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    await edit_ws_settings_menu(data, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("wsclearask:"))
+async def ws_clear_ask(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Настройка воркспейса", "🧹 Очистить воркспейс?"), confirm_kb(f"wsclear:{wid}", f"wsset:{wid}"))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("wsclear:"))
+async def ws_clear_confirm(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        await clear_workspace_contents(ws)
+        clear_pending_mirror_tokens_for_workspace(data, wid)
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_ws_home_menu(fresh, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("pmwsclearask:"))
+async def pm_clear_workspace_ask(cb: types.CallbackQuery):
+    await cb.answer()
+    if cb.message.chat.type != "private" or should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    await safe_edit_text(int(cb.from_user.id), cb.message.message_id, f"📂 {ws['name']}\n\nОчистить workspace?", reply_markup=confirm_kb(f"pmwsclear:{wid}", f"pmws:{wid}"))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("pmwsclear:"))
+async def pm_clear_workspace_confirm(cb: types.CallbackQuery):
+    await cb.answer()
+    if cb.message.chat.type != "private" or should_ignore_callback(cb):
+        return
+    uid = str(cb.from_user.id)
+    wid = cb.data.split(":", 1)[1]
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws:
+            return
+        ws_name = ws["name"]
+        await clear_workspace_contents(ws)
+        clear_pending_mirror_tokens_for_workspace(data, wid)
+        ensure_user(data, uid)["pm_menu_msg_id"] = cb.message.message_id
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    ws = fresh["workspaces"].get(wid)
+    if ws and ws.get("is_connected"):
+        await edit_ws_home_menu(fresh, wid)
+    await safe_edit_text(int(uid), cb.message.message_id, f"📂 {ws_name}", reply_markup=pm_ws_manage_kb(wid))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsdelask:"))
@@ -2294,6 +2406,8 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
         await edit_category_settings_menu(data, wid, back_to["company_idx"], back_to["category_idx"])
     elif view == "task":
         await edit_task_menu(data, wid, back_to["company_idx"], back_to["task_idx"])
+    elif view == "ws_settings":
+        await edit_ws_settings_menu(data, wid)
     elif view == "template":
         await edit_template_menu(data, wid)
     elif view == "template_root":
@@ -3441,17 +3555,11 @@ async def toggle_template_deadline_format(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     wid = cb.data.split(":",1)[1]
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws:
-            return
-        tpl = get_active_template(ws)
-        tpl["deadline_format"] = "date" if tpl.get("deadline_format") != "date" else "relative"
-        set_active_template(ws, tpl["id"])
-        await save_data_unlocked(data)
-    fresh = await load_data()
-    await edit_template_settings_menu(fresh, wid)
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    await edit_template_settings_menu(data, wid)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcopy:"))
