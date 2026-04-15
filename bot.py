@@ -1656,6 +1656,21 @@ async def edit_template_task_move_menu(data: dict, wid: str, task_idx: int):
 
 
 
+async def clear_workspace_contents(ws: dict):
+    awaiting = ws.get("awaiting") or {}
+    prompt_msg_id = awaiting.get("prompt_msg_id")
+    if prompt_msg_id:
+        await safe_delete_message(ws["chat_id"], prompt_msg_id)
+
+    for company in ws.get("companies", []):
+        await safe_delete_message(ws["chat_id"], company.get("card_msg_id"))
+        for mirror in company.get("mirrors", []):
+            await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
+
+    ws["companies"] = []
+    ws["awaiting"] = None
+
+
 def clear_pending_mirror_tokens_for_company(data: dict, wid: str, company_id: str):
     for token, payload in list(data.get("mirror_tokens", {}).items()):
         if payload.get("source_wid") == wid and payload.get("company_id") == company_id:
