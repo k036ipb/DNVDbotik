@@ -905,12 +905,8 @@ def company_card_text(company: dict) -> str:
 
 
 def pm_main_text(user_id: str, data: dict) -> str:
-    lines = ["📂 Ваши workspace:"]
-    items = [wid for wid in data["users"].get(user_id, {}).get("workspaces", []) if not str(wid).startswith("pm_")]
-    active_items = [wid for wid in items if data["workspaces"].get(wid, {}).get("is_connected")]
-    if not active_items:
-        lines.append("Нет workspace")
-    return "\\n".join(lines)
+    return "📂 Ваши workspace:"
+
 
 def generate_mirror_token() -> str:
     return uuid.uuid4().hex[:8].upper()
@@ -1663,7 +1659,7 @@ async def update_pm_menu(user_id: str, data: dict):
     kb = pm_main_kb(user_id, data)
     if user.get("pm_menu_msg_id"):
         try:
-            await tg_call(lambda: bot.edit_message_text(text, int(user_id), user["pm_menu_msg_id"], reply_markup=kb), retries=1)
+            await tg_call(lambda: bot.edit_message_text(text, int(user_id), user["pm_menu_msg_id"], reply_markup=kb, parse_mode="HTML"), retries=1)
             return
         except MessageNotModified:
             return
@@ -2074,7 +2070,7 @@ async def pm_open_workspace(cb: types.CallbackQuery):
     if not ws or not ws.get("is_connected") or wid not in data["users"].get(uid, {}).get("workspaces", []):
         await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
         return
-    await safe_edit_text(int(uid), cb.message.message_id, f"📂 {ws['name']}", reply_markup=pm_ws_manage_kb(wid))
+    await safe_edit_text(int(uid), cb.message.message_id, f"📂 {esc(ws.get('name') or 'Workspace')}", reply_markup=pm_ws_manage_kb(wid))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("wsset:"))
@@ -2131,7 +2127,7 @@ async def pm_clear_workspace_ask(cb: types.CallbackQuery):
     ws = data["workspaces"].get(wid)
     if not ws:
         return
-    await safe_edit_text(int(cb.from_user.id), cb.message.message_id, f"📂 {ws['name']}\n\nОчистить workspace?", reply_markup=confirm_kb(f"pmwsclear:{wid}", f"pmws:{wid}"))
+    await safe_edit_text(int(cb.from_user.id), cb.message.message_id, f"📂 {esc(ws.get('name') or 'Workspace')}\n\nОчистить workspace?", reply_markup=confirm_kb(f"pmwsclear:{wid}", f"pmws:{wid}"))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsclear:"))
@@ -2155,7 +2151,7 @@ async def pm_clear_workspace_confirm(cb: types.CallbackQuery):
     ws = fresh["workspaces"].get(wid)
     if ws and ws.get("is_connected"):
         await edit_ws_home_menu(fresh, wid)
-    await safe_edit_text(int(uid), cb.message.message_id, f"📂 {ws_name}", reply_markup=pm_ws_manage_kb(wid))
+    await safe_edit_text(int(uid), cb.message.message_id, f"📂 {esc(ws_name)}", reply_markup=pm_ws_manage_kb(wid))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsdelask:"))
@@ -2167,7 +2163,7 @@ async def pm_delete_workspace_ask(cb: types.CallbackQuery):
     data = await load_data()
     uid = str(cb.from_user.id)
     ws = data["workspaces"].get(wid)
-    title = f"Удалить workspace «{ws['name']}»?" if ws else "Удалить workspace?"
+    title = f"Удалить workspace «{esc(ws.get('name') or 'Workspace')}»?" if ws else "Удалить workspace?"
     await safe_edit_text(int(uid), cb.message.message_id, title, reply_markup=confirm_kb(f"pmwsdel:{wid}", f"pmws:{wid}"))
 
 
