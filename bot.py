@@ -1247,7 +1247,7 @@ def ws_home_kb(wid: str, ws: dict):
 
             row2 = [
                 InlineKeyboardButton("⬅️", callback_data="pmrefresh:root"),
-                InlineKeyboardButton("⚙️ Workspace", callback_data=f"wssettings:{wid}"),
+                InlineKeyboardButton("⚙️ Workspace", callback_data=f"wsset:{wid}"),
             ]
             if has_next:
                 row2.append(InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:wh:x:x:next"))
@@ -1259,7 +1259,7 @@ def ws_home_kb(wid: str, ws: dict):
             )
             kb.row(
                 InlineKeyboardButton("⬅️", callback_data="pmrefresh:root"),
-                InlineKeyboardButton("⚙️ Workspace", callback_data=f"wssettings:{wid}"),
+                InlineKeyboardButton("⚙️ Workspace", callback_data=f"wsset:{wid}"),
             )
     else:
         if has_prev or has_next:
@@ -1324,8 +1324,8 @@ def company_menu_kb(wid: str, company_idx: int, company: dict):
         kb.add(InlineKeyboardButton(title, callback_data=callback_data))
 
     row1 = [
-        InlineKeyboardButton("➕ Задача", callback_data=f"taskadd:{wid}:{company_idx}"),
-        InlineKeyboardButton("➕ Подгруппа", callback_data=f"catadd:{wid}:{company_idx}"),
+        InlineKeyboardButton("➕ Задача", callback_data=f"tasknew:{wid}:{company_idx}"),
+        InlineKeyboardButton("➕ Подгруппа", callback_data=f"catnew:{wid}:{company_idx}"),
     ]
     if has_prev:
         row1.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:cm:{company_idx}:x:prev"))
@@ -1333,7 +1333,7 @@ def company_menu_kb(wid: str, company_idx: int, company: dict):
 
     row2 = [
         InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
-        InlineKeyboardButton("⚙️ Список", callback_data=f"cmpsettings:{wid}:{company_idx}"),
+        InlineKeyboardButton("⚙️ Список", callback_data=f"cmpset:{wid}:{company_idx}"),
     ]
     if has_next:
         row2.append(InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:cm:{company_idx}:x:next"))
@@ -1347,7 +1347,7 @@ def company_settings_kb(wid: str, company_idx: int):
     kb.add(InlineKeyboardButton("🧬 Копия Списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("📤 Дублирование списка", callback_data=f"mirrors:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("🕒 Формат дедлайнов", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("➕ Подгруппа", callback_data=f"catadd:{wid}:{company_idx}"))
+    kb.add(InlineKeyboardButton("➕ Подгруппа", callback_data=f"catnew:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("🗑 Удалить список", callback_data=f"cmpdelask:{wid}:{company_idx}"))
     kb.add(InlineKeyboardButton("⬅️", callback_data=f"cmp:{wid}:{company_idx}"))
     return kb
@@ -1369,8 +1369,8 @@ def category_menu_kb(wid: str, company_idx: int, category_idx: int, category: di
         kb.add(InlineKeyboardButton(title, callback_data=callback_data))
 
     kb.row(
-        InlineKeyboardButton("➕ Задача", callback_data=f"taskadd:{wid}:{company_idx}:{category.get('id', '')}"),
-        InlineKeyboardButton("⚙️ Подгруппа", callback_data=f"catsettings:{wid}:{company_idx}:{category_idx}"),
+        InlineKeyboardButton("➕ Задача", callback_data=f"tasknew:{wid}:{company_idx}:{category_idx}"),
+        InlineKeyboardButton("⚙️ Подгруппа", callback_data=f"catset:{wid}:{company_idx}:{category_idx}"),
     )
 
     row2 = [InlineKeyboardButton("⬅️", callback_data=f"cmp:{wid}:{company_idx}")]
@@ -1387,8 +1387,8 @@ def category_settings_kb(wid: str, company_idx: int, category_idx: int):
     kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_idx}"))
     kb.add(InlineKeyboardButton("🧬 Копия Подгруппы", callback_data=f"catcopy:{wid}:{company_idx}:{category_idx}"))
     kb.add(InlineKeyboardButton("🕒 Формат дедлайнов", callback_data=f"catdeadlinefmt:{wid}:{company_idx}:{category_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить", callback_data=f"catdelask:{wid}:{company_idx}:{category_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить с задачами", callback_data=f"catdelallask:{wid}:{company_idx}:{category_idx}"))
+    kb.add(InlineKeyboardButton("🗑 Удалить", callback_data=f"catdel:{wid}:{company_idx}:{category_idx}"))
+    kb.add(InlineKeyboardButton("🗑 Удалить с задачами", callback_data=f"catdelall:{wid}:{company_idx}:{category_idx}"))
     kb.add(InlineKeyboardButton("⬅️", callback_data=f"cat:{wid}:{company_idx}:{category_idx}"))
     return kb
 
@@ -1445,7 +1445,7 @@ def templates_root_kb(wid: str, ws: dict):
         kb.add(InlineKeyboardButton(title, callback_data=callback_data))
 
     if has_prev or has_next:
-        row1 = [InlineKeyboardButton("➕ Шаблон", callback_data=f"tpladd:{wid}")]
+        row1 = [InlineKeyboardButton("➕ Шаблон", callback_data=f"tplnewset:{wid}")]
         if has_prev:
             row1.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:tr:x:x:prev"))
         kb.row(*row1)
@@ -1457,7 +1457,7 @@ def templates_root_kb(wid: str, ws: dict):
     else:
         kb.row(
             InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
-            InlineKeyboardButton("➕ Шаблон", callback_data=f"tpladd:{wid}"),
+            InlineKeyboardButton("➕ Шаблон", callback_data=f"tplnewset:{wid}"),
         )
     return kb
 
@@ -1481,8 +1481,8 @@ def template_menu_kb(wid: str, ws: dict):
         kb.add(InlineKeyboardButton(title, callback_data=callback_data))
 
     row1 = [
-        InlineKeyboardButton("➕ Задача", callback_data=f"tpltaskadd:{wid}"),
-        InlineKeyboardButton("➕ Подгруппа", callback_data=f"tplcatadd:{wid}"),
+        InlineKeyboardButton("➕ Задача", callback_data=f"tpltasknew:{wid}"),
+        InlineKeyboardButton("➕ Подгруппа", callback_data=f"tplcatnew:{wid}"),
     ]
     if has_prev:
         row1.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:tm:x:x:prev"))
@@ -1500,11 +1500,11 @@ def template_menu_kb(wid: str, ws: dict):
 
 def template_settings_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("✍️ Переименовать шаблон", callback_data=f"tplren:{wid}"))
-    kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"tplemoji:{wid}"))
+    kb.add(InlineKeyboardButton("✍️ Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
+    kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}"))
     kb.add(InlineKeyboardButton("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить шаблон", callback_data=f"tpldelask:{wid}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"tplmenu:{wid}"))
+    kb.add(InlineKeyboardButton("🗑 Удалить шаблон", callback_data=f"tpldelset:{wid}"))
+    kb.add(InlineKeyboardButton("⬅️", callback_data=f"tpl:{wid}"))
     return kb
 
 
@@ -1523,11 +1523,11 @@ def template_category_menu_kb(wid: str, category_idx: int, category: dict, templ
         kb.add(InlineKeyboardButton(title, callback_data=callback_data))
 
     kb.row(
-        InlineKeyboardButton("➕ Задача", callback_data=f"tpltaskadd:{wid}:{category.get('id', '')}"),
-        InlineKeyboardButton("⚙️ Подгруппа", callback_data=f"tplcatsettings:{wid}:{category_idx}"),
+        InlineKeyboardButton("➕ Задача", callback_data=f"tpltasknew:{wid}:{category_idx}"),
+        InlineKeyboardButton("⚙️ Подгруппа", callback_data=f"tplcatset:{wid}:{category_idx}"),
     )
 
-    row2 = [InlineKeyboardButton("⬅️", callback_data=f"tplmenu:{wid}")]
+    row2 = [InlineKeyboardButton("⬅️", callback_data=f"tpl:{wid}")]
     if has_prev:
         row2.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:tc:{category_idx}:x:prev"))
     if has_next:
