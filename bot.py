@@ -1279,7 +1279,7 @@ def ws_home_kb(wid: str, ws: dict):
 def company_create_mode_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     templates = ws.get("templates", [])
-    items = [(f"По шаблону {display_template_name(tpl)}", f"cmpmode:{wid}:tpl:{tpl['id']}") for tpl in templates]
+    items = [(f"По шаблону {display_template_name(tpl)}", f"cmpmode:{wid}:tplidx:{idx}") for idx, tpl in enumerate(templates)]
     page = get_ui_page(ws, company_create_page_key())
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_CREATE)
 
@@ -1433,7 +1433,7 @@ def task_move_kb(wid: str, company_idx: int, task_idx: int, company: dict, task:
 
 def templates_root_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    items = [(display_template_name(tpl), f"tplselect:{wid}:{tpl['id']}") for tpl in ws.get("templates", [])]
+    items = [(display_template_name(tpl), f"tplselect:{wid}:{idx}") for idx, tpl in enumerate(ws.get("templates", []))]
     page = get_ui_page(ws, templates_root_page_key())
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_TEMPLATES)
 
@@ -1784,7 +1784,7 @@ async def edit_company_settings_menu(data: dict, wid: str, company_idx: int):
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
-    await upsert_ws_menu(data, wid, company_settings_title(ws, company), company_settings_kb(wid, company_idx, company))
+    await upsert_ws_menu(data, wid, company_settings_title(ws, company), company_settings_kb(wid, company_idx))
 
 
 async def edit_category_menu(data: dict, wid: str, company_idx: int, category_idx: int):
@@ -1799,7 +1799,7 @@ async def edit_category_menu(data: dict, wid: str, company_idx: int, category_id
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
-    await upsert_ws_menu(data, wid, category_menu_title(ws, company, category), category_menu_kb(wid, company_idx, category_idx, company, category))
+    await upsert_ws_menu(data, wid, category_menu_title(ws, company, category), category_menu_kb(wid, company_idx, category_idx, category))
 
 
 async def edit_category_settings_menu(data: dict, wid: str, company_idx: int, category_idx: int):
@@ -1814,7 +1814,7 @@ async def edit_category_settings_menu(data: dict, wid: str, company_idx: int, ca
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
-    await upsert_ws_menu(data, wid, category_settings_title(ws, company, category), category_settings_kb(wid, company_idx, category_idx, category))
+    await upsert_ws_menu(data, wid, category_settings_title(ws, company, category), category_settings_kb(wid, company_idx, category_idx))
 
 
 async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
@@ -1878,7 +1878,7 @@ async def edit_template_category_menu(data: dict, wid: str, category_idx: int):
         return
     category = ws["template_categories"][category_idx]
     active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_category_title(ws, active, category), template_category_menu_kb(wid, category_idx, ws, category))
+    await upsert_ws_menu(data, wid, template_category_title(ws, active, category), template_category_menu_kb(wid, category_idx, category, active))
 
 
 async def edit_template_category_settings_menu(data: dict, wid: str, category_idx: int):
@@ -1898,7 +1898,7 @@ async def edit_template_settings_menu(data: dict, wid: str):
     if not ws or not ws.get("is_connected"):
         return
     active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_settings_title(ws, active), template_settings_kb(wid, ws))
+    await upsert_ws_menu(data, wid, template_settings_title(ws, active), template_settings_kb(wid))
 
 
 async def edit_template_task_menu(data: dict, wid: str, task_idx: int):
@@ -2652,16 +2652,27 @@ async def create_company_prompt(cb: types.CallbackQuery):
     parts = cb.data.split(":")
     wid = parts[1]
     mode = parts[2] if len(parts) > 2 else "empty"
-    template_id = parts[3] if len(parts) > 3 and mode == "tpl" else None
+    template_id = None
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "✏️ Напиши название списка:", {"type": "new_company", "use_template": mode == "tpl", "template_id": template_id, "back_to": {"view": "ws"}})
+        if mode == "tplidx":
+            if len(parts) < 4:
+                return
+            try:
+                template_idx = int(parts[3])
+            except Exception:
+                return
+            templates = ws.get("templates", [])
+            if not (0 <= template_idx < len(templates)):
+                return
+            template_id = templates[template_idx].get("id")
+            if not template_id:
+                return
+        await set_prompt(ws, "✏️ Напиши название списка:", {"type": "new_company", "use_template": mode == "tplidx", "template_id": template_id, "back_to": {"view": "ws"}})
         await save_data_unlocked(data)
-
-
 @dp.callback_query_handler(lambda c: c.data.startswith("cmp:"))
 async def open_company(cb: types.CallbackQuery):
     await cb.answer()
@@ -3860,22 +3871,28 @@ async def open_templates_root(cb: types.CallbackQuery):
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplselect:"))
-async def select_template(cb: types.CallbackQuery):
+async def open_template_menu_item(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, template_id = cb.data.split(":")
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws:
-            return
-        set_active_template(ws, template_id)
-        await save_data_unlocked(data)
-    fresh = await load_data()
-    await edit_template_menu(fresh, wid)
-
-
+    _, wid, template_idx_raw = cb.data.split(":", 2)
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    try:
+        template_idx = int(template_idx_raw)
+    except Exception:
+        return
+    templates = ws.get("templates", [])
+    if not (0 <= template_idx < len(templates)):
+        return
+    template_id = templates[template_idx].get("id")
+    if not template_id:
+        return
+    await set_active_template(ws, template_id)
+    await save_data(data)
+    await edit_template_menu(data, wid)
 @dp.callback_query_handler(lambda c: c.data.startswith("tplsettings:"))
 async def open_template_settings(cb: types.CallbackQuery):
     await cb.answer()
