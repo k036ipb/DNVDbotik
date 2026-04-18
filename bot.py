@@ -1201,31 +1201,20 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
     t = (text or '').strip().lower()
     cb = (callback_data or '').strip().lower()
 
-    if t.startswith('⬅️') or t.startswith('⬆️') or t.startswith('⬇️'):
-        return 'primary'
+    entity_prefixes = (
+        'pmws:',
+        'pmpersonal:',
+        'cmp:',
+        'cat:',
+        'task:',
+        'tpl:',
+        'tplcat:',
+        'tpltask:',
+        'mirroritem:',
+    )
 
-    if cb.startswith(('pmws:', 'pmpersonal:', 'cmp:', 'cat:', 'tpl:', 'tplcat:')):
-        return 'primary'
-
-    if t.startswith(('📁', '📂')):
-        return 'primary'
-
-    if (
-        t.startswith('⚙️')
-        or t.startswith('⚙')
-        or t == '📇 шаблоны'
-        or 'настройк' in t
-        or 'шаблон' in t
-    ):
-        return 'danger'
-
-    if (
-        'удалить' in t
-        or 'очистить' in t
-        or t.startswith('🗑')
-        or t == 'да!'
-    ):
-        return 'danger'
+    if cb.startswith(entity_prefixes):
+        return None
 
     if (
         t.startswith('➕')
@@ -1235,7 +1224,7 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
     ):
         return 'success'
 
-    return None
+    return 'primary'
 
 
 def kb_btn(text: str, callback_data: str | None = None, style: str | None = None, **kwargs):
