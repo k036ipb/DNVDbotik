@@ -1201,6 +1201,9 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
     t = (text or '').strip().lower()
     cb = (callback_data or '').strip().lower()
 
+    if t.startswith('⬅️') or t.startswith('⬆️') or t.startswith('⬇️'):
+        return 'primary'
+
     entity_prefixes = (
         'pmws:',
         'pmpersonal:',
@@ -1210,10 +1213,39 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
         'tpl:',
         'tplcat:',
         'tpltask:',
+        'tplselect:',
+        'cmpmode:',
         'mirroritem:',
+        'taskmoveto:',
+        'tpltaskmoveto:',
     )
 
-    if cb.startswith(entity_prefixes):
+    settings_action_prefixes = (
+        'wsclearask:',
+        'pmwsclearask:',
+        'cmpren:',
+        'cmpemoji:',
+        'cmpcopy:',
+        'cmpdeadlinefmt:',
+        'cmpdelask:',
+        'catren:',
+        'catemoji:',
+        'catcopy:',
+        'catdeadlinefmt:',
+        'catdel:',
+        'catdelall:',
+        'tplrenameset:',
+        'tplemojiset:',
+        'tplcopy:',
+        'tpldelset:',
+        'tplcatren:',
+        'tplcatemoji:',
+        'tplcatcopy:',
+        'tplcatdel:',
+        'tplcatdelall:',
+    )
+
+    if cb.startswith(entity_prefixes) or cb.startswith(settings_action_prefixes):
         return None
 
     if (
