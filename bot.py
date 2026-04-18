@@ -1820,7 +1820,7 @@ async def edit_company_settings_menu(data: dict, wid: str, company_idx: int):
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
-    await upsert_ws_menu(data, wid, company_settings_title(ws, company), company_settings_kb(wid, company_idx, company))
+    await upsert_ws_menu(data, wid, company_settings_title(ws, company), company_settings_kb(wid, company_idx))
 
 
 async def edit_category_menu(data: dict, wid: str, company_idx: int, category_idx: int):
@@ -1835,7 +1835,7 @@ async def edit_category_menu(data: dict, wid: str, company_idx: int, category_id
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
-    await upsert_ws_menu(data, wid, category_menu_title(ws, company, category), category_menu_kb(wid, company_idx, category_idx, company, category))
+    await upsert_ws_menu(data, wid, category_menu_title(ws, company, category), category_menu_kb(wid, company_idx, category_idx, category))
 
 
 async def edit_category_settings_menu(data: dict, wid: str, company_idx: int, category_idx: int):
@@ -1850,7 +1850,7 @@ async def edit_category_settings_menu(data: dict, wid: str, company_idx: int, ca
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
-    await upsert_ws_menu(data, wid, category_settings_title(ws, company, category), category_settings_kb(wid, company_idx, category_idx, category))
+    await upsert_ws_menu(data, wid, category_settings_title(ws, company, category), category_settings_kb(wid, company_idx, category_idx))
 
 
 async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
@@ -1914,7 +1914,7 @@ async def edit_template_category_menu(data: dict, wid: str, category_idx: int):
         return
     category = ws["template_categories"][category_idx]
     active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_category_title(ws, active, category), template_category_menu_kb(wid, category_idx, ws, category))
+    await upsert_ws_menu(data, wid, template_category_title(ws, active, category), template_category_menu_kb(wid, category_idx, category, active))
 
 
 async def edit_template_category_settings_menu(data: dict, wid: str, category_idx: int):
@@ -1934,7 +1934,7 @@ async def edit_template_settings_menu(data: dict, wid: str):
     if not ws or not ws.get("is_connected"):
         return
     active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_settings_title(ws, active), template_settings_kb(wid, ws))
+    await upsert_ws_menu(data, wid, template_settings_title(ws, active), template_settings_kb(wid))
 
 
 async def edit_template_task_menu(data: dict, wid: str, task_idx: int):
