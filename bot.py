@@ -929,6 +929,10 @@ def company_card_text(company: dict) -> str:
 
 
 def pm_main_text(user_id: str, data: dict) -> str:
+    user = ensure_user(data, user_id)
+    ws_ids = [wid for wid in user.get("workspaces", []) if data["workspaces"].get(wid, {}).get("is_connected")]
+    if not ws_ids:
+        return "📂 Ваши workspace: Нет workspace"
     return "📂 Ваши workspace:"
 
 
@@ -1292,10 +1296,18 @@ def ws_home_kb(wid: str, ws: dict):
             if has_next:
                 row2.append(InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:wh:x:x:next"))
             kb.row(*row2)
+            kb.row(
+                InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
+                InlineKeyboardButton("⚙️ Workspace", callback_data=f"wsset:{wid}"),
+            )
         else:
             kb.row(
                 InlineKeyboardButton("➕ Список", callback_data=f"cmpnew:{wid}"),
                 InlineKeyboardButton("📇 Шаблоны", callback_data=f"tplroot:{wid}"),
+            )
+            kb.row(
+                InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
+                InlineKeyboardButton("⚙️ Workspace", callback_data=f"wsset:{wid}"),
             )
     return kb
 
