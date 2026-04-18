@@ -1197,33 +1197,50 @@ def parse_template_deadline_seconds(text: str) -> tuple[int | None, str | None]:
 # =========================
 
 
-def infer_button_style(text: str) -> str | None:
+def infer_button_style(text: str, callback_data: str | None = None) -> str | None:
     t = (text or '').strip().lower()
+    cb = (callback_data or '').strip().lower()
 
     if t.startswith('⬅️') or t.startswith('⬆️') or t.startswith('⬇️'):
         return 'primary'
 
+    if cb.startswith(('pmws:', 'pmpersonal:', 'cmp:', 'cat:', 'tpl:', 'tplcat:')):
+        return 'primary'
+
+    if t.startswith(('📁', '📂')):
+        return 'primary'
+
     if (
-        t.startswith('➕')
-        or 'добавить' in t
-        or 'создать' in t
-        or 'подключить' in t
+        t.startswith('⚙️')
+        or t.startswith('⚙')
+        or t == '📇 шаблоны'
+        or 'настройк' in t
+        or 'шаблон' in t
     ):
-        return 'success'
+        return 'danger'
 
     if (
         'удалить' in t
+        or 'очистить' in t
         or t.startswith('🗑')
         or t == 'да!'
     ):
         return 'danger'
+
+    if (
+        t.startswith('➕')
+        or t.startswith('добавить')
+        or t.startswith('создать')
+        or t.startswith('подключить')
+    ):
+        return 'success'
 
     return None
 
 
 def kb_btn(text: str, callback_data: str | None = None, style: str | None = None, **kwargs):
     btn = InlineKeyboardButton(text=text, callback_data=callback_data, **kwargs)
-    btn_style = style or infer_button_style(text)
+    btn_style = style or infer_button_style(text, callback_data)
     if btn_style:
         try:
             btn.values['style'] = btn_style
