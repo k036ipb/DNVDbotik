@@ -1197,9 +1197,44 @@ def parse_template_deadline_seconds(text: str) -> tuple[int | None, str | None]:
 # =========================
 
 
+def infer_button_style(text: str) -> str | None:
+    t = (text or '').strip().lower()
+
+    if t.startswith('⬅️') or t.startswith('⬆️') or t.startswith('⬇️'):
+        return 'primary'
+
+    if (
+        t.startswith('➕')
+        or 'добавить' in t
+        or 'создать' in t
+        or 'подключить' in t
+    ):
+        return 'success'
+
+    if (
+        'удалить' in t
+        or t.startswith('🗑')
+        or t == 'да!'
+    ):
+        return 'danger'
+
+    return None
+
+
+def kb_btn(text: str, callback_data: str | None = None, style: str | None = None, **kwargs):
+    btn = InlineKeyboardButton(text=text, callback_data=callback_data, **kwargs)
+    btn_style = style or infer_button_style(text)
+    if btn_style:
+        try:
+            btn.values['style'] = btn_style
+        except Exception:
+            pass
+    return btn
+
+
 def pm_main_kb(user_id: str, data: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("👤 Личный workspace", callback_data="pmpersonal:root"))
+    kb.add(kb_btn("👤 Личный workspace", callback_data="pmpersonal:root"))
 
     user = ensure_user(data, user_id)
     items = []
@@ -1214,38 +1249,38 @@ def pm_main_kb(user_id: str, data: dict):
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_PM)
 
     for title, callback_data in visible:
-        kb.add(InlineKeyboardButton(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data))
 
     if has_prev or has_next:
-        row1 = [InlineKeyboardButton("➕ Workspace", callback_data="pmhelp:root")]
+        row1 = [kb_btn("➕ Workspace", callback_data="pmhelp:root")]
         if has_prev:
-            row1.append(InlineKeyboardButton("⬆️", callback_data="pgpm:prev"))
+            row1.append(kb_btn("⬆️", callback_data="pgpm:prev"))
         kb.row(*row1)
 
-        row2 = [InlineKeyboardButton("🔄 Обновить", callback_data="pmrefresh:root")]
+        row2 = [kb_btn("🔄 Обновить", callback_data="pmrefresh:root")]
         if has_next:
-            row2.append(InlineKeyboardButton("⬇️", callback_data="pgpm:next"))
+            row2.append(kb_btn("⬇️", callback_data="pgpm:next"))
         kb.row(*row2)
     else:
         kb.row(
-            InlineKeyboardButton("➕ Workspace", callback_data="pmhelp:root"),
-            InlineKeyboardButton("🔄 Обновить", callback_data="pmrefresh:root"),
+            kb_btn("➕ Workspace", callback_data="pmhelp:root"),
+            kb_btn("🔄 Обновить", callback_data="pmrefresh:root"),
         )
     return kb
 
 
 def pm_ws_manage_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🧹 Очистить workspace", callback_data=f"pmwsclearask:{wid}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить workspace", callback_data=f"pmwsdelask:{wid}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data="pmrefresh:root"))
+    kb.add(kb_btn("🧹 Очистить workspace", callback_data=f"pmwsclearask:{wid}"))
+    kb.add(kb_btn("🗑 Удалить workspace", callback_data=f"pmwsdelask:{wid}"))
+    kb.add(kb_btn("⬅️", callback_data="pmrefresh:root"))
     return kb
 
 
 def ws_settings_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🧹 Очистить workspace", callback_data=f"wsclearask:{wid}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"))
+    kb.add(kb_btn("🧹 Очистить workspace", callback_data=f"wsclearask:{wid}"))
+    kb.add(kb_btn("⬅️", callback_data=f"backws:{wid}"))
     return kb
 
 
@@ -1256,7 +1291,7 @@ def ws_home_kb(wid: str, ws: dict):
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_WS)
 
     for title, callback_data in visible:
-        kb.add(InlineKeyboardButton(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data))
 
     nav_prev_in_upper = has_prev and has_next
     nav_last = has_next or (has_prev and not has_next)
@@ -1264,33 +1299,33 @@ def ws_home_kb(wid: str, ws: dict):
     is_personal = str(wid).startswith("pm_")
     if is_personal:
         row1 = [
-            InlineKeyboardButton("➕ Список", callback_data=f"cmpnew:{wid}"),
-            InlineKeyboardButton("📇 Шаблоны", callback_data=f"tplroot:{wid}"),
+            kb_btn("➕ Список", callback_data=f"cmpnew:{wid}"),
+            kb_btn("📇 Шаблоны", callback_data=f"tplroot:{wid}"),
         ]
         if nav_prev_in_upper:
-            row1.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:wh:x:x:prev"))
+            row1.append(kb_btn("⬆️", callback_data=f"pg:{wid}:wh:x:x:prev"))
         kb.row(*row1)
 
         row2 = [
-            InlineKeyboardButton("⬅️", callback_data="pmrefresh:root"),
-            InlineKeyboardButton("⚙️ Workspace", callback_data=f"wsset:{wid}"),
+            kb_btn("⬅️", callback_data="pmrefresh:root"),
+            kb_btn("⚙️ Workspace", callback_data=f"wsset:{wid}"),
         ]
         if nav_last:
             arrow_cb = f"pg:{wid}:wh:x:x:next" if has_next else f"pg:{wid}:wh:x:x:prev"
             arrow_text = "⬇️" if has_next else "⬆️"
-            row2.append(InlineKeyboardButton(arrow_text, callback_data=arrow_cb))
+            row2.append(kb_btn(arrow_text, callback_data=arrow_cb))
         kb.row(*row2)
     else:
-        row1 = [InlineKeyboardButton("➕ Список", callback_data=f"cmpnew:{wid}")]
+        row1 = [kb_btn("➕ Список", callback_data=f"cmpnew:{wid}")]
         if nav_prev_in_upper:
-            row1.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:wh:x:x:prev"))
+            row1.append(kb_btn("⬆️", callback_data=f"pg:{wid}:wh:x:x:prev"))
         kb.row(*row1)
 
-        row2 = [InlineKeyboardButton("📇 Шаблоны", callback_data=f"tplroot:{wid}")]
+        row2 = [kb_btn("📇 Шаблоны", callback_data=f"tplroot:{wid}")]
         if nav_last:
             arrow_cb = f"pg:{wid}:wh:x:x:next" if has_next else f"pg:{wid}:wh:x:x:prev"
             arrow_text = "⬇️" if has_next else "⬆️"
-            row2.append(InlineKeyboardButton(arrow_text, callback_data=arrow_cb))
+            row2.append(kb_btn(arrow_text, callback_data=arrow_cb))
         kb.row(*row2)
     return kb
 
@@ -1303,33 +1338,33 @@ def company_create_mode_kb(wid: str, ws: dict):
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_CREATE)
 
     for title, callback_data in visible:
-        kb.add(InlineKeyboardButton(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data))
 
     if has_prev and has_next:
         kb.row(
-            InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
-            InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:cc:x:x:prev"),
+            kb_btn("⬅️", callback_data=f"backws:{wid}"),
+            kb_btn("⬆️", callback_data=f"pg:{wid}:cc:x:x:prev"),
         )
         kb.row(
-            InlineKeyboardButton("🐚 Пустую", callback_data=f"cmpmode:{wid}:empty"),
-            InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:cc:x:x:next"),
+            kb_btn("🐚 Пустую", callback_data=f"cmpmode:{wid}:empty"),
+            kb_btn("⬇️", callback_data=f"pg:{wid}:cc:x:x:next"),
         )
     elif has_prev:
-        kb.row(InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"))
+        kb.row(kb_btn("⬅️", callback_data=f"backws:{wid}"))
         kb.row(
-            InlineKeyboardButton("🐚 Пустую", callback_data=f"cmpmode:{wid}:empty"),
-            InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:cc:x:x:prev"),
+            kb_btn("🐚 Пустую", callback_data=f"cmpmode:{wid}:empty"),
+            kb_btn("⬆️", callback_data=f"pg:{wid}:cc:x:x:prev"),
         )
     elif has_next:
-        kb.row(InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"))
+        kb.row(kb_btn("⬅️", callback_data=f"backws:{wid}"))
         kb.row(
-            InlineKeyboardButton("🐚 Пустую", callback_data=f"cmpmode:{wid}:empty"),
-            InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:cc:x:x:next"),
+            kb_btn("🐚 Пустую", callback_data=f"cmpmode:{wid}:empty"),
+            kb_btn("⬇️", callback_data=f"pg:{wid}:cc:x:x:next"),
         )
     else:
         kb.row(
-            InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
-            InlineKeyboardButton("🐚 Пустую", callback_data=f"cmpmode:{wid}:empty"),
+            kb_btn("⬅️", callback_data=f"backws:{wid}"),
+            kb_btn("🐚 Пустую", callback_data=f"cmpmode:{wid}:empty"),
         )
     return kb
 
@@ -1347,39 +1382,39 @@ def company_menu_kb(wid: str, company_idx: int, company: dict):
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_COMPANY)
 
     for title, callback_data in visible:
-        kb.add(InlineKeyboardButton(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data))
 
     nav_prev_in_upper = has_prev and has_next
     nav_last = has_next or (has_prev and not has_next)
 
     row1 = [
-        InlineKeyboardButton("➕ Задача", callback_data=f"tasknew:{wid}:{company_idx}:root"),
-        InlineKeyboardButton("➕ Подгруппа", callback_data=f"catnew:{wid}:{company_idx}"),
+        kb_btn("➕ Задача", callback_data=f"tasknew:{wid}:{company_idx}:root"),
+        kb_btn("➕ Подгруппа", callback_data=f"catnew:{wid}:{company_idx}"),
     ]
     if nav_prev_in_upper:
-        row1.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:cm:{company_idx}:x:prev"))
+        row1.append(kb_btn("⬆️", callback_data=f"pg:{wid}:cm:{company_idx}:x:prev"))
     kb.row(*row1)
 
     row2 = [
-        InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
-        InlineKeyboardButton("⚙️ Список", callback_data=f"cmpset:{wid}:{company_idx}"),
+        kb_btn("⬅️", callback_data=f"backws:{wid}"),
+        kb_btn("⚙️ Список", callback_data=f"cmpset:{wid}:{company_idx}"),
     ]
     if nav_last:
         arrow_cb = f"pg:{wid}:cm:{company_idx}:x:next" if has_next else f"pg:{wid}:cm:{company_idx}:x:prev"
         arrow_text = "⬇️" if has_next else "⬆️"
-        row2.append(InlineKeyboardButton(arrow_text, callback_data=arrow_cb))
+        row2.append(kb_btn(arrow_text, callback_data=arrow_cb))
     kb.row(*row2)
     return kb
 
 def company_settings_kb(wid: str, company_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("✍️ Переименовать список", callback_data=f"cmpren:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("🧬 Копия Списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("📤 Дублирование списка", callback_data=f"mirrors:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("🕒 Формат дедлайнов", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить список", callback_data=f"cmpdelask:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"cmp:{wid}:{company_idx}"))
+    kb.add(kb_btn("✍️ Переименовать список", callback_data=f"cmpren:{wid}:{company_idx}"))
+    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
+    kb.add(kb_btn("🧬 Копия Списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
+    kb.add(kb_btn("📤 Дублирование списка", callback_data=f"mirrors:{wid}:{company_idx}"))
+    kb.add(kb_btn("🕒 Формат дедлайнов", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
+    kb.add(kb_btn("🗑 Удалить список", callback_data=f"cmpdelask:{wid}:{company_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}"))
     return kb
 
 
@@ -1395,58 +1430,58 @@ def category_menu_kb(wid: str, company_idx: int, category_idx: int, category: di
     visible, has_prev, has_next = paginate_items(task_buttons, page, PAGE_SIZE_CATEGORY)
 
     for title, callback_data in visible:
-        kb.add(InlineKeyboardButton(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data))
 
     kb.row(
-        InlineKeyboardButton("➕ Задача", callback_data=f"tasknew:{wid}:{company_idx}:{category_idx}"),
-        InlineKeyboardButton("⚙️ Подгруппа", callback_data=f"catset:{wid}:{company_idx}:{category_idx}"),
+        kb_btn("➕ Задача", callback_data=f"tasknew:{wid}:{company_idx}:{category_idx}"),
+        kb_btn("⚙️ Подгруппа", callback_data=f"catset:{wid}:{company_idx}:{category_idx}"),
     )
 
-    row2 = [InlineKeyboardButton("⬅️", callback_data=f"cmp:{wid}:{company_idx}")]
+    row2 = [kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}")]
     if has_next:
-        row2.append(InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:next"))
+        row2.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:next"))
     elif has_prev:
-        row2.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:prev"))
+        row2.append(kb_btn("⬆️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:prev"))
     if has_prev and has_next:
-        row2 = [InlineKeyboardButton("⬅️", callback_data=f"cmp:{wid}:{company_idx}"), InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:prev"), InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:next")]
+        row2 = [kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}"), kb_btn("⬆️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:prev"), kb_btn("⬇️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:next")]
     kb.row(*row2)
     return kb
 
 def category_settings_kb(wid: str, company_idx: int, category_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"catren:{wid}:{company_idx}:{category_idx}"))
-    kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_idx}"))
-    kb.add(InlineKeyboardButton("🧬 Копия Подгруппы", callback_data=f"catcopy:{wid}:{company_idx}:{category_idx}"))
-    kb.add(InlineKeyboardButton("🕒 Формат дедлайнов", callback_data=f"catdeadlinefmt:{wid}:{company_idx}:{category_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить", callback_data=f"catdel:{wid}:{company_idx}:{category_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить с задачами", callback_data=f"catdelall:{wid}:{company_idx}:{category_idx}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"cat:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("✍️ Переименовать", callback_data=f"catren:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("🧬 Копия Подгруппы", callback_data=f"catcopy:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("🕒 Формат дедлайнов", callback_data=f"catdeadlinefmt:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("🗑 Удалить", callback_data=f"catdel:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("🗑 Удалить с задачами", callback_data=f"catdelall:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"cat:{wid}:{company_idx}:{category_idx}"))
     return kb
 
 def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     if task.get("done"):
-        kb.add(InlineKeyboardButton("⏺️ Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
+        kb.add(kb_btn("⏺️ Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
     else:
-        kb.add(InlineKeyboardButton("✅ Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
-    kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
+        kb.add(kb_btn("✅ Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
+    kb.add(kb_btn("✍️ Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
 
     if not task.get("done"):
         if task.get("deadline_due_at"):
-            kb.add(InlineKeyboardButton("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}"))
-            kb.add(InlineKeyboardButton("🗑 Удалить дедлайн", callback_data=f"taskdeadel:{wid}:{company_idx}:{task_idx}"))
+            kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}"))
+            kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"taskdeadel:{wid}:{company_idx}:{task_idx}"))
         else:
-            kb.add(InlineKeyboardButton("⏰ Установить дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}"))
+            kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}"))
 
     if company.get("categories"):
         if task.get("category_id"):
-            kb.add(InlineKeyboardButton("📥 Перевсунуть", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
+            kb.add(kb_btn("📥 Перевсунуть", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
         else:
-            kb.add(InlineKeyboardButton("📥 Всунуть в подгруппу", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
+            kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
 
-    kb.add(InlineKeyboardButton("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
+    kb.add(kb_btn("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
     back = f"cat:{wid}:{company_idx}:{find_category_index(company.get('categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(company.get('categories', []), task.get('category_id')) is not None else f"cmp:{wid}:{company_idx}"
-    kb.add(InlineKeyboardButton("⬅️", callback_data=back))
+    kb.add(kb_btn("⬅️", callback_data=back))
     return kb
 
 
@@ -1457,10 +1492,10 @@ def task_move_kb(wid: str, company_idx: int, task_idx: int, company: dict, task:
     for category_idx, category in enumerate(company.get("categories", [])):
         if category.get("id") == current_category_id:
             continue
-        kb.add(InlineKeyboardButton(display_category_name(category), callback_data=f"taskmoveto:{wid}:{company_idx}:{task_idx}:{category_idx}"))
+        kb.add(kb_btn(display_category_name(category), callback_data=f"taskmoveto:{wid}:{company_idx}:{task_idx}:{category_idx}"))
     if current_category_id:
-        kb.add(InlineKeyboardButton("📤 Высунуть", callback_data=f"taskmoveout:{wid}:{company_idx}:{task_idx}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}"))
+        kb.add(kb_btn("📤 Высунуть", callback_data=f"taskmoveout:{wid}:{company_idx}:{task_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}"))
     return kb
 
 
@@ -1473,33 +1508,33 @@ def templates_root_kb(wid: str, ws: dict):
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_TEMPLATES)
 
     for title, callback_data in visible:
-        kb.add(InlineKeyboardButton(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data))
 
     if has_prev and has_next:
         kb.row(
-            InlineKeyboardButton("➕ Шаблон", callback_data=f"tplnewset:{wid}"),
-            InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:tr:x:x:prev"),
+            kb_btn("➕ Шаблон", callback_data=f"tplnewset:{wid}"),
+            kb_btn("⬆️", callback_data=f"pg:{wid}:tr:x:x:prev"),
         )
         kb.row(
-            InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
-            InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:tr:x:x:next"),
+            kb_btn("⬅️", callback_data=f"backws:{wid}"),
+            kb_btn("⬇️", callback_data=f"pg:{wid}:tr:x:x:next"),
         )
     elif has_prev:
-        kb.row(InlineKeyboardButton("➕ Шаблон", callback_data=f"tplnewset:{wid}"))
+        kb.row(kb_btn("➕ Шаблон", callback_data=f"tplnewset:{wid}"))
         kb.row(
-            InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
-            InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:tr:x:x:prev"),
+            kb_btn("⬅️", callback_data=f"backws:{wid}"),
+            kb_btn("⬆️", callback_data=f"pg:{wid}:tr:x:x:prev"),
         )
     elif has_next:
-        kb.row(InlineKeyboardButton("➕ Шаблон", callback_data=f"tplnewset:{wid}"))
+        kb.row(kb_btn("➕ Шаблон", callback_data=f"tplnewset:{wid}"))
         kb.row(
-            InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
-            InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:tr:x:x:next"),
+            kb_btn("⬅️", callback_data=f"backws:{wid}"),
+            kb_btn("⬇️", callback_data=f"pg:{wid}:tr:x:x:next"),
         )
     else:
         kb.row(
-            InlineKeyboardButton("⬅️", callback_data=f"backws:{wid}"),
-            InlineKeyboardButton("➕ Шаблон", callback_data=f"tplnewset:{wid}"),
+            kb_btn("⬅️", callback_data=f"backws:{wid}"),
+            kb_btn("➕ Шаблон", callback_data=f"tplnewset:{wid}"),
         )
     return kb
 
@@ -1520,38 +1555,38 @@ def template_menu_kb(wid: str, ws: dict):
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_COMPANY)
 
     for title, callback_data in visible:
-        kb.add(InlineKeyboardButton(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data))
 
     nav_prev_in_upper = has_prev and has_next
     nav_last = has_next or (has_prev and not has_next)
 
     row1 = [
-        InlineKeyboardButton("➕ Задача", callback_data=f"tpltasknew:{wid}:root"),
-        InlineKeyboardButton("➕ Подгруппа", callback_data=f"tplcatnew:{wid}"),
+        kb_btn("➕ Задача", callback_data=f"tpltasknew:{wid}:root"),
+        kb_btn("➕ Подгруппа", callback_data=f"tplcatnew:{wid}"),
     ]
     if nav_prev_in_upper:
-        row1.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:tm:x:x:prev"))
+        row1.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tm:x:x:prev"))
     kb.row(*row1)
 
     row2 = [
-        InlineKeyboardButton("⬅️", callback_data=f"tplroot:{wid}"),
-        InlineKeyboardButton("⚙️ Шаблон", callback_data=f"tplsettings:{wid}"),
+        kb_btn("⬅️", callback_data=f"tplroot:{wid}"),
+        kb_btn("⚙️ Шаблон", callback_data=f"tplsettings:{wid}"),
     ]
     if nav_last:
         arrow_cb = f"pg:{wid}:tm:x:x:next" if has_next else f"pg:{wid}:tm:x:x:prev"
         arrow_text = "⬇️" if has_next else "⬆️"
-        row2.append(InlineKeyboardButton(arrow_text, callback_data=arrow_cb))
+        row2.append(kb_btn(arrow_text, callback_data=arrow_cb))
     kb.row(*row2)
     return kb
 
 
 def template_settings_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("✍️ Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
-    kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}"))
-    kb.add(InlineKeyboardButton("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить шаблон", callback_data=f"tpldelset:{wid}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"tpl:{wid}"))
+    kb.add(kb_btn("✍️ Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
+    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}"))
+    kb.add(kb_btn("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
+    kb.add(kb_btn("🗑 Удалить шаблон", callback_data=f"tpldelset:{wid}"))
+    kb.add(kb_btn("⬅️", callback_data=f"tpl:{wid}"))
     return kb
 
 
@@ -1567,51 +1602,51 @@ def template_category_menu_kb(wid: str, category_idx: int, category: dict, templ
     visible, has_prev, has_next = paginate_items(task_buttons, page, PAGE_SIZE_CATEGORY)
 
     for title, callback_data in visible:
-        kb.add(InlineKeyboardButton(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data))
 
     kb.row(
-        InlineKeyboardButton("➕ Задача", callback_data=f"tpltasknew:{wid}:{category_idx}"),
-        InlineKeyboardButton("⚙️ Подгруппа", callback_data=f"tplcatset:{wid}:{category_idx}"),
+        kb_btn("➕ Задача", callback_data=f"tpltasknew:{wid}:{category_idx}"),
+        kb_btn("⚙️ Подгруппа", callback_data=f"tplcatset:{wid}:{category_idx}"),
     )
 
-    row2 = [InlineKeyboardButton("⬅️", callback_data=f"tpl:{wid}")]
+    row2 = [kb_btn("⬅️", callback_data=f"tpl:{wid}")]
     if has_next:
-        row2.append(InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:tc:{category_idx}:x:next"))
+        row2.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tc:{category_idx}:x:next"))
     elif has_prev:
-        row2.append(InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:tc:{category_idx}:x:prev"))
+        row2.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tc:{category_idx}:x:prev"))
     if has_prev and has_next:
-        row2 = [InlineKeyboardButton("⬅️", callback_data=f"tpl:{wid}"), InlineKeyboardButton("⬆️", callback_data=f"pg:{wid}:tc:{category_idx}:x:prev"), InlineKeyboardButton("⬇️", callback_data=f"pg:{wid}:tc:{category_idx}:x:next")]
+        row2 = [kb_btn("⬅️", callback_data=f"tpl:{wid}"), kb_btn("⬆️", callback_data=f"pg:{wid}:tc:{category_idx}:x:prev"), kb_btn("⬇️", callback_data=f"pg:{wid}:tc:{category_idx}:x:next")]
     kb.row(*row2)
     return kb
 
 def template_category_settings_kb(wid: str, category_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"tplcatren:{wid}:{category_idx}"))
-    kb.add(InlineKeyboardButton("😀 Переприсвоить смайлик", callback_data=f"tplcatemoji:{wid}:{category_idx}"))
-    kb.add(InlineKeyboardButton("🧬 Копия Подгруппы", callback_data=f"tplcatcopy:{wid}:{category_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить", callback_data=f"tplcatdel:{wid}:{category_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить с задачами", callback_data=f"tplcatdelall:{wid}:{category_idx}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"tplcat:{wid}:{category_idx}"))
+    kb.add(kb_btn("✍️ Переименовать", callback_data=f"tplcatren:{wid}:{category_idx}"))
+    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"tplcatemoji:{wid}:{category_idx}"))
+    kb.add(kb_btn("🧬 Копия Подгруппы", callback_data=f"tplcatcopy:{wid}:{category_idx}"))
+    kb.add(kb_btn("🗑 Удалить", callback_data=f"tplcatdel:{wid}:{category_idx}"))
+    kb.add(kb_btn("🗑 Удалить с задачами", callback_data=f"tplcatdelall:{wid}:{category_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"tplcat:{wid}:{category_idx}"))
     return kb
 
 
 
 def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("✍️ Переименовать", callback_data=f"tpltaskren:{wid}:{task_idx}"))
+    kb.add(kb_btn("✍️ Переименовать", callback_data=f"tpltaskren:{wid}:{task_idx}"))
     if task.get("deadline_seconds"):
-        kb.add(InlineKeyboardButton("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}"))
-        kb.add(InlineKeyboardButton("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}"))
+        kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}"))
+        kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}"))
     else:
-        kb.add(InlineKeyboardButton("⏰ Установить дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}"))
+        kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}"))
     if ws.get("template_categories"):
         if task.get("category_id"):
-            kb.add(InlineKeyboardButton("📥 Перевсунуть", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
+            kb.add(kb_btn("📥 Перевсунуть", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
         else:
-            kb.add(InlineKeyboardButton("📥 Всунуть в подгруппу", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
-    kb.add(InlineKeyboardButton("🗑 Удалить", callback_data=f"tpltaskdel:{wid}:{task_idx}"))
+            kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
+    kb.add(kb_btn("🗑 Удалить", callback_data=f"tpltaskdel:{wid}:{task_idx}"))
     back = f"tplcat:{wid}:{find_category_index(ws.get('template_categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(ws.get('template_categories', []), task.get('category_id')) is not None else f"tpl:{wid}"
-    kb.add(InlineKeyboardButton("⬅️", callback_data=back))
+    kb.add(kb_btn("⬅️", callback_data=back))
     return kb
 
 
@@ -1622,10 +1657,10 @@ def template_task_move_kb(wid: str, task_idx: int, ws: dict, task: dict):
     for category_idx, category in enumerate(ws.get("template_categories", [])):
         if category.get("id") == current_category_id:
             continue
-        kb.add(InlineKeyboardButton(display_category_name(category), callback_data=f"tpltaskmoveto:{wid}:{task_idx}:{category_idx}"))
+        kb.add(kb_btn(display_category_name(category), callback_data=f"tpltaskmoveto:{wid}:{task_idx}:{category_idx}"))
     if current_category_id:
-        kb.add(InlineKeyboardButton("📤 Высунуть", callback_data=f"tpltaskmoveout:{wid}:{task_idx}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"tpltask:{wid}:{task_idx}"))
+        kb.add(kb_btn("📤 Высунуть", callback_data=f"tpltaskmoveout:{wid}:{task_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}"))
     return kb
 
 
@@ -1634,30 +1669,30 @@ def mirrors_menu_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     for idx, mirror in enumerate(company.get("mirrors", [])):
         label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
-        kb.add(InlineKeyboardButton(label, callback_data=f"mirroritem:{wid}:{company_idx}:{idx}"))
-    kb.add(InlineKeyboardButton("➕ Добавить связку", callback_data=f"mirroron:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("🔄 Обновить", callback_data=f"mirrorsrefresh:{wid}:{company_idx}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"cmpset:{wid}:{company_idx}"))
+        kb.add(kb_btn(label, callback_data=f"mirroritem:{wid}:{company_idx}:{idx}"))
+    kb.add(kb_btn("➕ Добавить связку", callback_data=f"mirroron:{wid}:{company_idx}"))
+    kb.add(kb_btn("🔄 Обновить", callback_data=f"mirrorsrefresh:{wid}:{company_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}"))
     return kb
 
 
 def mirror_item_kb(wid: str, company_idx: int, mirror_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"mirrors:{wid}:{company_idx}"))
+    kb.add(kb_btn("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}"))
     return kb
 
 
 def confirm_kb(confirm_cb: str, back_cb: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("Да!", callback_data=confirm_cb))
-    kb.add(InlineKeyboardButton("⬅️", callback_data=back_cb))
+    kb.add(kb_btn("Да!", callback_data=confirm_cb))
+    kb.add(kb_btn("⬅️", callback_data=back_cb))
     return kb
 
 
 def prompt_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(InlineKeyboardButton("⬅️", callback_data=f"cancel:{wid}"))
+    kb.add(kb_btn("⬅️", callback_data=f"cancel:{wid}"))
     return kb
 
 
