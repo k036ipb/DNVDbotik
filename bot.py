@@ -991,15 +991,16 @@ def template_reports_menu_title(ws: dict, template: dict) -> str:
 
 
 def template_report_interval_title(ws: dict, template: dict, interval: dict) -> str:
-    start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval))
-    return workspace_path_title(
-        ws,
+    parts = [
         "⚙️ Шаблоны задач",
         rich_display_template_name(template),
         "🧾 Отчетность",
         format_report_schedule_label(interval),
-        format_report_period_preview(interval, start_at, end_at),
-    )
+    ]
+    if interval.get("kind") != "on_done":
+        start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval))
+        parts.append(format_report_period_preview(interval, start_at, end_at))
+    return workspace_path_title(ws, *parts)
 
 
 def template_report_settings_title(ws: dict, template: dict) -> str:
@@ -2702,10 +2703,11 @@ def template_report_menu_kb(wid: str, ws: dict):
     return kb
 
 
-def template_report_interval_kb(wid: str, interval_idx: int):
+def template_report_interval_kb(wid: str, interval_idx: int, interval: dict | None = None):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("Изменить время отчета", callback_data=f"tplreportedit:{wid}:{interval_idx}", style=False))
-    kb.add(kb_btn("Изменить интервал накопления", callback_data=f"tplreportaccedit:{wid}:{interval_idx}", style=False))
+    if interval and interval.get("kind") != "on_done":
+        kb.add(kb_btn("Изменить время отчета", callback_data=f"tplreportedit:{wid}:{interval_idx}", style=False))
+        kb.add(kb_btn("Изменить интервал накопления", callback_data=f"tplreportaccedit:{wid}:{interval_idx}", style=False))
     kb.add(kb_btn("🗑 Удалить", callback_data=f"tplreportdelask:{wid}:{interval_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"tplreport:{wid}", style="primary"))
     return kb
@@ -2736,6 +2738,7 @@ def template_report_interval_kind_kb(wid: str, flow: str, interval_idx: int | No
     kb.add(kb_btn("Воскресение", callback_data=f"tplreportweek:{wid}:{token}:{flow}:6", style=False))
     kb.add(kb_btn("📆 Каждый день", callback_data=f"tplreportdaily:{wid}:{token}:{flow}", style=False))
     kb.add(kb_btn("🗓 Каждый месяц", callback_data=f"tplreportmonth:{wid}:{token}:{flow}", style=False))
+    kb.add(kb_btn("📆 Сразу после выполнения", callback_data=f"tplreportinstant:{wid}:{token}:{flow}", style=False))
     back_cb = f"tplreportitem:{wid}:{interval_idx}" if flow == "edit" and interval_idx is not None else f"tplreport:{wid}"
     kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
@@ -3366,7 +3369,7 @@ async def edit_template_report_interval_menu(data: dict, wid: str, interval_idx:
     if not interval:
         await edit_template_report_menu(data, wid)
         return
-    await upsert_ws_menu(data, wid, template_report_interval_title(ws, active, interval), template_report_interval_kb(wid, interval_idx))
+    await upsert_ws_menu(data, wid, template_report_interval_title(ws, active, interval), template_report_interval_kb(wid, interval_idx, interval))
 
 
 async def edit_template_report_interval_kind_menu(data: dict, wid: str, flow: str, interval_idx: int | None):
@@ -4887,6 +4890,33 @@ async def open_template_report_weekly_prompt(cb: types.CallbackQuery):
         await save_data_unlocked(data)
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportinstant:"))
+async def open_template_report_instant(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, interval_idx, flow = cb.data.split(":")
+    interval_idx_value = parse_optional_index(interval_idx)
+
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        template = get_active_template(ws)
+        normalized = prepare_report_interval_draft(template, interval_idx_value, "on_done")
+        intervals = get_report_intervals(template)
+        if flow == "edit" and interval_idx_value is not None and 0 <= interval_idx_value < len(intervals):
+            intervals[interval_idx_value] = normalized
+        else:
+            intervals.append(normalized)
+        ws["awaiting"] = None
+        await save_data_unlocked(data)
+
+    fresh = await load_data()
+    await edit_template_report_menu(fresh, wid)
+
+
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportaccedit:"))
 async def open_template_report_accumulation_menu(cb: types.CallbackQuery):
     await cb.answer()
@@ -5646,15 +5676,7 @@ async def delete_task(cb: types.CallbackQuery):
         company["tasks"].pop(task_idx)
         await save_data_unlocked(data)
     fresh = await load_data()
-    ws_fresh = fresh["workspaces"][wid]
-    company = ws_fresh["companies"][company_idx]
-    task = company["tasks"][task_idx]
-    instant_changed = False
-    if task.get("done"):
-        instant_changed = await publish_company_done_reports(ws_fresh, company_idx, task_idx)
-    await sync_company_everywhere(ws_fresh, company_idx)
-    if instant_changed:
-        await save_data(fresh)
+    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
     if category_id:
         cat_idx = find_category_index(fresh["workspaces"][wid]["companies"][company_idx].get("categories", []), category_id)
         if cat_idx is not None:
@@ -5688,7 +5710,11 @@ async def toggle_task_done(cb: types.CallbackQuery):
         category_id = task.get("category_id")
         await save_data_unlocked(data)
     fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    ws_fresh = fresh["workspaces"][wid]
+    instant_changed = await publish_company_done_reports(ws_fresh, company_idx, task_idx)
+    await sync_company_everywhere(ws_fresh, company_idx)
+    if instant_changed:
+        await save_data(fresh)
     if category_id:
         cat_idx = find_category_index(fresh["workspaces"][wid]["companies"][company_idx].get("categories", []), category_id)
         if cat_idx is not None:
