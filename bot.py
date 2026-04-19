@@ -1395,9 +1395,14 @@ def collect_report_entries(company: dict, start_at: int, end_at: int) -> list[di
 
 def build_report_message(company: dict, start_at: int, end_at: int) -> str:
     title = company.get("title") or "Список"
-    lines = [f'Отчёт по "{esc(title)}" за {format_report_timestamp(start_at)} - {format_report_timestamp(end_at)}:']
+    lines = [
+        f'Отчёт по "{esc(title)}"',
+        f"за {format_report_timestamp(start_at)} - {format_report_timestamp(end_at)}:",
+        "",
+    ]
     for entry in collect_report_entries(company, start_at, end_at):
         lines.append(f"✅ {esc(entry.get('task_text') or 'Задача')}")
+    lines.append("")
     lines.append(build_progress_bar(sum(1 for task in company.get("tasks", []) if task.get("done")), len(company.get("tasks", []))))
     return "\n".join(lines)
 
@@ -1428,6 +1433,24 @@ def report_preview_text(interval: dict) -> str:
     occurrence = report_preview_occurrence(interval)
     start_at, end_at = resolve_report_period(interval, occurrence)
     return format_report_period_preview(interval, start_at, end_at)
+
+
+def report_interval_sort_key(interval: dict, original_idx: int) -> tuple:
+    kind = interval.get("kind")
+    if kind == "weekly":
+        secondary = (0, interval.get("weekday") or 0, interval.get("hour") or 0, interval.get("minute") or 0)
+    elif kind == "monthly":
+        secondary = (1, interval.get("day") or 0, interval.get("hour") or 0, interval.get("minute") or 0)
+    elif kind == "daily":
+        secondary = (2, interval.get("hour") or 0, interval.get("minute") or 0)
+    else:
+        secondary = (3, interval.get("scheduled_at") or 0)
+    return (report_preview_occurrence(interval), secondary, original_idx)
+
+
+def build_report_menu_items(intervals: list[dict], callback_factory) -> list[tuple[str, str]]:
+    ordered = sorted(enumerate(intervals), key=lambda pair: report_interval_sort_key(pair[1], pair[0]))
+    return [(format_report_schedule_label(interval), callback_factory(idx)) for idx, interval in ordered]
 
 
 def make_report_interval_base(kind: str, created_at: int | None = None) -> dict:
@@ -2095,11 +2118,11 @@ def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("✍️ Переименовать список", callback_data=f"cmpren:{wid}:{company_idx}"))
     kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
-    kb.add(kb_btn("🧬 Копия списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
-    kb.add(kb_btn("📤 Дублирование списка", callback_data=f"mirrors:{wid}:{company_idx}"))
-    kb.add(kb_btn("🧾 Отчетность", callback_data=f"reports:{wid}:{company_idx}", style=False))
     format_label = "дата" if company.get("deadline_format") == "date" else "время"
     kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
+    kb.add(kb_btn("🧬 Копия списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
+    kb.add(kb_btn("🧾 Отчетность", callback_data=f"reports:{wid}:{company_idx}", style="primary"))
+    kb.add(kb_btn("📤 Дублирование списка", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
     kb.add(kb_btn("🗑 Удалить список", callback_data=f"cmpdelask:{wid}:{company_idx}"))
     kb.add(kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}"))
     return kb
@@ -2375,7 +2398,7 @@ def mirror_item_kb(wid: str, company_idx: int, mirror_idx: int):
 def report_menu_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     intervals = get_report_intervals(company)
-    items = [(format_report_schedule_label(interval), f"reportitem:{wid}:{company_idx}:{idx}") for idx, interval in enumerate(intervals)]
+    items = build_report_menu_items(intervals, lambda idx: f"reportitem:{wid}:{company_idx}:{idx}")
     page = get_ui_page(company, report_menu_page_key(company_idx))
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORTS)
 
@@ -2384,25 +2407,25 @@ def report_menu_kb(wid: str, company_idx: int, company: dict):
 
     kb.row(
         kb_btn("➕Отчет", callback_data=f"reportadd:{wid}:{company_idx}", style="success"),
-        kb_btn("⚙️Отчетность", callback_data=f"reportsettings:{wid}:{company_idx}", style="primary"),
+        kb_btn("⚙️ Привязка", callback_data=f"reportbind:{wid}:{company_idx}", style="primary"),
     )
 
-    bind_btn = kb_btn("⚙️ Привязка", callback_data=f"reportbind:{wid}:{company_idx}", style="primary")
+    settings_btn = kb_btn("⚙️Отчетность", callback_data=f"reportsettings:{wid}:{company_idx}", style="primary")
     up_btn = kb_btn("⬆️", callback_data=f"pg:{wid}:rp:{company_idx}:x:prev")
     down_btn = kb_btn("⬇️", callback_data=f"pg:{wid}:rp:{company_idx}:x:next")
     back_btn = kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")
 
     if has_prev and has_next:
-        kb.row(back_btn, up_btn)
-        kb.row(bind_btn, down_btn)
+        kb.row(settings_btn, up_btn)
+        kb.row(back_btn, down_btn)
     elif has_prev:
-        kb.row(bind_btn)
+        kb.row(settings_btn)
         kb.row(back_btn, up_btn)
     elif has_next:
-        kb.row(bind_btn)
+        kb.row(settings_btn)
         kb.row(back_btn, down_btn)
     else:
-        kb.row(back_btn, bind_btn)
+        kb.row(back_btn, settings_btn)
     return kb
 
 
@@ -2447,9 +2470,12 @@ def report_accumulation_kb(wid: str, interval: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     if interval.get("kind") == "monthly":
         kb.add(kb_btn("Весь месяц", callback_data=f"reportacc:{wid}:month"))
+        kb.add(kb_btn("От последнего отчета", callback_data=f"reportacc:{wid}:last"))
     elif interval.get("kind") in {"daily", "weekly"}:
+        kb.add(kb_btn("От последнего отчета", callback_data=f"reportacc:{wid}:last"))
         kb.add(kb_btn("Всю неделю", callback_data=f"reportacc:{wid}:week"))
-    kb.add(kb_btn("От последнего отчета", callback_data=f"reportacc:{wid}:last"))
+    else:
+        kb.add(kb_btn("От последнего отчета", callback_data=f"reportacc:{wid}:last"))
     kb.add(kb_btn("От определенного дня", callback_data=f"reportacc:{wid}:specific"))
     kb.add(kb_btn("⬅️", callback_data=f"reportaccback:{wid}", style="primary"))
     return kb
@@ -2497,7 +2523,7 @@ def template_report_menu_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     template = get_active_template(ws)
     intervals = get_report_intervals(template)
-    items = [(format_report_schedule_label(interval), f"tplreportitem:{wid}:{idx}") for idx, interval in enumerate(intervals)]
+    items = build_report_menu_items(intervals, lambda idx: f"tplreportitem:{wid}:{idx}")
     page = get_ui_page(template, active_template_report_page_key(ws))
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORTS)
 
