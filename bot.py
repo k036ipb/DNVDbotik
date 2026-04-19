@@ -978,6 +978,10 @@ def report_target_title(ws: dict, company: dict, target: dict) -> str:
     return workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", "📎 Привязка", label)
 
 
+def report_settings_title(ws: dict, company: dict) -> str:
+    return workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", "⚙️ Отчетность")
+
+
 def template_reports_menu_title(ws: dict, template: dict) -> str:
     return workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(template), "🧾 Отчетность")
 
@@ -992,6 +996,10 @@ def template_report_interval_title(ws: dict, template: dict, interval: dict) -> 
         format_report_schedule_label(interval),
         format_report_period_preview(interval, start_at, end_at),
     )
+
+
+def template_report_settings_title(ws: dict, template: dict) -> str:
+    return workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(template), "🧾 Отчетность", "⚙️ Отчетность")
 
 
 def ceil_minutes(seconds: int) -> int:
@@ -2158,7 +2166,7 @@ def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company:
         else:
             kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
 
-    kb.add(kb_btn("🪣 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
+    kb.add(kb_btn("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
     back = f"cat:{wid}:{company_idx}:{find_category_index(company.get('categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(company.get('categories', []), task.get('category_id')) is not None else f"cmp:{wid}:{company_idx}"
     kb.add(kb_btn("⬅️", callback_data=back))
     return kb
@@ -2373,16 +2381,27 @@ def report_menu_kb(wid: str, company_idx: int, company: dict):
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data, style=False))
 
-    kb.add(kb_btn("➕ Добавить время отчета", callback_data=f"reportadd:{wid}:{company_idx}", style="success"))
-    kb.add(kb_btn("Привязка", callback_data=f"reportbind:{wid}:{company_idx}"))
-    kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}", style="danger"))
+    kb.row(
+        kb_btn("➕Отчет", callback_data=f"reportadd:{wid}:{company_idx}", style="success"),
+        kb_btn("⚙️Отчетность", callback_data=f"reportsettings:{wid}:{company_idx}", style="primary"),
+    )
 
-    row = [kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")]
-    if has_prev:
-        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:rp:{company_idx}:x:prev"))
-    if has_next:
-        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:rp:{company_idx}:x:next"))
-    kb.row(*row)
+    bind_btn = kb_btn("⚙️ Привязка", callback_data=f"reportbind:{wid}:{company_idx}", style="primary")
+    up_btn = kb_btn("⬆️", callback_data=f"pg:{wid}:rp:{company_idx}:x:prev")
+    down_btn = kb_btn("⬇️", callback_data=f"pg:{wid}:rp:{company_idx}:x:next")
+    back_btn = kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")
+
+    if has_prev and has_next:
+        kb.row(bind_btn, up_btn)
+        kb.row(back_btn, down_btn)
+    elif has_prev:
+        kb.row(bind_btn, up_btn)
+        kb.row(back_btn)
+    elif has_next:
+        kb.row(bind_btn)
+        kb.row(back_btn, down_btn)
+    else:
+        kb.row(bind_btn, back_btn)
     return kb
 
 
@@ -2459,6 +2478,13 @@ def report_targets_kb(wid: str, company_idx: int, company: dict):
     return kb
 
 
+def report_settings_kb(wid: str, company_idx: int):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"reports:{wid}:{company_idx}", style="primary"))
+    return kb
+
+
 def report_target_item_kb(wid: str, company_idx: int, target_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("🔌 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}"))
@@ -2477,8 +2503,10 @@ def template_report_menu_kb(wid: str, ws: dict):
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data, style=False))
 
-    kb.add(kb_btn("➕ Добавить время отчета", callback_data=f"tplreportadd:{wid}", style="success"))
-    kb.add(kb_btn("🧹 Очистить график", callback_data=f"tplreportclearask:{wid}", style="danger"))
+    kb.row(
+        kb_btn("➕Отчет", callback_data=f"tplreportadd:{wid}", style="success"),
+        kb_btn("⚙️Отчетность", callback_data=f"tplreportsettings:{wid}", style="primary"),
+    )
     row = [kb_btn("⬅️", callback_data=f"tplsettings:{wid}", style="primary")]
     if has_prev:
         row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tpr:x:x:prev"))
@@ -2493,6 +2521,13 @@ def template_report_interval_kb(wid: str, interval_idx: int):
     kb.add(kb_btn("Изменить время отчета", callback_data=f"tplreportedit:{wid}:{interval_idx}", style=False))
     kb.add(kb_btn("Изменить интервал накопления", callback_data=f"tplreportaccedit:{wid}:{interval_idx}", style=False))
     kb.add(kb_btn("🗑 Удалить", callback_data=f"tplreportdelask:{wid}:{interval_idx}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"tplreport:{wid}", style="primary"))
+    return kb
+
+
+def template_report_settings_kb(wid: str):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("🧹 Очистить график", callback_data=f"tplreportclearask:{wid}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"tplreport:{wid}", style="primary"))
     return kb
 
@@ -2647,7 +2682,10 @@ async def publish_company_reports(ws: dict, company_idx: int, now_value: int) ->
     changed = False
 
     for interval in intervals:
-        anchor = ((interval.get("last_report_at") or interval.get("created_at") or now_value) - 1)
+        if isinstance(interval.get("last_report_at"), int):
+            anchor = interval["last_report_at"]
+        else:
+            anchor = ((interval.get("created_at") or now_value) - 1)
         occurrence = next_report_occurrence_after(interval, anchor)
         if occurrence is None or occurrence > now_value:
             continue
@@ -2763,6 +2801,17 @@ async def edit_report_menu(data: dict, wid: str, company_idx: int):
 
 async def edit_reports_menu(data: dict, wid: str, company_idx: int):
     await edit_report_menu(data, wid, company_idx)
+
+
+async def edit_report_settings_menu(data: dict, wid: str, company_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+        await edit_ws_home_menu(data, wid)
+        return
+    company = ws["companies"][company_idx]
+    await upsert_ws_menu(data, wid, report_settings_title(ws, company), report_settings_kb(wid, company_idx))
 
 
 async def edit_report_interval_menu(data: dict, wid: str, company_idx: int, interval_idx: int):
@@ -2978,6 +3027,14 @@ async def edit_template_report_menu(data: dict, wid: str):
         return
     active = get_active_template(ws)
     await upsert_ws_menu(data, wid, template_reports_menu_title(ws, active), template_report_menu_kb(wid, ws))
+
+
+async def edit_template_report_settings_menu(data: dict, wid: str):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    active = get_active_template(ws)
+    await upsert_ws_menu(data, wid, template_report_settings_title(ws, active), template_report_settings_kb(wid))
 
 
 async def edit_template_report_interval_menu(data: dict, wid: str, interval_idx: int):
@@ -3763,6 +3820,16 @@ async def open_reports_menu(cb: types.CallbackQuery):
     await edit_report_menu(data, wid, int(company_idx))
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith("reportsettings:"))
+async def open_report_settings_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_report_settings_menu(data, wid, int(company_idx))
+
+
 @dp.callback_query_handler(lambda c: c.data.startswith("reportitem:"))
 async def open_report_item(cb: types.CallbackQuery):
     await cb.answer()
@@ -4013,7 +4080,7 @@ async def report_clear_ask(cb: types.CallbackQuery):
         data,
         wid,
         "Очистить весь график отчетности?",
-        confirm_kb(f"reportclear:{wid}:{company_idx}", f"reports:{wid}:{company_idx}"),
+        confirm_kb(f"reportclear:{wid}:{company_idx}", f"reportsettings:{wid}:{company_idx}"),
     )
 
 
@@ -4137,6 +4204,16 @@ async def open_template_reports_menu(cb: types.CallbackQuery):
     wid = cb.data.split(":", 1)[1]
     data = await load_data()
     await edit_template_report_menu(data, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportsettings:"))
+async def open_template_report_settings_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    await edit_template_report_settings_menu(data, wid)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportitem:"))
@@ -4281,7 +4358,7 @@ async def template_report_clear_ask(cb: types.CallbackQuery):
         return
     wid = cb.data.split(":", 1)[1]
     data = await load_data()
-    await upsert_ws_menu(data, wid, "Очистить Весь График Отчетности?", confirm_kb(f"tplreportclear:{wid}", f"tplreport:{wid}"))
+    await upsert_ws_menu(data, wid, "Очистить весь график отчетности?", confirm_kb(f"tplreportclear:{wid}", f"tplreportsettings:{wid}"))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportclear:"))
