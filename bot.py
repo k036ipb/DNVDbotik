@@ -1652,6 +1652,22 @@ def report_targets_page_key(company_idx: int) -> str:
     return f"report_targets_{company_idx}"
 
 
+def mirror_import_page_key(company_idx: int) -> str:
+    return f"mirror_import_{company_idx}"
+
+
+def report_import_page_key(company_idx: int) -> str:
+    return f"report_import_{company_idx}"
+
+
+def task_move_page_key(company_idx: int, task_idx: int) -> str:
+    return f"task_move_{company_idx}_{task_idx}"
+
+
+def template_task_move_page_key(task_idx: int) -> str:
+    return f"template_task_move_{task_idx}"
+
+
 def active_template_report_page_key(ws: dict) -> str:
     tpl = get_active_template(ws)
     tpl_id = tpl.get("id") if tpl else "none"
@@ -2261,13 +2277,37 @@ def task_deadline_kb(wid: str, company_idx: int, task_idx: int):
 def task_move_kb(wid: str, company_idx: int, task_idx: int, company: dict, task: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     current_category_id = task.get("category_id")
+    items = []
     for category_idx, category in enumerate(company.get("categories", [])):
         if category.get("id") == current_category_id:
             continue
-        kb.add(kb_btn(display_category_name(category), callback_data=f"taskmoveto:{wid}:{company_idx}:{task_idx}:{category_idx}"))
+        items.append((display_category_name(category), f"taskmoveto:{wid}:{company_idx}:{task_idx}:{category_idx}"))
+    page = get_ui_page(company, task_move_page_key(company_idx, task_idx))
+    visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_CATEGORY)
+    for title, callback_data in visible:
+        kb.add(kb_btn(title, callback_data=callback_data))
     if current_category_id:
-        kb.add(kb_btn("📤 Высунуть", callback_data=f"taskmoveout:{wid}:{company_idx}:{task_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}"))
+        out_btn = kb_btn("📤 Высунуть", callback_data=f"taskmoveout:{wid}:{company_idx}:{task_idx}", style="primary")
+        if has_prev and has_next:
+            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:prev"))
+            kb.row(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"), kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:next"))
+            return kb
+        if has_prev:
+            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:prev"))
+            kb.row(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"))
+            return kb
+        row = [kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary")]
+        if has_next:
+            row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:next"))
+        kb.row(*row)
+        kb.row(out_btn)
+        return kb
+    row = [kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary")]
+    if has_next:
+        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:next"))
+    if has_prev:
+        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:prev"))
+    kb.row(*row)
     return kb
 
 
@@ -2434,13 +2474,37 @@ def template_task_deadline_kb(wid: str, task_idx: int):
 def template_task_move_kb(wid: str, task_idx: int, ws: dict, task: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     current_category_id = task.get("category_id")
+    items = []
     for category_idx, category in enumerate(ws.get("template_categories", [])):
         if category.get("id") == current_category_id:
             continue
-        kb.add(kb_btn(display_category_name(category), callback_data=f"tpltaskmoveto:{wid}:{task_idx}:{category_idx}"))
+        items.append((display_category_name(category), f"tpltaskmoveto:{wid}:{task_idx}:{category_idx}"))
+    page = get_ui_page(ws, template_task_move_page_key(task_idx))
+    visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_CATEGORY)
+    for title, callback_data in visible:
+        kb.add(kb_btn(title, callback_data=callback_data))
     if current_category_id:
-        kb.add(kb_btn("📤 Высунуть", callback_data=f"tpltaskmoveout:{wid}:{task_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}"))
+        out_btn = kb_btn("📤 Высунуть", callback_data=f"tpltaskmoveout:{wid}:{task_idx}", style="primary")
+        if has_prev and has_next:
+            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:prev"))
+            kb.row(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"), kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:next"))
+            return kb
+        if has_prev:
+            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:prev"))
+            kb.row(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"))
+            return kb
+        row = [kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary")]
+        if has_next:
+            row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:next"))
+        kb.row(*row)
+        kb.row(out_btn)
+        return kb
+    row = [kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary")]
+    if has_next:
+        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:next"))
+    if has_prev:
+        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:prev"))
+    kb.row(*row)
     return kb
 
 
@@ -2458,11 +2522,21 @@ def mirrors_menu_kb(wid: str, company_idx: int, company: dict):
 
 def mirror_import_candidates_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
+    items = []
     for source_idx, target in missing_report_targets_for_mirrors(company):
         label = target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"
-        kb.add(kb_btn(label, callback_data=f"mirrorcopy:{wid}:{company_idx}:{source_idx}", style=False))
+        items.append((label, f"mirrorcopy:{wid}:{company_idx}:{source_idx}"))
+    page = get_ui_page(company, mirror_import_page_key(company_idx))
+    visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
+    for title, callback_data in visible:
+        kb.add(kb_btn(title, callback_data=callback_data, style=False))
     kb.add(kb_btn("➕ Новая связка", callback_data=f"mirrornew:{wid}:{company_idx}", style="success"))
-    kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
+    row = [kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary")]
+    if has_prev:
+        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:mic:{company_idx}:x:prev"))
+    if has_next:
+        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:mic:{company_idx}:x:next"))
+    kb.row(*row)
     return kb
 
 
@@ -2523,10 +2597,10 @@ def report_interval_kind_kb(wid: str, company_idx: int, target_idx: int, flow: s
         kb_btn("Суббота", callback_data=f"reportweek:{wid}:{company_idx}:{target_idx}:{token}:{flow}:5", style=False),
     )
     kb.add(kb_btn("Воскресение", callback_data=f"reportweek:{wid}:{company_idx}:{target_idx}:{token}:{flow}:6", style=False))
-    kb.add(kb_btn("Каждый день", callback_data=f"reportdaily:{wid}:{company_idx}:{target_idx}:{token}:{flow}", style=False))
-    kb.add(kb_btn("Каждый месяц", callback_data=f"reportmonth:{wid}:{company_idx}:{target_idx}:{token}:{flow}", style=False))
-    kb.add(kb_btn("Один раз", callback_data=f"reportonce:{wid}:{company_idx}:{target_idx}:{token}:{flow}", style=False))
-    kb.add(kb_btn("Сразу после выполнения", callback_data=f"reportinstant:{wid}:{company_idx}:{target_idx}:{token}:{flow}", style=False))
+    kb.add(kb_btn("📆 Каждый день", callback_data=f"reportdaily:{wid}:{company_idx}:{target_idx}:{token}:{flow}", style=False))
+    kb.add(kb_btn("🗓 Каждый месяц", callback_data=f"reportmonth:{wid}:{company_idx}:{target_idx}:{token}:{flow}", style=False))
+    kb.add(kb_btn("📆 Один раз", callback_data=f"reportonce:{wid}:{company_idx}:{target_idx}:{token}:{flow}", style=False))
+    kb.add(kb_btn("📆 Сразу после выполнения", callback_data=f"reportinstant:{wid}:{company_idx}:{target_idx}:{token}:{flow}", style=False))
     back_cb = f"reportitem:{wid}:{company_idx}:{target_idx}:{interval_idx}" if flow == "edit" and interval_idx is not None else f"reportmenu:{wid}:{company_idx}:{target_idx}"
     kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
@@ -2557,7 +2631,7 @@ def report_targets_kb(wid: str, company_idx: int, company: dict):
     page = get_ui_page(company, report_targets_page_key(company_idx))
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
     for title, callback_data in visible:
-        kb.add(kb_btn(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data, style=False))
 
     kb.add(kb_btn("➕ Добавить Связку", callback_data=f"reportbindon:{wid}:{company_idx}", style="success"))
     row = [kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")]
@@ -2571,7 +2645,7 @@ def report_targets_kb(wid: str, company_idx: int, company: dict):
 
 def report_settings_kb(wid: str, company_idx: int, target_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("🗑 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}", style="danger"))
+    kb.add(kb_btn("🔌 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}", style="danger"))
     kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}:{target_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"reportmenu:{wid}:{company_idx}:{target_idx}", style="primary"))
     return kb
@@ -2586,11 +2660,21 @@ def report_target_item_kb(wid: str, company_idx: int, target_idx: int):
 
 def report_import_candidates_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
+    items = []
     for source_idx, mirror in missing_mirrors_for_report_targets(company):
         label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
-        kb.add(kb_btn(label, callback_data=f"reportbindcopy:{wid}:{company_idx}:{source_idx}", style=False))
+        items.append((label, f"reportbindcopy:{wid}:{company_idx}:{source_idx}"))
+    page = get_ui_page(company, report_import_page_key(company_idx))
+    visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
+    for title, callback_data in visible:
+        kb.add(kb_btn(title, callback_data=callback_data, style=False))
     kb.add(kb_btn("➕ Новая связка", callback_data=f"reportbindnew:{wid}:{company_idx}", style="success"))
-    kb.add(kb_btn("⬅️", callback_data=f"reportbind:{wid}:{company_idx}", style="primary"))
+    row = [kb_btn("⬅️", callback_data=f"reportbind:{wid}:{company_idx}", style="primary")]
+    if has_prev:
+        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:ric:{company_idx}:x:prev"))
+    if has_next:
+        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ric:{company_idx}:x:next"))
+    kb.row(*row)
     return kb
 
 
@@ -2650,8 +2734,8 @@ def template_report_interval_kind_kb(wid: str, flow: str, interval_idx: int | No
         kb_btn("Суббота", callback_data=f"tplreportweek:{wid}:{token}:{flow}:5", style=False),
     )
     kb.add(kb_btn("Воскресение", callback_data=f"tplreportweek:{wid}:{token}:{flow}:6", style=False))
-    kb.add(kb_btn("Каждый день", callback_data=f"tplreportdaily:{wid}:{token}:{flow}", style=False))
-    kb.add(kb_btn("Каждый месяц", callback_data=f"tplreportmonth:{wid}:{token}:{flow}", style=False))
+    kb.add(kb_btn("📆 Каждый день", callback_data=f"tplreportdaily:{wid}:{token}:{flow}", style=False))
+    kb.add(kb_btn("🗓 Каждый месяц", callback_data=f"tplreportmonth:{wid}:{token}:{flow}", style=False))
     back_cb = f"tplreportitem:{wid}:{interval_idx}" if flow == "edit" and interval_idx is not None else f"tplreport:{wid}"
     kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
@@ -4925,6 +5009,28 @@ async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: s
         await edit_report_menu(data, wid, int(a), int(b))
     elif view == "rb" and a != "x":
         await edit_report_targets_menu(data, wid, int(a))
+    elif view == "mic" and a != "x":
+        company_idx = int(a)
+        company = ws["companies"][company_idx]
+        await upsert_ws_menu(
+            data,
+            wid,
+            workspace_path_title(ws, rich_display_company_name(company), "📤 Дублирование списка", "➕ Добавить связку"),
+            mirror_import_candidates_kb(wid, company_idx, company),
+        )
+    elif view == "ric" and a != "x":
+        company_idx = int(a)
+        company = ws["companies"][company_idx]
+        await upsert_ws_menu(
+            data,
+            wid,
+            workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", "📎 Привязка", "➕ Добавить связку"),
+            report_import_candidates_kb(wid, company_idx, company),
+        )
+    elif view == "tmv" and a != "x" and b != "x":
+        await edit_task_move_menu(data, wid, int(a), int(b))
+    elif view == "ttmv" and a != "x":
+        await edit_template_task_move_menu(data, wid, int(a))
     elif view == "tpr":
         await edit_template_report_menu(data, wid)
     elif view == "tm":
@@ -4999,6 +5105,29 @@ async def page_ws(cb: types.CallbackQuery):
                 company = ws["companies"][company_idx]
                 key = report_targets_page_key(company_idx)
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
+        elif view == "mic" and a != "x":
+            company_idx = int(a)
+            if 0 <= company_idx < len(ws.get("companies", [])):
+                company = ws["companies"][company_idx]
+                key = mirror_import_page_key(company_idx)
+                set_ui_page(company, key, get_ui_page(company, key) + delta)
+        elif view == "ric" and a != "x":
+            company_idx = int(a)
+            if 0 <= company_idx < len(ws.get("companies", [])):
+                company = ws["companies"][company_idx]
+                key = report_import_page_key(company_idx)
+                set_ui_page(company, key, get_ui_page(company, key) + delta)
+        elif view == "tmv" and a != "x" and b != "x":
+            company_idx = int(a)
+            task_idx = int(b)
+            if 0 <= company_idx < len(ws.get("companies", [])):
+                company = ws["companies"][company_idx]
+                key = task_move_page_key(company_idx, task_idx)
+                set_ui_page(company, key, get_ui_page(company, key) + delta)
+        elif view == "ttmv" and a != "x":
+            task_idx = int(a)
+            key = template_task_move_page_key(task_idx)
+            set_ui_page(ws, key, get_ui_page(ws, key) + delta)
         elif view == "tpr":
             active = get_active_template(ws)
             key = active_template_report_page_key(ws)
