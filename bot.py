@@ -2065,8 +2065,8 @@ def ws_home_kb(wid: str, ws: dict):
             row2.append(kb_btn("⬇️", callback_data=f"pg:{wid}:wh:x:x:next"))
             kb.row(*row2)
         elif has_prev:
+            kb.row(kb_btn("➕ Список", callback_data=f"cmpnew:{wid}"))
             kb.row(
-                kb_btn("➕ Список", callback_data=f"cmpnew:{wid}"),
                 kb_btn("📇 Шаблоны", callback_data=f"tplroot:{wid}"),
                 kb_btn("⬆️", callback_data=f"pg:{wid}:wh:x:x:prev"),
             )
@@ -2741,16 +2741,17 @@ async def update_pm_menu(user_id: str, data: dict):
 
 async def upsert_company_card(ws: dict, company_idx: int):
     if company_idx < 0 or company_idx >= len(ws["companies"]):
-        return
+        return False
     company = ws["companies"][company_idx]
     text = company_card_text(company)
     card_msg_id = company.get("card_msg_id")
     if card_msg_id:
         ok = await try_edit_text(ws["chat_id"], card_msg_id, text)
         if ok:
-            return
+            return False
     msg = await send_message(ws["chat_id"], text, thread_id=ws["thread_id"])
     company["card_msg_id"] = msg.message_id
+    return True
 
 
 async def upsert_company_mirror(mirror: dict, company: dict):
@@ -2773,11 +2774,19 @@ async def ensure_all_company_cards(ws: dict):
 
 
 async def sync_company_everywhere(ws: dict, company_idx: int):
-    await upsert_company_card(ws, company_idx)
+    recreated_card = await upsert_company_card(ws, company_idx)
     company = ws["companies"][company_idx]
     for mirror in company.get("mirrors", []):
         await upsert_company_mirror(mirror, company)
     company["mirror"] = company.get("mirrors", [None])[0] if company.get("mirrors") else None
+    if recreated_card and ws.get("is_connected"):
+        old_menu_id = ws.get("menu_msg_id")
+        ws["menu_msg_id"] = None
+        RUNTIME_MENU_IDS.pop(ws["id"], None)
+        await safe_delete_message(ws["chat_id"], old_menu_id)
+        msg = await send_message(ws["chat_id"], "📂 Меню workspace", reply_markup=ws_home_kb(ws["id"], ws), thread_id=ws["thread_id"])
+        ws["menu_msg_id"] = msg.message_id
+        RUNTIME_MENU_IDS[ws["id"]] = msg.message_id
 
 
 async def publish_company_reports(ws: dict, company_idx: int, now_value: int) -> bool:
@@ -2919,6 +2928,9 @@ async def edit_company_menu(data: dict, wid: str, company_idx: int):
     if company_idx < 0 or company_idx >= len(ws["companies"]):
         await edit_ws_home_menu(data, wid)
         return
+    recreated_card = await upsert_company_card(ws, company_idx)
+    if recreated_card and ws.get("is_connected"):
+        await recreate_ws_home_menu(data, wid)
     company = ws["companies"][company_idx]
     await upsert_ws_menu(data, wid, company_menu_title(ws, company), company_menu_kb(wid, company_idx, company))
 
@@ -3347,21 +3359,14 @@ async def pm_help(cb: types.CallbackQuery):
     await cb.answer()
     if cb.message.chat.type != "private" or should_ignore_callback(cb):
         return
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        uid = str(cb.from_user.id)
-        user = ensure_user(data, uid)
-        old_help = user.get("help_msg_id")
-        await save_data_unlocked(data)
-    await safe_delete_message(int(uid), old_help)
-    try:
-        msg = await send_message(int(uid), "📌 Как подключить workspace:\n1) Добавь меня в нужную группу;\n2) Перейди в нужный тред;\n3) Отправь команду /connect;\n4) Дождись появления меню;\n5) Profit!")
-    except Exception:
-        return
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ensure_user(data, uid)["help_msg_id"] = msg.message_id
-        await save_data_unlocked(data)
+    data = await load_data()
+    uid = str(cb.from_user.id)
+    await safe_edit_text(
+        int(uid),
+        cb.message.message_id,
+        "📌 Как подключить workspace:\n1) Добавь меня в нужную группу;\n2) Перейди в нужный тред;\n3) Отправь команду /connect;\n4) Дождись появления меню;\n5) Profit!",
+        reply_markup=back_kb("pmrefresh:root"),
+    )
 
 
 @dp.callback_query_handler(lambda c: c.data == "pmpersonal:root")
@@ -3582,6 +3587,7 @@ async def cmd_connect(message: types.Message):
         if existing_ws and existing_ws.get("is_connected"):
             await save_data_unlocked(data)
             asyncio.create_task(send_temp_message(message.chat.id, f"Workspace «{existing_ws.get('name') or 'Workspace'}» уже подключён", thread_id, delay=10))
+            asyncio.create_task(try_delete_user_message(message))
             return
 
         if not topic_title and existing_ws:
@@ -3640,6 +3646,7 @@ async def cmd_connect(message: types.Message):
     await send_or_replace_ws_home_menu(fresh, wid)
     await update_pm_menu(uid, fresh)
     await save_data(fresh)
+    await try_delete_user_message(message)
     try:
         await send_week_notice_pm(uid, f"Workspace «{ws['name']}» подключён")
     except Exception:
@@ -5747,10 +5754,12 @@ async def handle_group_text(message: types.Message):
             return
         awaiting = ws.get("awaiting") or {}
         if not awaiting:
+            asyncio.create_task(try_delete_user_message(message))
             return
         mode = awaiting.get("type")
         text = clean_text(message.text)
         if not text:
+            asyncio.create_task(try_delete_user_message(message))
             return
 
         prompt_msg_id = awaiting.get("prompt_msg_id")
