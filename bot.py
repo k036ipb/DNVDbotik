@@ -1204,6 +1204,9 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
     if t.startswith('⬅️') or t.startswith('⬆️') or t.startswith('⬇️'):
         return 'primary'
 
+    if t in {'да', 'да!', 'yes', 'ok'}:
+        return None
+
     entity_prefixes = (
         'pmws:',
         'pmpersonal:',
@@ -1220,9 +1223,10 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
         'tpltaskmoveto:',
     )
 
-    settings_action_prefixes = (
+    neutral_action_prefixes = (
         'wsclearask:',
         'pmwsclearask:',
+        'pmwsdelask:',
         'cmpren:',
         'cmpemoji:',
         'cmpcopy:',
@@ -1234,6 +1238,19 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
         'catdeadlinefmt:',
         'catdel:',
         'catdelall:',
+        'taskdone:',
+        'taskren:',
+        'taskdel:',
+        'taskdeadline:',
+        'taskdeadel:',
+        'taskmove:',
+        'taskmoveout:',
+        'tpltaskren:',
+        'tpltaskdel:',
+        'tpltaskdeadline:',
+        'tpltaskdeadel:',
+        'tpltaskmove:',
+        'tpltaskmoveout:',
         'tplrenameset:',
         'tplemojiset:',
         'tplcopy:',
@@ -1243,9 +1260,12 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
         'tplcatcopy:',
         'tplcatdel:',
         'tplcatdelall:',
+        'mirrors:',
+        'mirroron:',
+        'mirroroff:',
     )
 
-    if cb.startswith(entity_prefixes) or cb.startswith(settings_action_prefixes):
+    if cb.startswith(entity_prefixes) or cb.startswith(neutral_action_prefixes):
         return None
 
     if (
@@ -1450,6 +1470,7 @@ def company_settings_kb(wid: str, company_idx: int):
     kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
     kb.add(kb_btn("🧬 Копия Списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
     kb.add(kb_btn("📤 Дублирование списка", callback_data=f"mirrors:{wid}:{company_idx}"))
+    kb.add(kb_btn("📊 Отчётность", callback_data=f"reports:{wid}:{company_idx}"))
     kb.add(kb_btn("🕒 Формат дедлайнов", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
     kb.add(kb_btn("🗑 Удалить список", callback_data=f"cmpdelask:{wid}:{company_idx}"))
     kb.add(kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}"))
@@ -1721,6 +1742,81 @@ def mirror_item_kb(wid: str, company_idx: int, mirror_idx: int):
     return kb
 
 
+
+def reports_menu_kb(wid: str, company_idx: int, company: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    reports = ensure_company_reports(company)
+    items = [(report_schedule_label(s), f"reportitem:{wid}:{company_idx}:{i}") for i, s in enumerate(reports.get("schedules", []))]
+    page = get_ui_page(company, f"reports:{company_idx}")
+    visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_COMPANY)
+    for title, callback_data in visible:
+        kb.add(kb_btn(title, callback_data=callback_data, color=None))
+    row_nav = []
+    if has_prev:
+        row_nav.append(kb_btn("⬆️", callback_data=f"pg:{wid}:rp:{company_idx}:x:prev"))
+    if has_next:
+        row_nav.append(kb_btn("⬇️", callback_data=f"pg:{wid}:rp:{company_idx}:x:next"))
+    if row_nav:
+        kb.row(*row_nav)
+    kb.add(kb_btn("➕ Добавить интервал", callback_data=f"reportadd:{wid}:{company_idx}", color="green"))
+    kb.add(kb_btn("🔗 Привязка", callback_data=f"reportbinds:{wid}:{company_idx}"))
+    kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", color="blue"))
+    return kb
+
+
+def report_add_type_kb(wid: str, company_idx: int):
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.row(kb_btn("понедельник", callback_data=f"reportkind:{wid}:{company_idx}:weekday:0", color=None), kb_btn("вторник", callback_data=f"reportkind:{wid}:{company_idx}:weekday:1", color=None))
+    kb.row(kb_btn("среда", callback_data=f"reportkind:{wid}:{company_idx}:weekday:2", color=None), kb_btn("четверг", callback_data=f"reportkind:{wid}:{company_idx}:weekday:3", color=None))
+    kb.row(kb_btn("пятница", callback_data=f"reportkind:{wid}:{company_idx}:weekday:4", color=None), kb_btn("суббота", callback_data=f"reportkind:{wid}:{company_idx}:weekday:5", color=None))
+    kb.add(kb_btn("воскресенье", callback_data=f"reportkind:{wid}:{company_idx}:weekday:6", color=None))
+    kb.add(kb_btn("каждый день", callback_data=f"reportkind:{wid}:{company_idx}:daily:0", color=None))
+    kb.add(kb_btn("каждый месяц", callback_data=f"reportkind:{wid}:{company_idx}:monthly:0", color=None))
+    kb.add(kb_btn("один раз", callback_data=f"reportkind:{wid}:{company_idx}:once:0", color=None))
+    kb.add(kb_btn("⬅️", callback_data=f"reports:{wid}:{company_idx}", color="blue"))
+    return kb
+
+
+def report_accumulation_kb(wid: str, company_idx: int, mode: str):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("от определённого дня", callback_data=f"reportacc:{wid}:{company_idx}:explicit"))
+    if mode == "monthly":
+        kb.add(kb_btn("весь месяц", callback_data=f"reportacc:{wid}:{company_idx}:month"))
+    elif mode in ("daily", "weekday"):
+        kb.add(kb_btn("всю неделю", callback_data=f"reportacc:{wid}:{company_idx}:week"))
+    kb.add(kb_btn("от последнего отчёта", callback_data=f"reportacc:{wid}:{company_idx}:since_last"))
+    kb.add(kb_btn("⬅️", callback_data=f"reportadd:{wid}:{company_idx}", color="blue"))
+    return kb
+
+
+def report_item_kb(wid: str, company_idx: int, report_idx: int):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("Изменить интервал отчёта", callback_data=f"reportedit:{wid}:{company_idx}:{report_idx}:interval"))
+    kb.add(kb_btn("Изменить интервал накопления", callback_data=f"reportedit:{wid}:{company_idx}:{report_idx}:acc"))
+    kb.add(kb_btn("Удалить", callback_data=f"reportdelask:{wid}:{company_idx}:{report_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"reports:{wid}:{company_idx}", color="blue"))
+    return kb
+
+
+def report_binding_menu_kb(wid: str, company_idx: int, company: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    bindings = get_report_bindings(company)
+    for idx, binding in enumerate(bindings):
+        kb.add(kb_btn(report_binding_label(binding), callback_data=f"reportbinditem:{wid}:{company_idx}:{idx}", color=None))
+    kb.add(kb_btn("➕ Добавить связку", callback_data=f"reportbindadd:{wid}:{company_idx}", color="green"))
+    kb.add(kb_btn("🔄 Обновить", callback_data=f"reportbinds:{wid}:{company_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"reports:{wid}:{company_idx}", color="blue"))
+    return kb
+
+
+def report_binding_item_kb(wid: str, company_idx: int, bind_idx: int):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("Отвязать список", callback_data=f"reportbindoff:{wid}:{company_idx}:{bind_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"reportbinds:{wid}:{company_idx}", color="blue"))
+    return kb
+
+
 def confirm_kb(confirm_cb: str, back_cb: str):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("Да!", callback_data=confirm_cb))
@@ -1912,6 +2008,42 @@ async def edit_company_settings_menu(data: dict, wid: str, company_idx: int):
     company = ws["companies"][company_idx]
     await upsert_ws_menu(data, wid, company_settings_title(ws, company), company_settings_kb(wid, company_idx))
 
+
+async def edit_reports_menu(data: dict, wid: str, company_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+        await edit_ws_home_menu(data, wid)
+        return
+    company = ws["companies"][company_idx]
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "📊 Отчётность"), reports_menu_kb(wid, company_idx, company))
+
+
+async def edit_report_item_menu(data: dict, wid: str, company_idx: int, report_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+        return await edit_ws_home_menu(data, wid)
+    company = ws["companies"][company_idx]
+    reports = ensure_company_reports(company).get("schedules", [])
+    if report_idx < 0 or report_idx >= len(reports):
+        return await edit_reports_menu(data, wid, company_idx)
+    schedule = reports[report_idx]
+    title = workspace_path_title(ws, display_company_name(company), f"📊 {report_schedule_label(schedule)}\n{report_accumulation_label(schedule)}")
+    await upsert_ws_menu(data, wid, title, report_item_kb(wid, company_idx, report_idx))
+
+
+async def edit_report_bindings_menu(data: dict, wid: str, company_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+        return await edit_ws_home_menu(data, wid)
+    company = ws["companies"][company_idx]
+    get_report_bindings(company)
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "🔗 Привязка отчётов"), report_binding_menu_kb(wid, company_idx, company))
 
 async def edit_category_menu(data: dict, wid: str, company_idx: int, category_idx: int):
     ws = data["workspaces"].get(wid)
@@ -2691,6 +2823,8 @@ async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: s
         await edit_template_menu(data, wid)
     elif view == "tc" and a != "x":
         await edit_template_category_menu(data, wid, int(a))
+    elif view == "rp" and a != "x":
+        await edit_reports_menu(data, wid, int(a))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pgpm:"))
@@ -2754,6 +2888,12 @@ async def page_ws(cb: types.CallbackQuery):
             owner = template if template else ws
             key = active_template_category_page_key(ws, int(a))
             set_ui_page(owner, key, get_ui_page(owner, key) + delta)
+        elif view == "rp" and a != "x":
+            company_idx = int(a)
+            if 0 <= company_idx < len(ws.get("companies", [])):
+                company = ws["companies"][company_idx]
+                key = f"reports:{company_idx}"
+                set_ui_page(company, key, get_ui_page(company, key) + delta)
 
         await save_data_unlocked(data)
 
@@ -2806,6 +2946,265 @@ async def open_company_settings(cb: types.CallbackQuery):
     _, wid, company_idx = cb.data.split(":")
     data = await load_data()
     await edit_company_settings_menu(data, wid, int(company_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reports:"))
+async def open_reports_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_reports_menu(data, wid, int(company_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportadd:"))
+async def open_report_add_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    company_idx = int(company_idx)
+    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+        return
+    company = ws["companies"][company_idx]
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "📊 Добавить интервал"), report_add_type_kb(wid, company_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportkind:"))
+async def choose_report_kind(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, kind, extra = cb.data.split(":")
+    company_idx = int(company_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        prompts = {
+            "once": "📊 Пришли дату и время отчёта.",
+            "monthly": "📊 Пришли число месяца и время. Например: 30 20:44",
+            "daily": "📊 Пришли время. Например: 21:30",
+            "weekday": "📊 Пришли время. Например: 21:30",
+        }
+        await set_prompt(ws, prompts.get(kind, "📊 Пришли интервал"), {"type": "report_interval", "company_idx": company_idx, "mode": kind, "extra": extra, "back_to": {"view": "reports", "company_idx": company_idx}})
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    ws = fresh["workspaces"].get(wid)
+    company = ws["companies"][company_idx]
+    await upsert_ws_menu(fresh, wid, workspace_path_title(ws, display_company_name(company), ws.get("prompt_text", "📊 Пришли интервал")), prompt_kb(wid))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportacc:"))
+async def choose_report_accumulation(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, mode = cb.data.split(":")
+    company_idx = int(company_idx)
+    if mode == "explicit":
+        async with FILE_LOCK:
+            data = await load_data_unlocked()
+            ws = data["workspaces"].get(wid)
+            if not ws or not ws.get("pending_report"):
+                return
+            await set_prompt(ws, "📊 Пришли точку начала накопления.", {"type": "report_accumulation_from", "company_idx": company_idx, "back_to": {"view": "reports", "company_idx": company_idx}})
+            await save_data_unlocked(data)
+        fresh = await load_data()
+        ws = fresh["workspaces"].get(wid)
+        company = ws["companies"][company_idx]
+        await upsert_ws_menu(fresh, wid, workspace_path_title(ws, display_company_name(company), ws.get("prompt_text", "📊 Пришли точку начала накопления.")), prompt_kb(wid))
+        return
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("pending_report"):
+            return
+        pending = ws.pop("pending_report", None)
+        pending["accumulation_mode"] = mode
+        company = ws["companies"][company_idx]
+        ensure_company_reports(company)["schedules"].append(pending)
+        await clear_prompt(ws)
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_reports_menu(fresh, wid, company_idx)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportitem:"))
+async def open_report_item(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, report_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_report_item_menu(data, wid, int(company_idx), int(report_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportedit:"))
+async def edit_report_item_field(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, report_idx, field = cb.data.split(":")
+    company_idx = int(company_idx)
+    report_idx = int(report_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        prompt = "📊 Пришли новый интервал отчёта." if field == "interval" else "📊 Пришли новую точку начала накопления."
+        await set_prompt(ws, prompt, {"type": "report_edit", "company_idx": company_idx, "report_idx": report_idx, "field": field, "back_to": {"view": "report_item", "company_idx": company_idx, "report_idx": report_idx}})
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    ws = fresh["workspaces"][wid]
+    company = ws["companies"][company_idx]
+    await upsert_ws_menu(fresh, wid, workspace_path_title(ws, display_company_name(company), ws.get("prompt_text", prompt)), prompt_kb(wid))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportdelask:"))
+async def ask_delete_report(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, report_idx = cb.data.split(":")
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    company = ws["companies"][int(company_idx)]
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "Удалить интервал отчёта?"), confirm_kb(f"reportdel:{wid}:{company_idx}:{report_idx}", f"reportitem:{wid}:{company_idx}:{report_idx}"))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportdel:"))
+async def delete_report_item(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, report_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    report_idx = int(report_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        schedules = ensure_company_reports(ws["companies"][company_idx]).get("schedules", [])
+        if 0 <= report_idx < len(schedules):
+            schedules.pop(report_idx)
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_reports_menu(fresh, wid, company_idx)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportclearask:"))
+async def ask_clear_reports(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    company = ws["companies"][int(company_idx)]
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "Очистить график отчётности?"), confirm_kb(f"reportclear:{wid}:{company_idx}", f"reports:{wid}:{company_idx}"))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportclear:"))
+async def clear_reports(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        ensure_company_reports(ws["companies"][company_idx])["schedules"] = []
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_reports_menu(fresh, wid, company_idx)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportbinds:"))
+async def open_report_bindings(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_report_bindings_menu(data, wid, int(company_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportbinditem:"))
+async def open_report_binding_item(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, bind_idx = cb.data.split(":")
+    data = await load_data()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
+    company_idx = int(company_idx)
+    bind_idx = int(bind_idx)
+    company = ws["companies"][company_idx]
+    bindings = get_report_bindings(company)
+    if bind_idx < 0 or bind_idx >= len(bindings):
+        return await edit_report_bindings_menu(data, wid, company_idx)
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), report_binding_label(bindings[bind_idx])), report_binding_item_kb(wid, company_idx, bind_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportbindoff:"))
+async def unlink_report_binding(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, bind_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    bind_idx = int(bind_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        bindings = get_report_bindings(ws["companies"][company_idx])
+        if 0 <= bind_idx < len(bindings):
+            bindings.pop(bind_idx)
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_report_bindings_menu(fresh, wid, company_idx)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportbindadd:"))
+async def add_report_binding(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        token = generate_report_token(data, wid, company["id"])
+        company["pending_report_token"] = token
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    ws = fresh["workspaces"][wid]
+    company = ws["companies"][company_idx]
+    await upsert_ws_menu(fresh, wid, workspace_path_title(ws, display_company_name(company), f"Отправь /mirrorreport {token} в нужный чат или тред."), report_binding_menu_kb(wid, company_idx, company))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cat:"))
@@ -4152,3 +4551,314 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.create_task(deadline_refresh_worker())
     executor.start_polling(dp, skip_updates=True)
+
+def generate_report_token(data: dict, wid: str, company_id: str) -> str:
+    token = secrets.token_hex(4).upper()
+    data.setdefault("report_tokens", {})[token] = {"wid": wid, "company_id": company_id}
+    return token
+
+
+def clear_pending_report_tokens_for_company(data: dict, wid: str, company_id: str):
+    tokens = data.setdefault("report_tokens", {})
+    for token, meta in list(tokens.items()):
+        if meta.get("wid") == wid and str(meta.get("company_id")) == str(company_id):
+            tokens.pop(token, None)
+
+
+def ensure_company_reports(company: dict) -> dict:
+    reports = company.setdefault("reports", {})
+    reports.setdefault("schedules", [])
+    reports.setdefault("bindings", [])
+    return reports
+
+
+def clone_report_bindings_from_mirrors(company: dict) -> list:
+    result = []
+    for mirror in company.get("mirrors", []):
+        result.append({
+            "chat_id": mirror.get("chat_id"),
+            "thread_id": mirror.get("thread_id", 0),
+            "chat_title": mirror.get("chat_title", "Чат"),
+            "topic_title": mirror.get("topic_title", ""),
+            "message_id": mirror.get("message_id"),
+        })
+    return result
+
+
+def get_report_bindings(company: dict) -> list:
+    reports = ensure_company_reports(company)
+    bindings = reports.get("bindings", [])
+    if not bindings and company.get("mirrors"):
+        bindings = clone_report_bindings_from_mirrors(company)
+        reports["bindings"] = bindings
+    return bindings
+
+
+def report_binding_label(binding: dict) -> str:
+    chat_title = binding.get("chat_title") or "Чат"
+    topic_title = binding.get("topic_title") or ""
+    if topic_title:
+        return f"{chat_title} / {topic_title}"
+    return chat_title
+
+
+def report_weekday_name(idx: int) -> str:
+    return WEEKDAY_LABELS.get(idx, "день")
+
+
+def parse_time_only(text: str):
+    cleaned = re.sub(r"[^0-9]", " ", text or "")
+    nums = [int(x) for x in cleaned.split() if x.isdigit()]
+    if not nums:
+        return None
+    if len(nums) == 1:
+        raw = str(nums[0])
+        if len(raw) in (3, 4):
+            h = int(raw[:-2])
+            m = int(raw[-2:])
+        else:
+            h = nums[0]
+            m = 0
+    else:
+        h, m = nums[0], nums[1]
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        return None
+    return h, m
+
+
+def parse_day_time_input(text: str):
+    cleaned = re.sub(r"[^0-9]", " ", text or "")
+    nums = [int(x) for x in cleaned.split() if x.isdigit()]
+    if len(nums) < 2:
+        return None
+    day = nums[0]
+    if len(nums) == 2:
+        hour = nums[1]
+        minute = 0
+    else:
+        hour, minute = nums[1], nums[2]
+    if not (1 <= day <= 31 and 0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return day, hour, minute
+
+
+def clamp_day_for_month(year: int, month: int, day: int) -> int:
+    return min(day, calendar.monthrange(year, month)[1])
+
+
+def shift_month(dt: datetime, months: int) -> datetime:
+    month = dt.month - 1 + months
+    year = dt.year + month // 12
+    month = month % 12 + 1
+    day = clamp_day_for_month(year, month, dt.day)
+    return dt.replace(year=year, month=month, day=day)
+
+
+def report_schedule_label(schedule: dict) -> str:
+    kind = schedule.get("kind")
+    if kind == "weekday":
+        return f"{report_weekday_name(schedule.get('weekday', 0))} {schedule.get('time', '00:00')}"
+    if kind == "daily":
+        return f"каждый день, {schedule.get('time', '00:00')}"
+    if kind == "monthly":
+        return f"каждый месяц {schedule.get('day', 1)}-го, {schedule.get('time', '00:00')}"
+    run_at = parse_iso(schedule.get("run_at"))
+    return run_at.strftime("%d.%m.%Y, %H:%M") if run_at else "один раз"
+
+
+def report_accumulation_label(schedule: dict, due_dt: datetime | None = None) -> str:
+    mode = schedule.get("accumulation_mode", "since_last")
+    start_dt = None
+    if mode == "explicit":
+        start_dt = parse_iso(schedule.get("accumulation_from"))
+        if start_dt:
+            left = format_report_dt(start_dt)
+            if due_dt:
+                return f"{left} - {format_report_dt(due_dt)}"
+            return left
+    if mode == "month":
+        if due_dt:
+            start_dt = shift_month(due_dt, -1)
+            return f"{format_report_dt(start_dt)} - {format_report_dt(due_dt)}"
+        return "весь месяц"
+    if mode == "week":
+        if due_dt:
+            start_dt = due_dt - timedelta(days=7)
+            return f"{format_report_dt(start_dt)} - {format_report_dt(due_dt)}"
+        return "всю неделю"
+    if mode == "since_last":
+        last_dt = parse_iso(schedule.get("last_report_at"))
+        if due_dt and last_dt:
+            return f"от последнего отчёта - {format_report_dt(due_dt)}"
+        return "от последнего отчёта"
+    return "от последнего отчёта"
+
+
+def format_report_dt(dt: datetime) -> str:
+    return dt.strftime("%d.%m.%Y, %H:%M")
+
+
+def compute_report_due_dt(schedule: dict, now: datetime) -> datetime | None:
+    kind = schedule.get("kind")
+    if kind == "once":
+        return parse_iso(schedule.get("run_at"))
+    tm = schedule.get("time", "00:00")
+    hh, mm = [int(x) for x in tm.split(":", 1)]
+    if kind == "daily":
+        return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if kind == "weekday":
+        if now.weekday() != int(schedule.get("weekday", 0)):
+            return None
+        return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if kind == "monthly":
+        day = clamp_day_for_month(now.year, now.month, int(schedule.get("day", 1)))
+        return now.replace(day=day, hour=hh, minute=mm, second=0, microsecond=0)
+    return None
+
+
+def report_occurrence_key(schedule: dict, due_dt: datetime) -> str:
+    kind = schedule.get("kind")
+    if kind == "once":
+        return due_dt.isoformat()
+    if kind == "daily":
+        return due_dt.strftime("daily:%Y-%m-%d %H:%M")
+    if kind == "weekday":
+        return due_dt.strftime(f"weekday:{schedule.get('weekday', 0)}:%Y-%m-%d %H:%M")
+    if kind == "monthly":
+        return due_dt.strftime(f"monthly:{schedule.get('day', 1)}:%Y-%m-%d %H:%M")
+    return due_dt.isoformat()
+
+
+def compute_report_start_dt(schedule: dict, due_dt: datetime) -> datetime | None:
+    mode = schedule.get("accumulation_mode", "since_last")
+    if mode == "explicit":
+        return parse_iso(schedule.get("accumulation_from"))
+    if mode == "month":
+        return shift_month(due_dt, -1)
+    if mode == "week":
+        return due_dt - timedelta(days=7)
+    if mode == "since_last":
+        return parse_iso(schedule.get("last_report_at"))
+    return None
+
+
+def iter_company_tasks(company: dict):
+    categories = {c.get("id"): c for c in company.get("categories", [])}
+    for task in company.get("tasks", []):
+        yield task, categories.get(task.get("category_id"))
+
+
+def build_report_message(ws: dict, company: dict, schedule: dict, due_dt: datetime, start_dt: datetime | None):
+    lines = [
+        f"📊 Отчёт по списку {display_company_name(company)}",
+        f"🕒 Интервал отчёта: {report_schedule_label(schedule)}",
+        f"📦 Накопление: {report_accumulation_label(schedule, due_dt)}",
+        "",
+    ]
+    found = 0
+    for task, category in iter_company_tasks(company):
+        done_at = parse_iso(task.get("done_at"))
+        if not done_at:
+            continue
+        if start_dt and done_at < start_dt:
+            continue
+        if done_at > due_dt:
+            continue
+        found += 1
+        prefix = f"{display_category_name(category)} / " if category else ""
+        lines.append(f"✅ {prefix}{task.get('text', 'Без названия')} — {format_report_dt(done_at)}")
+    if not found:
+        lines.append("За этот интервал выполненных задач нет.")
+    return "\n".join(lines)
+
+
+async def send_report_message(binding: dict, text: str):
+    chat_id = binding.get("chat_id")
+    if not chat_id:
+        return
+    await bot.send_message(chat_id, text, **thread_kwargs(binding.get("thread_id", 0)))
+
+
+async def process_report_schedules():
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        changed = False
+        now = datetime.now()
+        outgoing = []
+        for wid, ws in data.get("workspaces", {}).items():
+            for company in ws.get("companies", []):
+                reports = ensure_company_reports(company)
+                bindings = get_report_bindings(company)
+                for schedule in reports.get("schedules", []):
+                    if schedule.get("kind") == "once" and schedule.get("sent"):
+                        continue
+                    due_dt = compute_report_due_dt(schedule, now)
+                    if not due_dt or now < due_dt:
+                        continue
+                    key = report_occurrence_key(schedule, due_dt)
+                    if schedule.get("last_fired_key") == key:
+                        continue
+                    start_dt = compute_report_start_dt(schedule, due_dt)
+                    text = build_report_message(ws, company, schedule, due_dt, start_dt)
+                    for binding in bindings:
+                        outgoing.append((dict(binding), text))
+                    schedule["last_fired_key"] = key
+                    schedule["last_report_at"] = due_dt.isoformat()
+                    if schedule.get("kind") == "once":
+                        schedule["sent"] = True
+                    changed = True
+        if changed:
+            await save_data_unlocked(data)
+    for binding, msg_text in outgoing:
+        try:
+            await send_report_message(binding, msg_text)
+        except Exception:
+            pass
+
+
+
+@dp.message_handler(commands=["mirrorreport"])
+async def mirror_report_command(message: types.Message):
+    parts = (message.text or "").strip().split(maxsplit=1)
+    if len(parts) < 2:
+        await safe_delete_message(message.chat.id, message.message_id)
+        return
+    token = parts[1].strip().upper()
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        meta = data.setdefault("report_tokens", {}).get(token)
+        if not meta:
+            await save_data_unlocked(data)
+            await safe_delete_message(message.chat.id, message.message_id)
+            await bot.send_message(message.chat.id, "Код привязки отчёта не найден.", **thread_kwargs(get_thread_id(message)))
+            return
+        wid = meta.get("wid")
+        company_id = str(meta.get("company_id"))
+        ws = data.get("workspaces", {}).get(wid)
+        if not ws:
+            data["report_tokens"].pop(token, None)
+            await save_data_unlocked(data)
+            await safe_delete_message(message.chat.id, message.message_id)
+            return
+        company = next((c for c in ws.get("companies", []) if str(c.get("id")) == company_id), None)
+        if not company:
+            data["report_tokens"].pop(token, None)
+            await save_data_unlocked(data)
+            await safe_delete_message(message.chat.id, message.message_id)
+            return
+        binding = {
+            "chat_id": message.chat.id,
+            "thread_id": get_thread_id(message),
+            "chat_title": message.chat.title or str(message.chat.id),
+            "topic_title": get_topic_title_from_message(message),
+            "message_id": None,
+        }
+        bindings = get_report_bindings(company)
+        exists = next((b for b in bindings if b.get("chat_id") == binding["chat_id"] and int(b.get("thread_id", 0)) == int(binding["thread_id"])) , None)
+        if not exists:
+            bindings.append(binding)
+        data["report_tokens"].pop(token, None)
+        company["pending_report_token"] = None
+        await save_data_unlocked(data)
+    await safe_delete_message(message.chat.id, message.message_id)
+    await bot.send_message(message.chat.id, f"Отчёты списка «{display_company_name(company)}» привязаны.", **thread_kwargs(get_thread_id(message)))
