@@ -501,14 +501,15 @@ def normalize_template(ws: dict):
                 "title": ws.get("template_title") or "Шаблон",
                 "emoji": ws.get("template_emoji") or "📁",
                 "deadline_format": ws.get("template_deadline_format") or "relative",
+                "reporting": default_reporting(),
                 "tasks": [ensure_task(t, is_template=True) for t in tasks],
                 "categories": [ensure_category(c) for c in categories],
             }]
         else:
-            ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "tasks": [], "categories": []}]
+            ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}]
 
     if not isinstance(ws["templates"], list) or not ws["templates"]:
-        ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "tasks": [], "categories": []}]
+        ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}]
 
     for tpl in ws["templates"]:
         if not isinstance(tpl, dict):
@@ -517,6 +518,7 @@ def normalize_template(ws: dict):
         tpl.setdefault("title", "Шаблон")
         tpl.setdefault("emoji", "📁")
         tpl.setdefault("deadline_format", "relative")
+        tpl["reporting"] = ensure_reporting(tpl.get("reporting"))
         if not isinstance(tpl.get("tasks"), list):
             tpl["tasks"] = []
         if not isinstance(tpl.get("categories"), list):
@@ -540,7 +542,7 @@ def normalize_template(ws: dict):
 def get_active_template(ws: dict) -> dict:
     templates = ws.get("templates") or []
     if not templates:
-        ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "tasks": [], "categories": []}]
+        ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}]
         templates = ws["templates"]
     active_id = ws.get("active_template_id") or templates[0]["id"]
     for tpl in templates:
@@ -703,6 +705,7 @@ def copy_template_payload(template: dict, new_title: str) -> dict:
         'title': new_title,
         'emoji': template.get('emoji') or '📁',
         'deadline_format': template.get('deadline_format') or 'relative',
+        'reporting': ensure_reporting(copy.deepcopy(template.get('reporting'))),
         'categories': [],
         'tasks': [],
     }
@@ -976,6 +979,22 @@ def report_target_title(ws: dict, company: dict, target: dict) -> str:
     return workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", "📎 Привязка", label)
 
 
+def template_reports_menu_title(ws: dict, template: dict) -> str:
+    return workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(template), "🧾 Отчетность")
+
+
+def template_report_interval_title(ws: dict, template: dict, interval: dict) -> str:
+    start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval))
+    return workspace_path_title(
+        ws,
+        "⚙️ Шаблоны задач",
+        rich_display_template_name(template),
+        "🧾 Отчетность",
+        format_report_schedule_label(interval),
+        format_report_period_preview(interval, start_at, end_at),
+    )
+
+
 def ceil_minutes(seconds: int) -> int:
     return max(0, math.ceil(seconds / 60))
 
@@ -1187,7 +1206,7 @@ def get_report_history(company: dict) -> list[dict]:
 def get_effective_report_targets(company: dict) -> list[dict]:
     reporting = get_reporting(company)
     targets = reporting.get("targets")
-    if targets is None:
+    if not targets:
         cloned = []
         for mirror in company.get("mirrors", []):
             target = ensure_report_target(mirror)
@@ -1519,6 +1538,12 @@ def report_targets_page_key(company_idx: int) -> str:
     return f"report_targets_{company_idx}"
 
 
+def active_template_report_page_key(ws: dict) -> str:
+    tpl = get_active_template(ws)
+    tpl_id = tpl.get("id") if tpl else "none"
+    return f"tpl_report_{tpl_id}"
+
+
 def find_company_index_by_id(ws: dict, company_id: str) -> int | None:
     for idx, company in enumerate(ws.get("companies", [])):
         if company.get("id") == company_id:
@@ -1581,6 +1606,7 @@ def make_company(title: str, with_template: bool, ws: dict, template_id: str | N
         "mirrors": [],
         "mirror_history": [],
         "deadline_format": "relative",
+        "reporting": default_reporting(),
         "categories": [],
         "tasks": [],
     }
@@ -1589,6 +1615,15 @@ def make_company(title: str, with_template: bool, ws: dict, template_id: str | N
 
     template = get_template_by_id(ws, template_id)
     company["deadline_format"] = template.get("deadline_format") or "relative"
+    tpl_reporting = ensure_reporting(copy.deepcopy(template.get("reporting")))
+    company["reporting"]["intervals"] = []
+    for interval in tpl_reporting.get("intervals", []):
+        normalized = ensure_report_interval(copy.deepcopy(interval))
+        if not normalized:
+            continue
+        normalized["created_at"] = now_ts()
+        normalized["last_report_at"] = None
+        company["reporting"]["intervals"].append(normalized)
     category_map = {}
     for template_category in template.get("categories", []):
         new_cat = {
@@ -1763,8 +1798,13 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
     if t.startswith('⬅️') or t.startswith('⬆️') or t.startswith('⬇️'):
         return 'primary'
 
-    if t in {'да', 'да!', 'yes', 'ok'}:
+    if t in {'да', 'да!', 'yes'}:
+        return 'danger'
+    if t == 'ok':
         return None
+
+    if 'удал' in t or 'очист' in t or 'отвяз' in t:
+        return 'danger'
 
     entity_prefixes = (
         'pmws:',
@@ -2048,7 +2088,8 @@ def company_settings_kb(wid: str, company_idx: int):
     kb.add(kb_btn("🧬 Копия Списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
     kb.add(kb_btn("📤 Дублирование списка", callback_data=f"mirrors:{wid}:{company_idx}"))
     kb.add(kb_btn("🧾 Отчетность", callback_data=f"reports:{wid}:{company_idx}"))
-    kb.add(kb_btn("🕒 Формат дедлайнов", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
+    format_label = "дата" if company.get("deadline_format") == "date" else "время"
+    kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
     kb.add(kb_btn("🗑 Удалить список", callback_data=f"cmpdelask:{wid}:{company_idx}"))
     kb.add(kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}"))
     return kb
@@ -2088,7 +2129,8 @@ def category_settings_kb(wid: str, company_idx: int, category_idx: int):
     kb.add(kb_btn("✍️ Переименовать", callback_data=f"catren:{wid}:{company_idx}:{category_idx}"))
     kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_idx}"))
     kb.add(kb_btn("🧬 Копия Подгруппы", callback_data=f"catcopy:{wid}:{company_idx}:{category_idx}"))
-    kb.add(kb_btn("🕒 Формат дедлайнов", callback_data=f"catdeadlinefmt:{wid}:{company_idx}:{category_idx}"))
+    format_label = "дата" if category.get("deadline_format") == "date" else "время"
+    kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"catdeadlinefmt:{wid}:{company_idx}:{category_idx}"))
     kb.add(kb_btn("🗑 Удалить", callback_data=f"catdel:{wid}:{company_idx}:{category_idx}"))
     kb.add(kb_btn("🗑 Удалить с задачами", callback_data=f"catdelall:{wid}:{company_idx}:{category_idx}"))
     kb.add(kb_btn("⬅️", callback_data=f"cat:{wid}:{company_idx}:{category_idx}"))
@@ -2115,7 +2157,7 @@ def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company:
         else:
             kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
 
-    kb.add(kb_btn("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
+    kb.add(kb_btn("🪣 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
     back = f"cat:{wid}:{company_idx}:{find_category_index(company.get('categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(company.get('categories', []), task.get('category_id')) is not None else f"cmp:{wid}:{company_idx}"
     kb.add(kb_btn("⬅️", callback_data=back))
     return kb
@@ -2221,6 +2263,7 @@ def template_settings_kb(wid: str):
     kb.add(kb_btn("✍️ Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
     kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}"))
     kb.add(kb_btn("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
+    kb.add(kb_btn("🧾 Отчетность", callback_data=f"tplreport:{wid}"))
     kb.add(kb_btn("🗑 Удалить шаблон", callback_data=f"tpldelset:{wid}"))
     kb.add(kb_btn("⬅️", callback_data=f"tpl:{wid}"))
     return kb
@@ -2306,16 +2349,16 @@ def mirrors_menu_kb(wid: str, company_idx: int, company: dict):
     for idx, mirror in enumerate(company.get("mirrors", [])):
         label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
         kb.add(kb_btn(label, callback_data=f"mirroritem:{wid}:{company_idx}:{idx}"))
-    kb.add(kb_btn("➕ Добавить связку", callback_data=f"mirroron:{wid}:{company_idx}"))
+    kb.add(kb_btn("➕ Добавить Связку", callback_data=f"mirroron:{wid}:{company_idx}", style="success"))
     kb.add(kb_btn("🔄 Обновить", callback_data=f"mirrorsrefresh:{wid}:{company_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary"))
     return kb
 
 
 def mirror_item_kb(wid: str, company_idx: int, mirror_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
     return kb
 
 
@@ -2329,11 +2372,11 @@ def report_menu_kb(wid: str, company_idx: int, company: dict):
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data))
 
-    kb.add(kb_btn("➕ Добавить интервал", callback_data=f"reportadd:{wid}:{company_idx}"))
-    kb.add(kb_btn("📎 Привязка", callback_data=f"reportbind:{wid}:{company_idx}"))
-    kb.add(kb_btn("🗑 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}"))
+    kb.add(kb_btn("➕ Добавить Интервал", callback_data=f"reportadd:{wid}:{company_idx}", style="success"))
+    kb.add(kb_btn("Привязка", callback_data=f"reportbind:{wid}:{company_idx}"))
+    kb.add(kb_btn("🧹 Очистить График", callback_data=f"reportclearask:{wid}:{company_idx}", style="danger"))
 
-    row = [kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}")]
+    row = [kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")]
     if has_prev:
         row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:rp:{company_idx}:x:prev"))
     if has_next:
@@ -2348,10 +2391,10 @@ def reports_menu_kb(wid: str, company_idx: int, company: dict):
 
 def report_interval_kb(wid: str, company_idx: int, interval_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("Изменить интервал отчета", callback_data=f"reportedit:{wid}:{company_idx}:{interval_idx}"))
-    kb.add(kb_btn("Изменить интервал накопления", callback_data=f"reportaccedit:{wid}:{company_idx}:{interval_idx}"))
-    kb.add(kb_btn("Удалить", callback_data=f"reportdelask:{wid}:{company_idx}:{interval_idx}"))
-    kb.add(kb_btn("Назад", callback_data=f"reports:{wid}:{company_idx}"))
+    kb.add(kb_btn("Изменить Время Отчета", callback_data=f"reportedit:{wid}:{company_idx}:{interval_idx}"))
+    kb.add(kb_btn("Изменить Интервал Накопления", callback_data=f"reportaccedit:{wid}:{company_idx}:{interval_idx}"))
+    kb.add(kb_btn("🗑 Удалить", callback_data=f"reportdelask:{wid}:{company_idx}:{interval_idx}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"reports:{wid}:{company_idx}", style="primary"))
     return kb
 
 
@@ -2359,35 +2402,35 @@ def report_interval_kind_kb(wid: str, company_idx: int, flow: str, interval_idx:
     kb = InlineKeyboardMarkup(row_width=1)
     token = "x" if interval_idx is None else str(interval_idx)
     kb.row(
-        kb_btn("понедельник", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:0"),
-        kb_btn("вторник", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:1"),
+        kb_btn("Понедельник", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:0"),
+        kb_btn("Вторник", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:1"),
     )
     kb.row(
-        kb_btn("среда", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:2"),
-        kb_btn("четверг", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:3"),
+        kb_btn("Среда", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:2"),
+        kb_btn("Четверг", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:3"),
     )
     kb.row(
-        kb_btn("пятница", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:4"),
-        kb_btn("суббота", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:5"),
+        kb_btn("Пятница", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:4"),
+        kb_btn("Суббота", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:5"),
     )
-    kb.add(kb_btn("воскресение", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:6"))
-    kb.add(kb_btn("каждый день", callback_data=f"reportdaily:{wid}:{company_idx}:{token}:{flow}"))
-    kb.add(kb_btn("каждый месяц", callback_data=f"reportmonth:{wid}:{company_idx}:{token}:{flow}"))
-    kb.add(kb_btn("один раз", callback_data=f"reportonce:{wid}:{company_idx}:{token}:{flow}"))
+    kb.add(kb_btn("Воскресение", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:6"))
+    kb.add(kb_btn("Каждый День", callback_data=f"reportdaily:{wid}:{company_idx}:{token}:{flow}"))
+    kb.add(kb_btn("Каждый Месяц", callback_data=f"reportmonth:{wid}:{company_idx}:{token}:{flow}"))
+    kb.add(kb_btn("Один Раз", callback_data=f"reportonce:{wid}:{company_idx}:{token}:{flow}"))
     back_cb = f"reportitem:{wid}:{company_idx}:{interval_idx}" if flow == "edit" and interval_idx is not None else f"reports:{wid}:{company_idx}"
-    kb.add(kb_btn("назад", callback_data=back_cb))
+    kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
 
 
 def report_accumulation_kb(wid: str, interval: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("от определенного дня", callback_data=f"reportacc:{wid}:specific"))
+    kb.add(kb_btn("От Определенного Дня", callback_data=f"reportacc:{wid}:specific"))
     if interval.get("kind") == "monthly":
-        kb.add(kb_btn("весь месяц", callback_data=f"reportacc:{wid}:month"))
+        kb.add(kb_btn("Весь Месяц", callback_data=f"reportacc:{wid}:month"))
     elif interval.get("kind") in {"daily", "weekly"}:
-        kb.add(kb_btn("всю неделю", callback_data=f"reportacc:{wid}:week"))
-    kb.add(kb_btn("от последнего отчета", callback_data=f"reportacc:{wid}:last"))
-    kb.add(kb_btn("назад", callback_data=f"reportaccback:{wid}"))
+        kb.add(kb_btn("Всю Неделю", callback_data=f"reportacc:{wid}:week"))
+    kb.add(kb_btn("От Последнего Отчета", callback_data=f"reportacc:{wid}:last"))
+    kb.add(kb_btn("⬅️", callback_data=f"reportaccback:{wid}", style="primary"))
     return kb
 
 
@@ -2403,10 +2446,10 @@ def report_targets_kb(wid: str, company_idx: int, company: dict):
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data))
 
-    kb.add(kb_btn("➕ Добавить связку", callback_data=f"reportbindon:{wid}:{company_idx}"))
+    kb.add(kb_btn("➕ Добавить Связку", callback_data=f"reportbindon:{wid}:{company_idx}", style="success"))
     kb.add(kb_btn("🔄 Обновить", callback_data=f"reportbindrefresh:{wid}:{company_idx}"))
 
-    row = [kb_btn("⬅️", callback_data=f"reports:{wid}:{company_idx}")]
+    row = [kb_btn("⬅️", callback_data=f"reports:{wid}:{company_idx}", style="primary")]
     if has_prev:
         row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:rb:{company_idx}:x:prev"))
     if has_next:
@@ -2418,14 +2461,68 @@ def report_targets_kb(wid: str, company_idx: int, company: dict):
 def report_target_item_kb(wid: str, company_idx: int, target_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("🔌 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"reportbind:{wid}:{company_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"reportbind:{wid}:{company_idx}", style="primary"))
+    return kb
+
+
+def template_report_menu_kb(wid: str, ws: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    template = get_active_template(ws)
+    intervals = get_report_intervals(template)
+    items = [(format_report_schedule_label(interval), f"tplreportitem:{wid}:{idx}") for idx, interval in enumerate(intervals)]
+    page = get_ui_page(template, active_template_report_page_key(ws))
+    visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORTS)
+
+    for title, callback_data in visible:
+        kb.add(kb_btn(title, callback_data=callback_data))
+
+    kb.add(kb_btn("➕ Добавить Интервал", callback_data=f"tplreportadd:{wid}", style="success"))
+    kb.add(kb_btn("🧹 Очистить График", callback_data=f"tplreportclearask:{wid}", style="danger"))
+    row = [kb_btn("⬅️", callback_data=f"tplsettings:{wid}", style="primary")]
+    if has_prev:
+        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tpr:x:x:prev"))
+    if has_next:
+        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tpr:x:x:next"))
+    kb.row(*row)
+    return kb
+
+
+def template_report_interval_kb(wid: str, interval_idx: int):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("Изменить Время Отчета", callback_data=f"tplreportedit:{wid}:{interval_idx}"))
+    kb.add(kb_btn("Изменить Интервал Накопления", callback_data=f"tplreportaccedit:{wid}:{interval_idx}"))
+    kb.add(kb_btn("🗑 Удалить", callback_data=f"tplreportdelask:{wid}:{interval_idx}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"tplreport:{wid}", style="primary"))
+    return kb
+
+
+def template_report_interval_kind_kb(wid: str, flow: str, interval_idx: int | None):
+    kb = InlineKeyboardMarkup(row_width=1)
+    token = "x" if interval_idx is None else str(interval_idx)
+    kb.row(
+        kb_btn("Понедельник", callback_data=f"tplreportweek:{wid}:{token}:{flow}:0"),
+        kb_btn("Вторник", callback_data=f"tplreportweek:{wid}:{token}:{flow}:1"),
+    )
+    kb.row(
+        kb_btn("Среда", callback_data=f"tplreportweek:{wid}:{token}:{flow}:2"),
+        kb_btn("Четверг", callback_data=f"tplreportweek:{wid}:{token}:{flow}:3"),
+    )
+    kb.row(
+        kb_btn("Пятница", callback_data=f"tplreportweek:{wid}:{token}:{flow}:4"),
+        kb_btn("Суббота", callback_data=f"tplreportweek:{wid}:{token}:{flow}:5"),
+    )
+    kb.add(kb_btn("Воскресение", callback_data=f"tplreportweek:{wid}:{token}:{flow}:6"))
+    kb.add(kb_btn("Каждый День", callback_data=f"tplreportdaily:{wid}:{token}:{flow}"))
+    kb.add(kb_btn("Каждый Месяц", callback_data=f"tplreportmonth:{wid}:{token}:{flow}"))
+    back_cb = f"tplreportitem:{wid}:{interval_idx}" if flow == "edit" and interval_idx is not None else f"tplreport:{wid}"
+    kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
 
 
 def confirm_kb(confirm_cb: str, back_cb: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("Да!", callback_data=confirm_cb))
-    kb.add(kb_btn("⬅️", callback_data=back_cb))
+    kb.add(kb_btn("Да!", callback_data=confirm_cb, style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
 
 
@@ -2549,35 +2646,31 @@ async def publish_company_reports(ws: dict, company_idx: int, now_value: int) ->
     changed = False
 
     for interval in intervals:
-        safety = 0
         anchor = ((interval.get("last_report_at") or interval.get("created_at") or now_value) - 1)
-        while safety < 24:
-            occurrence = next_report_occurrence_after(interval, anchor)
-            if occurrence is None or occurrence > now_value:
-                break
+        occurrence = next_report_occurrence_after(interval, anchor)
+        if occurrence is None or occurrence > now_value:
+            continue
 
-            targets = get_effective_report_targets(company)
-            if not targets:
-                break
+        targets = get_effective_report_targets(company)
+        if not targets:
+            continue
 
-            start_at, end_at = resolve_report_period(interval, occurrence)
-            text = build_report_message(company, start_at, end_at)
+        start_at, end_at = resolve_report_period(interval, occurrence)
+        text = build_report_message(company, start_at, end_at)
 
-            sent_any = False
-            for target in targets:
-                try:
-                    await send_message(target["chat_id"], text, thread_id=target.get("thread_id") or 0)
-                    sent_any = True
-                except Exception:
-                    pass
+        sent_any = False
+        for target in targets:
+            try:
+                await send_message(target["chat_id"], text, thread_id=target.get("thread_id") or 0)
+                sent_any = True
+            except Exception:
+                pass
 
-            if not sent_any:
-                break
+        if not sent_any:
+            continue
 
-            interval["last_report_at"] = occurrence
-            anchor = occurrence
-            changed = True
-            safety += 1
+        interval["last_report_at"] = occurrence
+        changed = True
 
     return changed
 
@@ -2708,22 +2801,33 @@ async def edit_report_accumulation_menu(data: dict, wid: str):
     if not ws or not ws.get("is_connected"):
         return
     awaiting = ws.get("awaiting") or {}
-    company_idx = awaiting.get("company_idx")
     draft_interval = awaiting.get("draft_interval")
-    if company_idx is None or not isinstance(draft_interval, dict):
+    if not isinstance(draft_interval, dict):
         await edit_ws_home_menu(data, wid)
         return
-    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    title = workspace_path_title(
-        ws,
-        rich_display_company_name(company),
-        "🧾 Отчетность",
-        format_report_schedule_label(draft_interval),
-        "Копить задачи:",
-    )
+    if awaiting.get("type", "").startswith("template_report"):
+        active = get_active_template(ws)
+        title = workspace_path_title(
+            ws,
+            "⚙️ Шаблоны задач",
+            rich_display_template_name(active),
+            "🧾 Отчетность",
+            format_report_schedule_label(draft_interval),
+            "Копить задачи:",
+        )
+    else:
+        company_idx = awaiting.get("company_idx")
+        if company_idx is None or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            await edit_ws_home_menu(data, wid)
+            return
+        company = ws["companies"][company_idx]
+        title = workspace_path_title(
+            ws,
+            rich_display_company_name(company),
+            "🧾 Отчетность",
+            format_report_schedule_label(draft_interval),
+            "Копить задачи:",
+        )
     await upsert_ws_menu(data, wid, title, report_accumulation_kb(wid, draft_interval))
 
 
@@ -2865,6 +2969,40 @@ async def edit_template_settings_menu(data: dict, wid: str):
         return
     active = get_active_template(ws)
     await upsert_ws_menu(data, wid, template_settings_title(ws, active), template_settings_kb(wid))
+
+
+async def edit_template_report_menu(data: dict, wid: str):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    active = get_active_template(ws)
+    await upsert_ws_menu(data, wid, template_reports_menu_title(ws, active), template_report_menu_kb(wid, ws))
+
+
+async def edit_template_report_interval_menu(data: dict, wid: str, interval_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    active = get_active_template(ws)
+    interval = find_report_interval(active, interval_idx)
+    if not interval:
+        await edit_template_report_menu(data, wid)
+        return
+    await upsert_ws_menu(data, wid, template_report_interval_title(ws, active, interval), template_report_interval_kb(wid, interval_idx))
+
+
+async def edit_template_report_interval_kind_menu(data: dict, wid: str, flow: str, interval_idx: int | None):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    active = get_active_template(ws)
+    label = "Изменить Время Отчета" if flow == "edit" and interval_idx is not None else "Добавить Интервал"
+    await upsert_ws_menu(
+        data,
+        wid,
+        workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), "🧾 Отчетность", label),
+        template_report_interval_kind_kb(wid, flow, interval_idx),
+    )
 
 
 async def edit_template_task_menu(data: dict, wid: str, task_idx: int):
@@ -3587,6 +3725,33 @@ async def finalize_report_interval(wid: str, company_idx: int, draft_interval: d
     await edit_report_interval_menu(fresh, wid, company_idx, target_idx if target_idx is not None else 0)
 
 
+async def finalize_template_report_interval(wid: str, draft_interval: dict, flow: str, interval_idx: int | None):
+    normalized = ensure_report_interval(draft_interval)
+    if not normalized:
+        return
+
+    target_idx = interval_idx
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws:
+            return
+        template = get_active_template(ws)
+        intervals = get_report_intervals(template)
+        if flow == "edit_accumulation":
+            flow = "edit"
+        if flow == "edit" and interval_idx is not None and 0 <= interval_idx < len(intervals):
+            intervals[interval_idx] = normalized
+        else:
+            intervals.append(normalized)
+            target_idx = len(intervals) - 1
+        ws["awaiting"] = None
+        await save_data_unlocked(data)
+
+    fresh = await load_data()
+    await edit_template_report_interval_menu(fresh, wid, target_idx if target_idx is not None else 0)
+
+
 @dp.callback_query_handler(lambda c: c.data.startswith("reports:"))
 async def open_reports_menu(cb: types.CallbackQuery):
     await cb.answer()
@@ -3705,7 +3870,8 @@ async def report_accumulation_back(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         awaiting = (ws or {}).get("awaiting") or {}
         company_idx = awaiting.get("company_idx")
-        if company_idx is None:
+        is_template = awaiting.get("type", "").startswith("template_report")
+        if company_idx is None and not is_template:
             return
         flow = awaiting.get("flow")
         interval_idx = awaiting.get("interval_idx")
@@ -3714,6 +3880,12 @@ async def report_accumulation_back(cb: types.CallbackQuery):
         await save_data_unlocked(data)
 
     data = await load_data()
+    if awaiting.get("type", "").startswith("template_report"):
+        if flow == "edit_accumulation" and interval_idx is not None:
+            await edit_template_report_interval_menu(data, wid, interval_idx)
+            return
+        await edit_template_report_interval_kind_menu(data, wid, "edit" if flow == "edit" else "new", interval_idx)
+        return
     if flow == "edit_accumulation" and interval_idx is not None:
         await edit_report_interval_menu(data, wid, company_idx, interval_idx)
         return
@@ -3736,12 +3908,13 @@ async def report_accumulation_choice(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected"):
             return
         awaiting = ws.get("awaiting") or {}
-        if awaiting.get("type") != "report_accumulation_choice":
+        if awaiting.get("type") not in {"report_accumulation_choice", "template_report_accumulation_choice"}:
             return
         draft_interval = clone_report_interval(awaiting.get("draft_interval") or {})
         company_idx = awaiting.get("company_idx")
         interval_idx = awaiting.get("interval_idx")
         flow = awaiting.get("flow")
+        is_template = awaiting.get("type", "").startswith("template_report")
         if mode != "specific":
             draft_interval["accumulation"] = {"mode": mode}
             await save_data_unlocked(data)
@@ -3756,7 +3929,7 @@ async def report_accumulation_choice(cb: types.CallbackQuery):
                 ws,
                 prompt_text,
                 {
-                    "type": "report_accumulation_value",
+                    "type": "template_report_accumulation_value" if is_template else "report_accumulation_value",
                     "company_idx": company_idx,
                     "interval_idx": interval_idx,
                     "flow": flow,
@@ -3767,7 +3940,7 @@ async def report_accumulation_choice(cb: types.CallbackQuery):
                         "interval_idx": interval_idx,
                         "flow": flow,
                         "restore_awaiting": {
-                            "type": "report_accumulation_choice",
+                            "type": "template_report_accumulation_choice" if is_template else "report_accumulation_choice",
                             "company_idx": company_idx,
                             "interval_idx": interval_idx,
                             "flow": flow,
@@ -3783,7 +3956,10 @@ async def report_accumulation_choice(cb: types.CallbackQuery):
         data = await load_data()
         ws = data["workspaces"].get(wid)
         awaiting = (ws or {}).get("awaiting") or {}
-        await finalize_report_interval(wid, awaiting.get("company_idx"), draft_interval, flow, interval_idx)
+        if awaiting.get("type", "").startswith("template_report"):
+            await finalize_template_report_interval(wid, draft_interval, flow, interval_idx)
+        else:
+            await finalize_report_interval(wid, awaiting.get("company_idx"), draft_interval, flow, interval_idx)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportdelask:"))
@@ -3952,6 +4128,179 @@ async def report_bind_off(cb: types.CallbackQuery):
     await edit_report_targets_menu(fresh, wid, company_idx)
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreport:"))
+async def open_template_reports_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    await edit_template_report_menu(data, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportitem:"))
+async def open_template_report_item(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, interval_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_template_report_interval_menu(data, wid, int(interval_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportadd:"))
+async def open_template_report_add_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    await edit_template_report_interval_kind_menu(data, wid, "new", None)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportedit:"))
+async def open_template_report_edit_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, interval_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_template_report_interval_kind_menu(data, wid, "edit", int(interval_idx))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportdaily:"))
+async def open_template_report_daily_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, interval_idx, flow = cb.data.split(":")
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        template = get_active_template(ws)
+        draft = prepare_report_interval_draft(template, parse_optional_index(interval_idx), "daily")
+        await set_prompt(ws, "🧾 Пришли Время Отчета", {"type": "template_report_schedule_time", "interval_idx": parse_optional_index(interval_idx), "flow": flow, "draft_interval": draft, "back_to": {"view": "template_report_interval_kind", "interval_idx": parse_optional_index(interval_idx), "flow": flow}})
+        await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportmonth:"))
+async def open_template_report_monthly_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, interval_idx, flow = cb.data.split(":")
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        template = get_active_template(ws)
+        draft = prepare_report_interval_draft(template, parse_optional_index(interval_idx), "monthly")
+        await set_prompt(ws, "🧾 Пришли Число И Время Отчета, Например: 30 20:44", {"type": "template_report_schedule_time", "interval_idx": parse_optional_index(interval_idx), "flow": flow, "draft_interval": draft, "back_to": {"view": "template_report_interval_kind", "interval_idx": parse_optional_index(interval_idx), "flow": flow}})
+        await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportweek:"))
+async def open_template_report_weekly_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, interval_idx, flow, weekday = cb.data.split(":")
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        template = get_active_template(ws)
+        draft = prepare_report_interval_draft(template, parse_optional_index(interval_idx), "weekly")
+        draft["weekday"] = int(weekday)
+        await set_prompt(ws, "🧾 Пришли Время Отчета", {"type": "template_report_schedule_time", "interval_idx": parse_optional_index(interval_idx), "flow": flow, "draft_interval": draft, "back_to": {"view": "template_report_interval_kind", "interval_idx": parse_optional_index(interval_idx), "flow": flow}})
+        await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportaccedit:"))
+async def open_template_report_accumulation_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, interval_idx = cb.data.split(":")
+    interval_idx = int(interval_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        template = get_active_template(ws)
+        interval = find_report_interval(template, interval_idx)
+        if not interval:
+            return
+        ws["awaiting"] = {"type": "template_report_accumulation_choice", "interval_idx": interval_idx, "flow": "edit_accumulation", "draft_interval": clone_report_interval(interval)}
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_report_accumulation_menu(fresh, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportdelask:"))
+async def template_report_delete_ask(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, interval_idx = cb.data.split(":")
+    data = await load_data()
+    await upsert_ws_menu(data, wid, "Удалить Интервал Отчета?", confirm_kb(f"tplreportdel:{wid}:{interval_idx}", f"tplreportitem:{wid}:{interval_idx}"))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportdel:"))
+async def template_report_delete(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, interval_idx = cb.data.split(":")
+    interval_idx = int(interval_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws:
+            return
+        template = get_active_template(ws)
+        intervals = get_report_intervals(template)
+        if 0 <= interval_idx < len(intervals):
+            intervals.pop(interval_idx)
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_template_report_menu(fresh, wid)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportclearask:"))
+async def template_report_clear_ask(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    await upsert_ws_menu(data, wid, "Очистить Весь График Отчетности?", confirm_kb(f"tplreportclear:{wid}", f"tplreport:{wid}"))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tplreportclear:"))
+async def template_report_clear(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws:
+            return
+        template = get_active_template(ws)
+        get_report_intervals(template).clear()
+        await save_data_unlocked(data)
+    fresh = await load_data()
+    await edit_template_report_menu(fresh, wid)
+
+
 # =========================
 # NAVIGATION
 # =========================
@@ -3993,6 +4342,8 @@ async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: s
         await edit_report_menu(data, wid, int(a))
     elif view == "rb" and a != "x":
         await edit_report_targets_menu(data, wid, int(a))
+    elif view == "tpr":
+        await edit_template_report_menu(data, wid)
     elif view == "tm":
         await edit_template_menu(data, wid)
     elif view == "tc" and a != "x":
@@ -4064,6 +4415,10 @@ async def page_ws(cb: types.CallbackQuery):
                 company = ws["companies"][company_idx]
                 key = report_targets_page_key(company_idx)
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
+        elif view == "tpr":
+            active = get_active_template(ws)
+            key = active_template_report_page_key(ws)
+            set_ui_page(active, key, get_ui_page(active, key) + delta)
         elif view == "tm":
             key = active_template_page_key(ws)
             set_ui_page(ws, key, get_ui_page(ws, key) + delta)
@@ -4252,6 +4607,12 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
         await edit_templates_root_menu(data, wid)
     elif view == "template_settings":
         await edit_template_settings_menu(data, wid)
+    elif view == "template_report":
+        await edit_template_report_menu(data, wid)
+    elif view == "template_report_item":
+        await edit_template_report_interval_menu(data, wid, back_to["interval_idx"])
+    elif view == "template_report_interval_kind":
+        await edit_template_report_interval_kind_menu(data, wid, back_to.get("flow", "new"), back_to.get("interval_idx"))
     elif view == "template_category":
         await edit_template_category_menu(data, wid, back_to["category_idx"])
     elif view == "template_category_settings":
@@ -5076,7 +5437,7 @@ async def handle_group_text(message: types.Message):
                 scheduled_at = parse_flexible_datetime(text)
                 if scheduled_at is None or scheduled_at <= now_ts():
                     await save_data_unlocked(data)
-                    asyncio.create_task(send_temp_message(ws["chat_id"], "Пришли дату и время в будущем.", ws["thread_id"], delay=6))
+                    asyncio.create_task(send_temp_message(ws["chat_id"], "Дату введи корректно, барсурка стахановская", ws["thread_id"], delay=6))
                     return
                 draft_interval["scheduled_at"] = scheduled_at
             elif kind == "monthly":
@@ -5145,6 +5506,69 @@ async def handle_group_text(message: types.Message):
             report_followup = "report_finalize"
             report_followup_payload = {
                 "company_idx": company_idx,
+                "interval_idx": awaiting.get("interval_idx"),
+                "flow": awaiting.get("flow"),
+                "draft_interval": draft_interval,
+            }
+        elif mode == "template_report_schedule_time":
+            draft_interval = clone_report_interval(awaiting.get("draft_interval") or {})
+            kind = draft_interval.get("kind")
+            if kind not in {"weekly", "daily", "monthly"}:
+                finish(); await save_data_unlocked(data); return
+            if kind == "monthly":
+                parsed = parse_month_day_time(text)
+                if parsed is None:
+                    await save_data_unlocked(data)
+                    asyncio.create_task(send_temp_message(ws["chat_id"], "Пришли число и время, например: 30 20:44", ws["thread_id"], delay=6))
+                    return
+                day, hour, minute = parsed
+                draft_interval["day"] = day
+                draft_interval["hour"] = hour
+                draft_interval["minute"] = minute
+            else:
+                parsed = parse_flexible_time(text)
+                if parsed is None:
+                    await save_data_unlocked(data)
+                    asyncio.create_task(send_temp_message(ws["chat_id"], "Пришли время, например: 21:30", ws["thread_id"], delay=6))
+                    return
+                hour, minute = parsed
+                draft_interval["hour"] = hour
+                draft_interval["minute"] = minute
+
+            ws["awaiting"] = {
+                "type": "template_report_accumulation_choice",
+                "interval_idx": awaiting.get("interval_idx"),
+                "flow": awaiting.get("flow"),
+                "draft_interval": ensure_report_interval(draft_interval) or draft_interval,
+            }
+            await save_data_unlocked(data)
+            created_company = False
+            report_followup = "template_report_accumulation"
+        elif mode == "template_report_accumulation_value":
+            draft_interval = clone_report_interval(awaiting.get("draft_interval") or {})
+            kind = draft_interval.get("kind")
+            if kind == "monthly":
+                parsed = parse_month_day_time(text)
+                if parsed is None:
+                    await save_data_unlocked(data)
+                    asyncio.create_task(send_temp_message(ws["chat_id"], "Пришли число и время, например: 15 08:30", ws["thread_id"], delay=6))
+                    return
+                day, hour, minute = parsed
+                draft_interval["accumulation"] = {"mode": "specific", "type": "month_day", "day": day, "hour": hour, "minute": minute}
+            else:
+                parsed = parse_weekday_time(text)
+                if parsed is None:
+                    await save_data_unlocked(data)
+                    asyncio.create_task(send_temp_message(ws["chat_id"], "Пришли день недели и время, например: вторник 03:30", ws["thread_id"], delay=6))
+                    return
+                weekday, hour, minute = parsed
+                draft_interval["accumulation"] = {"mode": "specific", "type": "weekday_time", "weekday": weekday, "hour": hour, "minute": minute}
+
+            finish()
+            await save_data_unlocked(data)
+            created_company = False
+            report_followup = "template_report_finalize"
+            report_followup_payload = {
                 "interval_idx": awaiting.get("interval_idx"),
                 "flow": awaiting.get("flow"),
                 "draft_interval": draft_interval,
@@ -5236,7 +5660,7 @@ async def handle_group_text(message: types.Message):
                 await save_data_unlocked(data)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такой шаблон уже существует.", ws["thread_id"], delay=6))
                 return
-            tpl = {"id": uuid.uuid4().hex, "title": text, "emoji": "📁", "deadline_format": "relative", "tasks": [], "categories": []}
+            tpl = {"id": uuid.uuid4().hex, "title": text, "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}
             ws.setdefault("templates", []).append(tpl)
             set_active_template(ws, tpl["id"])
             finish(); await save_data_unlocked(data); created_company = False
@@ -5291,10 +5715,21 @@ async def handle_group_text(message: types.Message):
     if report_followup == "report_accumulation":
         await edit_report_accumulation_menu(fresh, wid)
         return
+    if report_followup == "template_report_accumulation":
+        await edit_report_accumulation_menu(fresh, wid)
+        return
     if report_followup == "report_finalize":
         await finalize_report_interval(
             wid,
             report_followup_payload.get("company_idx"),
+            report_followup_payload.get("draft_interval") or {},
+            report_followup_payload.get("flow"),
+            report_followup_payload.get("interval_idx"),
+        )
+        return
+    if report_followup == "template_report_finalize":
+        await finalize_template_report_interval(
+            wid,
             report_followup_payload.get("draft_interval") or {},
             report_followup_payload.get("flow"),
             report_followup_payload.get("interval_idx"),
@@ -5548,7 +5983,7 @@ async def delete_template_set(cb: types.CallbackQuery):
         if ws["templates"]:
             set_active_template(ws, ws["templates"][0]["id"])
         else:
-            ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "tasks": [], "categories": []}]
+            ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}]
             set_active_template(ws, ws["templates"][0]["id"])
         await save_data_unlocked(data)
     fresh = await load_data()
