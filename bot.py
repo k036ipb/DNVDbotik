@@ -3731,6 +3731,7 @@ async def mirror_on(cb: types.CallbackQuery):
         return
     _, wid, company_idx = cb.data.split(":")
     company_idx = int(company_idx)
+    show_import_menu = False
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -3739,40 +3740,40 @@ async def mirror_on(cb: types.CallbackQuery):
             return
         company = ws["companies"][company_idx]
         if missing_report_targets_for_mirrors(company):
+            show_import_menu = True
             await save_data_unlocked(data)
-            fresh = await load_data()
-            ws2 = fresh["workspaces"].get(wid)
-            if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
-                company2 = ws2["companies"][company_idx]
-                await upsert_ws_menu(
-                    fresh,
-                    wid,
-                    workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка", "➕ Добавить связку"),
-                    mirror_import_candidates_kb(wid, company_idx, company2),
-                )
-            return
-        company_id = company["id"]
-        token = generate_mirror_token()
-        data["mirror_tokens"][token] = {
-            "source_wid": wid,
-            "company_id": company_id,
-            "created_by": cb.from_user.id,
-            "source_chat_id": ws["chat_id"],
-            "source_thread_id": ws["thread_id"],
-            "instruction_msg_id": None,
-        }
-        await save_data_unlocked(data)
+        else:
+            company_id = company["id"]
+            token = generate_mirror_token()
+            data["mirror_tokens"][token] = {
+                "source_wid": wid,
+                "company_id": company_id,
+                "created_by": cb.from_user.id,
+                "source_chat_id": ws["chat_id"],
+                "source_thread_id": ws["thread_id"],
+                "instruction_msg_id": None,
+            }
+            await save_data_unlocked(data)
 
     fresh = await load_data()
     ws2 = fresh["workspaces"].get(wid)
-    if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
-        company2 = ws2["companies"][company_idx]
-        await show_instruction_menu(
+    if not ws2 or not (0 <= company_idx < len(ws2.get("companies", []))):
+        return
+    company2 = ws2["companies"][company_idx]
+    if show_import_menu:
+        await upsert_ws_menu(
             fresh,
             wid,
-            binding_instruction_text("📤 Чтобы добавить связку", token),
-            f"mirrors:{wid}:{company_idx}",
+            workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка", "➕ Добавить связку"),
+            mirror_import_candidates_kb(wid, company_idx, company2),
         )
+        return
+    await show_instruction_menu(
+        fresh,
+        wid,
+        binding_instruction_text("📤 Чтобы добавить связку", token),
+        f"mirrors:{wid}:{company_idx}",
+    )
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrornew:"))
@@ -3953,6 +3954,15 @@ async def cmd_mirror(message: types.Message):
     await try_delete_user_message(message)
     if instruction_msg_id:
         await safe_delete_message(source_chat_id, instruction_msg_id)
+    fresh = await load_data()
+    if source_wid in fresh.get("workspaces", {}):
+        if token_kind == "report_target":
+            await edit_report_targets_menu(fresh, source_wid, company_idx)
+        else:
+            ws2 = fresh["workspaces"].get(source_wid)
+            if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
+                company2 = ws2["companies"][company_idx]
+                await upsert_ws_menu(fresh, source_wid, mirrors_menu_title(ws2, company2), mirrors_menu_kb(source_wid, company_idx, company2))
     if token_kind == "report_target":
         await send_temp_message(ws["chat_id"], f"🧾 Отчеты по списку «{company['title']}» теперь будут выгружаться еще в один тред/чат", source_thread_id, delay=10)
     else:
@@ -4399,6 +4409,7 @@ async def report_bind_on(cb: types.CallbackQuery):
         return
     _, wid, company_idx = cb.data.split(":")
     company_idx = int(company_idx)
+    show_import_menu = False
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -4407,31 +4418,33 @@ async def report_bind_on(cb: types.CallbackQuery):
             return
         company = ws["companies"][company_idx]
         if missing_mirrors_for_report_targets(company):
-            await save_data_unlocked(data)
-            fresh = await load_data()
-            ws2 = fresh["workspaces"].get(wid)
-            if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
-                company2 = ws2["companies"][company_idx]
-                await upsert_ws_menu(
-                    fresh,
-                    wid,
-                    workspace_path_title(ws2, rich_display_company_name(company2), "🧾 Отчетность", "📎 Привязка", "➕ Добавить связку"),
-                    report_import_candidates_kb(wid, company_idx, company2),
-                )
-            return
-        token = generate_mirror_token()
-        data["mirror_tokens"][token] = {
-            "source_wid": wid,
-            "company_id": company["id"],
-            "created_by": cb.from_user.id,
-            "source_chat_id": ws["chat_id"],
-            "source_thread_id": ws["thread_id"],
-            "instruction_msg_id": None,
-            "kind": "report_target",
-        }
+            show_import_menu = True
+        else:
+            token = generate_mirror_token()
+            data["mirror_tokens"][token] = {
+                "source_wid": wid,
+                "company_id": company["id"],
+                "created_by": cb.from_user.id,
+                "source_chat_id": ws["chat_id"],
+                "source_thread_id": ws["thread_id"],
+                "instruction_msg_id": None,
+                "kind": "report_target",
+            }
         await save_data_unlocked(data)
 
     fresh = await load_data()
+    ws2 = fresh["workspaces"].get(wid)
+    if not ws2 or not (0 <= company_idx < len(ws2.get("companies", []))):
+        return
+    company2 = ws2["companies"][company_idx]
+    if show_import_menu:
+        await upsert_ws_menu(
+            fresh,
+            wid,
+            workspace_path_title(ws2, rich_display_company_name(company2), "🧾 Отчетность", "📎 Привязка", "➕ Добавить связку"),
+            report_import_candidates_kb(wid, company_idx, company2),
+        )
+        return
     await show_instruction_menu(
         fresh,
         wid,
