@@ -942,7 +942,7 @@ def reports_menu_title(ws: dict, company: dict) -> str:
 
 
 def report_interval_title(ws: dict, company: dict, interval: dict) -> str:
-    start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval))
+    start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval), company)
     return workspace_path_title(
         ws,
         rich_display_company_name(company),
@@ -1344,14 +1344,29 @@ def next_report_occurrence_after(interval: dict, after_ts: int) -> int | None:
     return int(candidate.timestamp())
 
 
-def resolve_report_period(interval: dict, occurrence_ts: int) -> tuple[int, int]:
+def get_last_company_report_at(company: dict | None, before_ts: int | None = None) -> int | None:
+    if not company:
+        return None
+    latest = None
+    for item in get_report_intervals(company):
+        published_at = item.get("last_report_at")
+        if not isinstance(published_at, int):
+            continue
+        if before_ts is not None and published_at >= before_ts:
+            continue
+        if latest is None or published_at > latest:
+            latest = published_at
+    return latest
+
+
+def resolve_report_period(interval: dict, occurrence_ts: int, company: dict | None = None) -> tuple[int, int]:
     end_at = occurrence_ts
     end_dt = datetime.fromtimestamp(end_at, TIMEZONE)
     accumulation = interval.get("accumulation") or {}
     mode = accumulation.get("mode")
 
     if mode == "last_report":
-        start_at = interval.get("last_report_at") or interval.get("created_at") or max(end_at - 1, 0)
+        start_at = get_last_company_report_at(company, before_ts=end_at) or interval.get("created_at") or max(end_at - 1, 0)
     elif mode == "week":
         start_at = int((end_dt - timedelta(days=7)).timestamp())
     elif mode == "month":
@@ -2695,11 +2710,23 @@ async def ensure_all_company_cards(ws: dict):
         await upsert_company_card(ws, idx)
 
 
+def company_has_live_deadlines(company: dict) -> bool:
+    for task in company.get("tasks", []):
+        if task.get("done"):
+            continue
+        if isinstance(task.get("deadline_due_at"), int):
+            return True
+    return False
+
+
 async def sync_company_everywhere(ws: dict, company_idx: int):
+    changed = False
     recreated_card = await upsert_company_card(ws, company_idx)
+    changed = changed or recreated_card
     company = ws["companies"][company_idx]
     for mirror in company.get("mirrors", []):
-        await upsert_company_mirror(mirror, company)
+        mirror_changed = await upsert_company_mirror(mirror, company)
+        changed = changed or mirror_changed
     company["mirror"] = company.get("mirrors", [None])[0] if company.get("mirrors") else None
     if recreated_card and ws.get("is_connected"):
         old_menu_id = ws.get("menu_msg_id")
@@ -2709,6 +2736,8 @@ async def sync_company_everywhere(ws: dict, company_idx: int):
         msg = await send_message(ws["chat_id"], "📂 Меню workspace", reply_markup=ws_home_kb(ws["id"], ws), thread_id=ws["thread_id"])
         ws["menu_msg_id"] = msg.message_id
         RUNTIME_MENU_IDS[ws["id"]] = msg.message_id
+        changed = True
+    return changed
 
 
 async def publish_company_reports(ws: dict, company_idx: int, now_value: int) -> bool:
@@ -2748,7 +2777,7 @@ async def publish_company_reports(ws: dict, company_idx: int, now_value: int) ->
         if not targets:
             continue
 
-        start_at, end_at = resolve_report_period(interval, occurrence)
+        start_at, end_at = resolve_report_period(interval, occurrence, company)
         text = build_report_message(company, start_at, end_at)
 
         sent_any = False
@@ -3845,6 +3874,7 @@ async def cmd_mirror(message: types.Message):
         thread_id = message.message_thread_id or 0
         label = workspace_full_name(message.chat.title or "Чат", extract_topic_title(message), thread_id)
         existing = None
+        created_new_binding = False
         if token_kind == "report_target":
             targets = ensure_explicit_report_targets(company)
             for target in targets:
@@ -3854,6 +3884,7 @@ async def cmd_mirror(message: types.Message):
             if not existing:
                 existing = {"chat_id": message.chat.id, "thread_id": thread_id, "message_id": None, "label": label}
                 targets.append(existing)
+                created_new_binding = True
         else:
             for mirror in company.get("mirrors", []):
                 if mirror.get("chat_id") == message.chat.id and (mirror.get("thread_id") or 0) == thread_id:
@@ -3862,6 +3893,7 @@ async def cmd_mirror(message: types.Message):
             if not existing:
                 existing = {"chat_id": message.chat.id, "thread_id": thread_id, "message_id": None, "label": label}
                 company.setdefault("mirrors", []).append(existing)
+                created_new_binding = True
         existing["label"] = label
         source_thread_id = payload.get("source_thread_id") or 0
         data["mirror_tokens"].pop(code, None)
@@ -3872,7 +3904,19 @@ async def cmd_mirror(message: types.Message):
     company_idx = find_company_index_by_id(ws, company_id)
     company = ws["companies"][company_idx]
     if token_kind == "mirror":
-        await sync_company_everywhere(ws, company_idx)
+        if created_new_binding:
+            target_mirror = next(
+                (
+                    mirror
+                    for mirror in company.get("mirrors", [])
+                    if mirror.get("chat_id") == message.chat.id and (mirror.get("thread_id") or 0) == thread_id
+                ),
+                None,
+            )
+            if target_mirror:
+                await upsert_company_mirror(target_mirror, company)
+        else:
+            await sync_company_everywhere(ws, company_idx)
         await save_data(fresh)
     await try_delete_user_message(message)
     fresh = await load_data()
@@ -5808,6 +5852,8 @@ async def handle_group_text(message: types.Message):
             company_idx = awaiting["company_idx"]
             draft_interval = clone_report_interval(awaiting.get("draft_interval") or {})
             kind = draft_interval.get("kind")
+            flow = awaiting.get("flow")
+            interval_idx = awaiting.get("interval_idx")
             if company_idx < 0 or company_idx >= len(ws["companies"]) or kind not in {"weekly", "daily", "monthly", "once"}:
                 finish(); await save_data_unlocked(data); return
             if kind == "once":
@@ -5837,16 +5883,29 @@ async def handle_group_text(message: types.Message):
                 draft_interval["hour"] = hour
                 draft_interval["minute"] = minute
 
-            ws["awaiting"] = {
-                "type": "report_accumulation_choice",
-                "company_idx": company_idx,
-                "interval_idx": awaiting.get("interval_idx"),
-                "flow": awaiting.get("flow"),
-                "draft_interval": ensure_report_interval(draft_interval) or draft_interval,
-            }
-            await save_data_unlocked(data)
-            created_company = False
-            report_followup = "report_accumulation"
+            normalized_draft = ensure_report_interval(draft_interval) or draft_interval
+            if flow == "edit" and interval_idx is not None:
+                finish()
+                await save_data_unlocked(data)
+                created_company = False
+                report_followup = "report_finalize"
+                report_followup_payload = {
+                    "company_idx": company_idx,
+                    "interval_idx": interval_idx,
+                    "flow": flow,
+                    "draft_interval": normalized_draft,
+                }
+            else:
+                ws["awaiting"] = {
+                    "type": "report_accumulation_choice",
+                    "company_idx": company_idx,
+                    "interval_idx": interval_idx,
+                    "flow": flow,
+                    "draft_interval": normalized_draft,
+                }
+                await save_data_unlocked(data)
+                created_company = False
+                report_followup = "report_accumulation"
         elif mode == "report_accumulation_value":
             company_idx = awaiting["company_idx"]
             draft_interval = clone_report_interval(awaiting.get("draft_interval") or {})
@@ -5889,6 +5948,8 @@ async def handle_group_text(message: types.Message):
         elif mode == "template_report_schedule_time":
             draft_interval = clone_report_interval(awaiting.get("draft_interval") or {})
             kind = draft_interval.get("kind")
+            flow = awaiting.get("flow")
+            interval_idx = awaiting.get("interval_idx")
             if kind not in {"weekly", "daily", "monthly"}:
                 finish(); await save_data_unlocked(data); return
             if kind == "monthly":
@@ -5911,15 +5972,27 @@ async def handle_group_text(message: types.Message):
                 draft_interval["hour"] = hour
                 draft_interval["minute"] = minute
 
-            ws["awaiting"] = {
-                "type": "template_report_accumulation_choice",
-                "interval_idx": awaiting.get("interval_idx"),
-                "flow": awaiting.get("flow"),
-                "draft_interval": ensure_report_interval(draft_interval) or draft_interval,
-            }
-            await save_data_unlocked(data)
-            created_company = False
-            report_followup = "template_report_accumulation"
+            normalized_draft = ensure_report_interval(draft_interval) or draft_interval
+            if flow == "edit" and interval_idx is not None:
+                finish()
+                await save_data_unlocked(data)
+                created_company = False
+                report_followup = "template_report_finalize"
+                report_followup_payload = {
+                    "interval_idx": interval_idx,
+                    "flow": flow,
+                    "draft_interval": normalized_draft,
+                }
+            else:
+                ws["awaiting"] = {
+                    "type": "template_report_accumulation_choice",
+                    "interval_idx": interval_idx,
+                    "flow": flow,
+                    "draft_interval": normalized_draft,
+                }
+                await save_data_unlocked(data)
+                created_company = False
+                report_followup = "template_report_accumulation"
         elif mode == "template_report_accumulation_value":
             draft_interval = clone_report_interval(awaiting.get("draft_interval") or {})
             kind = draft_interval.get("kind")
@@ -6400,8 +6473,11 @@ async def deadline_refresh_worker():
                     if not ws.get("is_connected"):
                         continue
                     for idx in range(len(ws.get("companies", []))):
-                        await sync_company_everywhere(ws, idx)
-                        changed = True
+                        company = ws["companies"][idx]
+                        if not company_has_live_deadlines(company):
+                            continue
+                        if await sync_company_everywhere(ws, idx):
+                            changed = True
                 if changed:
                     await save_data(data)
             except Exception:
