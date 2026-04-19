@@ -45,11 +45,6 @@ def now_dt() -> datetime:
     return datetime.now(TIMEZONE)
 
 
-def today_local() -> datetime:
-    n = now_dt()
-    return datetime(n.year, n.month, n.day, tzinfo=TIMEZONE)
-
-
 async def tg_call(factory, retries: int = 2):
     last_error = None
     for _ in range(retries + 1):
@@ -116,13 +111,7 @@ async def send_temp_message(chat_id: int, text: str, thread_id: int = 0, delay: 
 
 
 async def send_week_notice_pm(user_id: str, text: str):
-    msg = await send_message(int(user_id), text)
-
-    async def remover():
-        await asyncio.sleep(7 * 24 * 3600)
-        await safe_delete_message(int(user_id), msg.message_id)
-
-    asyncio.create_task(remover())
+    await send_temp_message(int(user_id), text, delay=10)
 
 
 async def try_delete_user_message(message: types.Message):
@@ -738,7 +727,6 @@ def normalize_data(data: dict) -> dict:
             user = data["users"][uid]
         user.setdefault("workspaces", [])
         user.setdefault("pm_menu_msg_id", None)
-        user.setdefault("help_msg_id", None)
         user.setdefault("ui_pages", {})
 
     for wid, ws in list(data["workspaces"].items()):
@@ -818,7 +806,6 @@ def ensure_user(data, user_id: str):
         {
             "workspaces": [],
             "pm_menu_msg_id": None,
-            "help_msg_id": None,
             "ui_pages": {},
         },
     )
@@ -828,11 +815,6 @@ def ensure_user(data, user_id: str):
 
 def make_ws_id(chat_id: int, thread_id: int | None):
     return f"{chat_id}_{thread_id or 0}"
-
-
-
-def thread_kwargs(thread_id: int):
-    return {"message_thread_id": thread_id} if thread_id else {}
 
 
 
@@ -1095,16 +1077,6 @@ def sort_company_tasks(tasks: list[dict]) -> list[dict]:
 
 
 
-def sort_template_tasks(tasks: list[dict]) -> list[dict]:
-    def key(task: dict):
-        seconds = task.get("deadline_seconds")
-        no_due = 1 if seconds is None else 0
-        return (no_due, seconds if seconds is not None else 10**18, task.get("created_at") or 0)
-
-    return sorted(tasks, key=key)
-
-
-
 def build_progress_bar(done_count: int, total_count: int) -> str:
     if total_count <= 0:
         progress = 0.0
@@ -1193,10 +1165,6 @@ def generate_mirror_token() -> str:
 def get_reporting(company: dict) -> dict:
     company["reporting"] = ensure_reporting(company.get("reporting"))
     return company["reporting"]
-
-
-def ensure_company_reports(company: dict) -> dict:
-    return get_reporting(company)
 
 
 def get_report_intervals(company: dict) -> list[dict]:
@@ -1460,12 +1428,6 @@ def report_preview_occurrence(interval: dict) -> int:
     return occurrence
 
 
-def report_preview_text(interval: dict) -> str:
-    occurrence = report_preview_occurrence(interval)
-    start_at, end_at = resolve_report_period(interval, occurrence)
-    return format_report_period_preview(interval, start_at, end_at)
-
-
 def report_interval_sort_key(interval: dict, original_idx: int) -> tuple:
     kind = interval.get("kind")
     if kind == "weekly":
@@ -1716,20 +1678,6 @@ def make_company(title: str, with_template: bool, ws: dict, template_id: str | N
 
 
 
-def legacy_task_menu_title(company: dict, task: dict, category: dict | None = None) -> str:
-    if category:
-        return f"{display_category_name(category)}/📌 {task['text']}"
-    return f"{display_company_name(company)}/📌 {task['text']}"
-
-
-
-def template_task_label(task: dict, deadline_format: str = "relative") -> str:
-    seconds = task.get("deadline_seconds")
-    suffix = f" ({format_duration_text(seconds)})" if isinstance(seconds, int) and seconds > 0 else ""
-    return f"📌 {task['text']}{suffix}"
-
-
-
 def parse_relative_duration_seconds(text: str) -> int | None:
     raw = clean_text(text).lower()
     if not raw:
@@ -1801,28 +1749,6 @@ def parse_month_day_time(text: str) -> tuple[int, int, int] | None:
     if not (1 <= day <= 31 and 0 <= hour <= 23 and 0 <= minute <= 59):
         return None
     return day, hour, minute
-
-
-def parse_weekday_value(value: str) -> int | None:
-    key = clean_text(value).lower().strip(".,:;")
-    return WEEKDAY_ALIASES.get(key)
-
-
-def parse_weekday_time(text: str) -> tuple[int, int, int] | None:
-    raw = clean_text(text)
-    if not raw:
-        return None
-    parts = raw.split(maxsplit=1)
-    if len(parts) != 2:
-        return None
-    weekday = parse_weekday_value(parts[0])
-    if weekday is None:
-        return None
-    time_part = parse_flexible_time(parts[1])
-    if time_part is None:
-        return None
-    hour, minute = time_part
-    return weekday, hour, minute
 
 
 def parse_deadline_input(text: str, keep_started_at: int | None = None) -> tuple[int | None, int | None, str | None]:
@@ -2493,10 +2419,6 @@ def report_menu_kb(wid: str, company_idx: int, company: dict):
     return kb
 
 
-def reports_menu_kb(wid: str, company_idx: int, company: dict):
-    return report_menu_kb(wid, company_idx, company)
-
-
 def report_interval_kb(wid: str, company_idx: int, interval_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("Изменить время отчета", callback_data=f"reportedit:{wid}:{company_idx}:{interval_idx}", style=False))
@@ -2955,10 +2877,6 @@ async def edit_report_menu(data: dict, wid: str, company_idx: int):
         return
     company = ws["companies"][company_idx]
     await upsert_ws_menu(data, wid, reports_menu_title(ws, company), report_menu_kb(wid, company_idx, company))
-
-
-async def edit_reports_menu(data: dict, wid: str, company_idx: int):
-    await edit_report_menu(data, wid, company_idx)
 
 
 async def edit_report_settings_menu(data: dict, wid: str, company_idx: int):
@@ -3578,7 +3496,6 @@ async def cmd_connect(message: types.Message):
     topic_title = extract_topic_title(message)
     old_menu_id = None
     old_prompt_id = None
-    help_msg_id = None
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -3625,14 +3542,10 @@ async def cmd_connect(message: types.Message):
         ws = data["workspaces"][wid]
         if wid not in data["users"][uid]["workspaces"]:
             data["users"][uid]["workspaces"].append(wid)
-        help_msg_id = data["users"][uid].get("help_msg_id")
-        data["users"][uid]["help_msg_id"] = None
         await save_data_unlocked(data)
 
     await safe_delete_message(message.chat.id, old_menu_id)
     await safe_delete_message(message.chat.id, old_prompt_id)
-    if help_msg_id:
-        await safe_delete_message(int(uid), help_msg_id)
 
     fresh = await load_data()
     ws = fresh["workspaces"].get(wid)
@@ -3765,9 +3678,7 @@ async def mirror_on(cb: types.CallbackQuery):
                 "source_wid": wid,
                 "company_id": company_id,
                 "created_by": cb.from_user.id,
-                "source_chat_id": ws["chat_id"],
                 "source_thread_id": ws["thread_id"],
-                "instruction_msg_id": None,
             }
             await save_data_unlocked(data)
 
@@ -3811,9 +3722,7 @@ async def mirror_new(cb: types.CallbackQuery):
             "source_wid": wid,
             "company_id": company["id"],
             "created_by": cb.from_user.id,
-            "source_chat_id": ws["chat_id"],
             "source_thread_id": ws["thread_id"],
-            "instruction_msg_id": None,
         }
         await save_data_unlocked(data)
 
@@ -3954,8 +3863,6 @@ async def cmd_mirror(message: types.Message):
                 existing = {"chat_id": message.chat.id, "thread_id": thread_id, "message_id": None, "label": label}
                 company.setdefault("mirrors", []).append(existing)
         existing["label"] = label
-        instruction_msg_id = payload.get("instruction_msg_id")
-        source_chat_id = payload.get("source_chat_id")
         source_thread_id = payload.get("source_thread_id") or 0
         data["mirror_tokens"].pop(code, None)
         await save_data_unlocked(data)
@@ -3968,8 +3875,6 @@ async def cmd_mirror(message: types.Message):
         await sync_company_everywhere(ws, company_idx)
         await save_data(fresh)
     await try_delete_user_message(message)
-    if instruction_msg_id:
-        await safe_delete_message(source_chat_id, instruction_msg_id)
     fresh = await load_data()
     if source_wid in fresh.get("workspaces", {}):
         if token_kind == "report_target":
@@ -4441,9 +4346,7 @@ async def report_bind_on(cb: types.CallbackQuery):
                 "source_wid": wid,
                 "company_id": company["id"],
                 "created_by": cb.from_user.id,
-                "source_chat_id": ws["chat_id"],
                 "source_thread_id": ws["thread_id"],
-                "instruction_msg_id": None,
                 "kind": "report_target",
             }
         await save_data_unlocked(data)
@@ -4488,9 +4391,7 @@ async def report_bind_new(cb: types.CallbackQuery):
             "source_wid": wid,
             "company_id": company["id"],
             "created_by": cb.from_user.id,
-            "source_chat_id": ws["chat_id"],
             "source_thread_id": ws["thread_id"],
-            "instruction_msg_id": None,
             "kind": "report_target",
         }
         await save_data_unlocked(data)
