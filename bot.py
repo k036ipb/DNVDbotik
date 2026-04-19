@@ -2055,17 +2055,26 @@ def ws_home_kb(wid: str, ws: dict):
             row2.append(kb_btn(arrow_text, callback_data=arrow_cb))
         kb.row(*row2)
     else:
-        row1 = [kb_btn("➕ Список", callback_data=f"cmpnew:{wid}")]
-        if nav_prev_in_upper:
-            row1.append(kb_btn("⬆️", callback_data=f"pg:{wid}:wh:x:x:prev"))
-        kb.row(*row1)
+        if has_next:
+            row1 = [kb_btn("➕ Список", callback_data=f"cmpnew:{wid}")]
+            if nav_prev_in_upper:
+                row1.append(kb_btn("⬆️", callback_data=f"pg:{wid}:wh:x:x:prev"))
+            kb.row(*row1)
 
-        row2 = [kb_btn("📇 Шаблоны", callback_data=f"tplroot:{wid}")]
-        if nav_last:
-            arrow_cb = f"pg:{wid}:wh:x:x:next" if has_next else f"pg:{wid}:wh:x:x:prev"
-            arrow_text = "⬇️" if has_next else "⬆️"
-            row2.append(kb_btn(arrow_text, callback_data=arrow_cb))
-        kb.row(*row2)
+            row2 = [kb_btn("📇 Шаблоны", callback_data=f"tplroot:{wid}")]
+            row2.append(kb_btn("⬇️", callback_data=f"pg:{wid}:wh:x:x:next"))
+            kb.row(*row2)
+        elif has_prev:
+            kb.row(
+                kb_btn("➕ Список", callback_data=f"cmpnew:{wid}"),
+                kb_btn("📇 Шаблоны", callback_data=f"tplroot:{wid}"),
+                kb_btn("⬆️", callback_data=f"pg:{wid}:wh:x:x:prev"),
+            )
+        else:
+            kb.row(
+                kb_btn("➕ Список", callback_data=f"cmpnew:{wid}"),
+                kb_btn("📇 Шаблоны", callback_data=f"tplroot:{wid}"),
+            )
     return kb
 
 
@@ -2218,7 +2227,7 @@ def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company:
         if task.get("deadline_due_at"):
             kb.add(kb_btn("⏰ Дедлайн", callback_data=f"taskdeadlinebox:{wid}:{company_idx}:{task_idx}", style="primary"))
         else:
-            kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style="primary"))
+            kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style=False))
 
     kb.add(kb_btn("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
     back = f"cat:{wid}:{company_idx}:{find_category_index(company.get('categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(company.get('categories', []), task.get('category_id')) is not None else f"cmp:{wid}:{company_idx}"
@@ -2228,7 +2237,7 @@ def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company:
 
 def task_deadline_kb(wid: str, company_idx: int, task_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style="primary"))
+    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style=False))
     kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"taskdeadel:{wid}:{company_idx}:{task_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"))
     return kb
@@ -2392,7 +2401,7 @@ def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
     if task.get("deadline_seconds"):
         kb.add(kb_btn("⏰ Дедлайн", callback_data=f"tpltaskdeadlinebox:{wid}:{task_idx}", style="primary"))
     else:
-        kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style="primary"))
+        kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style=False))
     kb.add(kb_btn("🗑 Удалить", callback_data=f"tpltaskdel:{wid}:{task_idx}"))
     back = f"tplcat:{wid}:{find_category_index(ws.get('template_categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(ws.get('template_categories', []), task.get('category_id')) is not None else f"tpl:{wid}"
     kb.add(kb_btn("⬅️", callback_data=back))
@@ -2401,7 +2410,7 @@ def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
 
 def template_task_deadline_kb(wid: str, task_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style="primary"))
+    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style=False))
     kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"))
     return kb
