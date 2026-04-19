@@ -1213,22 +1213,52 @@ def get_report_history(company: dict) -> list[dict]:
 
 def get_effective_report_targets(company: dict) -> list[dict]:
     reporting = get_reporting(company)
-    targets = reporting.get("targets")
-    if not targets:
-        cloned = []
-        for mirror in company.get("mirrors", []):
-            target = ensure_report_target(mirror)
-            if target:
-                cloned.append(target)
-        return cloned
+    targets = reporting.get("targets") or []
     return [target for target in (ensure_report_target(item) for item in targets) if target]
 
 
 def ensure_explicit_report_targets(company: dict) -> list[dict]:
     reporting = get_reporting(company)
     if reporting.get("targets") is None:
-        reporting["targets"] = get_effective_report_targets(company)
+        reporting["targets"] = []
     return reporting["targets"]
+
+
+def same_binding_place(left: dict, right: dict) -> bool:
+    return (
+        (left.get("chat_id") if isinstance(left, dict) else None) == (right.get("chat_id") if isinstance(right, dict) else None)
+        and ((left.get("thread_id") or 0) if isinstance(left, dict) else 0) == ((right.get("thread_id") or 0) if isinstance(right, dict) else 0)
+    )
+
+
+def missing_report_targets_for_mirrors(company: dict) -> list[tuple[int, dict]]:
+    mirrors = company.get("mirrors", [])
+    result = []
+    for idx, target in enumerate(get_effective_report_targets(company)):
+        if any(same_binding_place(target, mirror) for mirror in mirrors):
+            continue
+        result.append((idx, target))
+    return result
+
+
+def missing_mirrors_for_report_targets(company: dict) -> list[tuple[int, dict]]:
+    targets = get_effective_report_targets(company)
+    result = []
+    for idx, mirror in enumerate(company.get("mirrors", [])):
+        if any(same_binding_place(mirror, target) for target in targets):
+            continue
+        result.append((idx, mirror))
+    return result
+
+
+def mirror_instruction_text(token: str) -> str:
+    return (
+        "1) Добавь меня в нужную конфу;\n"
+        "2) Перейди в нужный тред;\n"
+        "3) Отправь команду:\n"
+        f"/mirror {token}\n"
+        "4) Пердани"
+    )
 
 
 def find_completion_entry(history: list[dict], entry_id: str | None) -> dict | None:
@@ -2388,6 +2418,16 @@ def mirrors_menu_kb(wid: str, company_idx: int, company: dict):
     return kb
 
 
+def mirror_import_candidates_kb(wid: str, company_idx: int, company: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for source_idx, target in missing_report_targets_for_mirrors(company):
+        label = target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"
+        kb.add(kb_btn(label, callback_data=f"mirrorcopy:{wid}:{company_idx}:{source_idx}", style=False))
+    kb.add(kb_btn("➕ Новая связка", callback_data=f"mirrornew:{wid}:{company_idx}", style="success"))
+    kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
+    return kb
+
+
 def mirror_item_kb(wid: str, company_idx: int, mirror_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
@@ -2406,11 +2446,11 @@ def report_menu_kb(wid: str, company_idx: int, company: dict):
         kb.add(kb_btn(title, callback_data=callback_data, style=False))
 
     kb.row(
-        kb_btn("➕Отчет", callback_data=f"reportadd:{wid}:{company_idx}", style="success"),
+        kb_btn("➕ Отчет", callback_data=f"reportadd:{wid}:{company_idx}", style="success"),
         kb_btn("⚙️ Привязка", callback_data=f"reportbind:{wid}:{company_idx}", style="primary"),
     )
 
-    settings_btn = kb_btn("⚙️Отчетность", callback_data=f"reportsettings:{wid}:{company_idx}", style="primary")
+    settings_btn = kb_btn("⚙️ Отчетность", callback_data=f"reportsettings:{wid}:{company_idx}", style="primary")
     up_btn = kb_btn("⬆️", callback_data=f"pg:{wid}:rp:{company_idx}:x:prev")
     down_btn = kb_btn("⬇️", callback_data=f"pg:{wid}:rp:{company_idx}:x:next")
     back_btn = kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")
@@ -2519,6 +2559,16 @@ def report_target_item_kb(wid: str, company_idx: int, target_idx: int):
     return kb
 
 
+def report_import_candidates_kb(wid: str, company_idx: int, company: dict):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for source_idx, mirror in missing_mirrors_for_report_targets(company):
+        label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
+        kb.add(kb_btn(label, callback_data=f"reportbindcopy:{wid}:{company_idx}:{source_idx}", style=False))
+    kb.add(kb_btn("➕ Новая связка", callback_data=f"reportbindnew:{wid}:{company_idx}", style="success"))
+    kb.add(kb_btn("⬅️", callback_data=f"reportbind:{wid}:{company_idx}", style="primary"))
+    return kb
+
+
 def template_report_menu_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     template = get_active_template(ws)
@@ -2531,8 +2581,8 @@ def template_report_menu_kb(wid: str, ws: dict):
         kb.add(kb_btn(title, callback_data=callback_data, style=False))
 
     kb.row(
-        kb_btn("➕Отчет", callback_data=f"tplreportadd:{wid}", style="success"),
-        kb_btn("⚙️Отчетность", callback_data=f"tplreportsettings:{wid}", style="primary"),
+        kb_btn("➕ Отчет", callback_data=f"tplreportadd:{wid}", style="success"),
+        kb_btn("⚙️ Отчетность", callback_data=f"tplreportsettings:{wid}", style="primary"),
     )
     row = [kb_btn("⬅️", callback_data=f"tplsettings:{wid}", style="primary")]
     if has_prev:
@@ -2800,7 +2850,7 @@ async def edit_ws_settings_menu(data: dict, wid: str):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
-    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Workspace"), ws_settings_kb(wid))
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Настройки Workspace"), ws_settings_kb(wid))
 
 
 async def edit_company_create_menu(data: dict, wid: str):
@@ -3302,7 +3352,7 @@ async def ws_clear_ask(cb: types.CallbackQuery):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
-    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Workspace", "🧹 Очистить workspace?"), confirm_kb(f"wsclear:{wid}", f"wsset:{wid}"))
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Настройки Workspace", "🧹 Очистить workspace?"), confirm_kb(f"wsclear:{wid}", f"wsset:{wid}"))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("wsclear:"))
@@ -3607,6 +3657,19 @@ async def mirror_on(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        if missing_report_targets_for_mirrors(company):
+            await save_data_unlocked(data)
+            fresh = await load_data()
+            ws2 = fresh["workspaces"].get(wid)
+            if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
+                company2 = ws2["companies"][company_idx]
+                await upsert_ws_menu(
+                    fresh,
+                    wid,
+                    workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка", "➕ Добавить связку"),
+                    mirror_import_candidates_kb(wid, company_idx, company2),
+                )
+            return
         company_id = company["id"]
         token = generate_mirror_token()
         data["mirror_tokens"][token] = {
@@ -3619,12 +3682,85 @@ async def mirror_on(cb: types.CallbackQuery):
         }
         await save_data_unlocked(data)
 
-    msg = await send_message(ws["chat_id"], "📤 Чтобы добавить связку:\n1) Перейди в целевой чат/тред\n2) Отправь команду:\n/mirror " + token, thread_id=ws["thread_id"])
+    msg = await send_message(ws["chat_id"], mirror_instruction_text(token), thread_id=ws["thread_id"])
     async with FILE_LOCK:
         data = await load_data_unlocked()
         if token in data.get("mirror_tokens", {}):
             data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
             await save_data_unlocked(data)
+    fresh = await load_data()
+    ws2 = fresh["workspaces"].get(wid)
+    if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
+        company2 = ws2["companies"][company_idx]
+        await upsert_ws_menu(fresh, wid, mirrors_menu_title(ws2, company2), mirrors_menu_kb(wid, company_idx, company2))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("mirrornew:"))
+async def mirror_new(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        token = generate_mirror_token()
+        data["mirror_tokens"][token] = {
+            "source_wid": wid,
+            "company_id": company["id"],
+            "created_by": cb.from_user.id,
+            "source_chat_id": ws["chat_id"],
+            "source_thread_id": ws["thread_id"],
+            "instruction_msg_id": None,
+        }
+        await save_data_unlocked(data)
+
+    msg = await send_message(ws["chat_id"], mirror_instruction_text(token), thread_id=ws["thread_id"])
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        if token in data.get("mirror_tokens", {}):
+            data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
+            await save_data_unlocked(data)
+    fresh = await load_data()
+    ws2 = fresh["workspaces"].get(wid)
+    if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
+        company2 = ws2["companies"][company_idx]
+        await upsert_ws_menu(fresh, wid, mirrors_menu_title(ws2, company2), mirrors_menu_kb(wid, company_idx, company2))
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("mirrorcopy:"))
+async def mirror_copy_existing(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, source_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    source_idx = int(source_idx)
+
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        candidates = missing_report_targets_for_mirrors(company)
+        picked = next((target for idx, target in candidates if idx == source_idx), None)
+        if not picked:
+            return
+        company.setdefault("mirrors", []).append({
+            "chat_id": picked.get("chat_id"),
+            "thread_id": picked.get("thread_id") or 0,
+            "message_id": None,
+            "label": picked.get("label"),
+        })
+        company["mirror"] = company.get("mirrors", [None])[0] if company.get("mirrors") else None
+        await save_data_unlocked(data)
+
     fresh = await load_data()
     ws2 = fresh["workspaces"].get(wid)
     if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
@@ -4192,6 +4328,19 @@ async def report_bind_on(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        if missing_mirrors_for_report_targets(company):
+            await save_data_unlocked(data)
+            fresh = await load_data()
+            ws2 = fresh["workspaces"].get(wid)
+            if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
+                company2 = ws2["companies"][company_idx]
+                await upsert_ws_menu(
+                    fresh,
+                    wid,
+                    workspace_path_title(ws2, rich_display_company_name(company2), "🧾 Отчетность", "📎 Привязка", "➕ Добавить связку"),
+                    report_import_candidates_kb(wid, company_idx, company2),
+                )
+            return
         token = generate_mirror_token()
         data["mirror_tokens"][token] = {
             "source_wid": wid,
@@ -4204,12 +4353,81 @@ async def report_bind_on(cb: types.CallbackQuery):
         }
         await save_data_unlocked(data)
 
-    msg = await send_message(ws["chat_id"], "🧾 Чтобы добавить привязку для отчетности:\n1) Перейди в целевой чат/тред\n2) Отправь команду:\n/mirror " + token, thread_id=ws["thread_id"])
+    msg = await send_message(ws["chat_id"], mirror_instruction_text(token), thread_id=ws["thread_id"])
     async with FILE_LOCK:
         data = await load_data_unlocked()
         if token in data.get("mirror_tokens", {}):
             data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
             await save_data_unlocked(data)
+
+    fresh = await load_data()
+    await edit_report_targets_menu(fresh, wid, company_idx)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportbindnew:"))
+async def report_bind_new(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        token = generate_mirror_token()
+        data["mirror_tokens"][token] = {
+            "source_wid": wid,
+            "company_id": company["id"],
+            "created_by": cb.from_user.id,
+            "source_chat_id": ws["chat_id"],
+            "source_thread_id": ws["thread_id"],
+            "instruction_msg_id": None,
+            "kind": "report_target",
+        }
+        await save_data_unlocked(data)
+
+    msg = await send_message(ws["chat_id"], mirror_instruction_text(token), thread_id=ws["thread_id"])
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        if token in data.get("mirror_tokens", {}):
+            data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
+            await save_data_unlocked(data)
+
+    fresh = await load_data()
+    await edit_report_targets_menu(fresh, wid, company_idx)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportbindcopy:"))
+async def report_bind_copy_existing(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, source_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    source_idx = int(source_idx)
+
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        candidates = missing_mirrors_for_report_targets(company)
+        picked = next((mirror for idx, mirror in candidates if idx == source_idx), None)
+        if not picked:
+            return
+        targets = ensure_explicit_report_targets(company)
+        targets.append({
+            "chat_id": picked.get("chat_id"),
+            "thread_id": picked.get("thread_id") or 0,
+            "message_id": None,
+            "label": picked.get("label"),
+        })
+        await save_data_unlocked(data)
 
     fresh = await load_data()
     await edit_report_targets_menu(fresh, wid, company_idx)
