@@ -2125,11 +2125,11 @@ def category_menu_kb(wid: str, company_idx: int, category_idx: int, category: di
     kb.row(*row2)
     return kb
 
-def category_settings_kb(wid: str, company_idx: int, category_idx: int):
+def category_settings_kb(wid: str, company_idx: int, category_idx: int, category: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("✍️ Переименовать", callback_data=f"catren:{wid}:{company_idx}:{category_idx}"))
     kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_idx}"))
-    kb.add(kb_btn("🧬 Копия Подгруппы", callback_data=f"catcopy:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("🧬 Копия подгруппы", callback_data=f"catcopy:{wid}:{company_idx}:{category_idx}"))
     format_label = "дата" if category.get("deadline_format") == "date" else "время"
     kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"catdeadlinefmt:{wid}:{company_idx}:{category_idx}"))
     kb.add(kb_btn("🗑 Удалить", callback_data=f"catdel:{wid}:{company_idx}:{category_idx}"))
@@ -2885,7 +2885,7 @@ async def edit_category_settings_menu(data: dict, wid: str, company_idx: int, ca
         await edit_company_menu(data, wid, company_idx)
         return
     category = company["categories"][category_idx]
-    await upsert_ws_menu(data, wid, category_settings_title(ws, company, category), category_settings_kb(wid, company_idx, category_idx))
+    await upsert_ws_menu(data, wid, category_settings_title(ws, company, category), category_settings_kb(wid, company_idx, category_idx, category))
 
 
 async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
