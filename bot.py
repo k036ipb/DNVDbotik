@@ -1168,6 +1168,10 @@ def get_reporting(company: dict) -> dict:
     return company["reporting"]
 
 
+def ensure_company_reports(company: dict) -> dict:
+    return get_reporting(company)
+
+
 def get_report_intervals(company: dict) -> list[dict]:
     reporting = get_reporting(company)
     reporting.setdefault("intervals", [])
@@ -2338,6 +2342,10 @@ def report_menu_kb(wid: str, company_idx: int, company: dict):
     return kb
 
 
+def reports_menu_kb(wid: str, company_idx: int, company: dict):
+    return report_menu_kb(wid, company_idx, company)
+
+
 def report_interval_kb(wid: str, company_idx: int, interval_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("Изменить интервал отчета", callback_data=f"reportedit:{wid}:{company_idx}:{interval_idx}"))
@@ -2657,6 +2665,10 @@ async def edit_report_menu(data: dict, wid: str, company_idx: int):
         return
     company = ws["companies"][company_idx]
     await upsert_ws_menu(data, wid, reports_menu_title(ws, company), report_menu_kb(wid, company_idx, company))
+
+
+async def edit_reports_menu(data: dict, wid: str, company_idx: int):
+    await edit_report_menu(data, wid, company_idx)
 
 
 async def edit_report_interval_menu(data: dict, wid: str, company_idx: int, interval_idx: int):
