@@ -28,6 +28,7 @@ TIMEZONE = ZoneInfo("Europe/Riga")
 FILE_LOCK = asyncio.Lock()
 MENU_LOCKS: dict[str, asyncio.Lock] = {}
 RUNTIME_MENU_IDS: dict[str, int] = {}
+RUNTIME_REPORT_OCCURRENCES: dict[tuple[str, str, str], int] = {}
 RECENT_CALLBACKS: dict[tuple[int, int, str], float] = {}
 CALLBACK_DEBOUNCE_SECONDS = 0.9
 
@@ -2392,16 +2393,16 @@ def report_menu_kb(wid: str, company_idx: int, company: dict):
     back_btn = kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")
 
     if has_prev and has_next:
-        kb.row(bind_btn, up_btn)
-        kb.row(back_btn, down_btn)
+        kb.row(back_btn, up_btn)
+        kb.row(bind_btn, down_btn)
     elif has_prev:
-        kb.row(bind_btn, up_btn)
-        kb.row(back_btn)
+        kb.row(bind_btn)
+        kb.row(back_btn, up_btn)
     elif has_next:
         kb.row(bind_btn)
         kb.row(back_btn, down_btn)
     else:
-        kb.row(bind_btn, back_btn)
+        kb.row(back_btn, bind_btn)
     return kb
 
 
@@ -2444,12 +2445,12 @@ def report_interval_kind_kb(wid: str, company_idx: int, flow: str, interval_idx:
 
 def report_accumulation_kb(wid: str, interval: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("От определенного дня", callback_data=f"reportacc:{wid}:specific"))
     if interval.get("kind") == "monthly":
         kb.add(kb_btn("Весь месяц", callback_data=f"reportacc:{wid}:month"))
     elif interval.get("kind") in {"daily", "weekly"}:
         kb.add(kb_btn("Всю неделю", callback_data=f"reportacc:{wid}:week"))
     kb.add(kb_btn("От последнего отчета", callback_data=f"reportacc:{wid}:last"))
+    kb.add(kb_btn("От определенного дня", callback_data=f"reportacc:{wid}:specific"))
     kb.add(kb_btn("⬅️", callback_data=f"reportaccback:{wid}", style="primary"))
     return kb
 
@@ -2682,12 +2683,28 @@ async def publish_company_reports(ws: dict, company_idx: int, now_value: int) ->
     changed = False
 
     for interval in intervals:
+        interval_key = (
+            str(ws.get("id") or ""),
+            str(company.get("id") or company_idx),
+            str(interval.get("id") or ""),
+        )
+        runtime_occurrence = RUNTIME_REPORT_OCCURRENCES.get(interval_key)
+        saved_occurrence = interval.get("last_report_at") if isinstance(interval.get("last_report_at"), int) else None
+        if runtime_occurrence is not None and (saved_occurrence is None or runtime_occurrence > saved_occurrence):
+            interval["last_report_at"] = runtime_occurrence
+            saved_occurrence = runtime_occurrence
+            changed = True
+
         if isinstance(interval.get("last_report_at"), int):
             anchor = interval["last_report_at"]
         else:
             anchor = ((interval.get("created_at") or now_value) - 1)
         occurrence = next_report_occurrence_after(interval, anchor)
         if occurrence is None or occurrence > now_value:
+            continue
+        if saved_occurrence is not None and occurrence <= saved_occurrence:
+            continue
+        if runtime_occurrence is not None and occurrence <= runtime_occurrence:
             continue
 
         targets = get_effective_report_targets(company)
@@ -2709,6 +2726,7 @@ async def publish_company_reports(ws: dict, company_idx: int, now_value: int) ->
             continue
 
         interval["last_report_at"] = occurrence
+        RUNTIME_REPORT_OCCURRENCES[interval_key] = occurrence
         changed = True
 
     return changed
