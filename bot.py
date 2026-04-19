@@ -1251,13 +1251,14 @@ def missing_mirrors_for_report_targets(company: dict) -> list[tuple[int, dict]]:
     return result
 
 
-def mirror_instruction_text(token: str) -> str:
+def binding_instruction_text(title: str, token: str) -> str:
     return (
+        f"{title}:\n"
         "1) Добавь меня в нужную конфу;\n"
         "2) Перейди в нужный тред;\n"
         "3) Отправь команду:\n"
         f"/mirror {token}\n"
-        "4) Пердани"
+        "4) Пердани."
     )
 
 
@@ -2207,22 +2208,29 @@ def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company:
         kb.add(kb_btn("✅ Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
     kb.add(kb_btn("✍️ Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
 
-    if not task.get("done"):
-        if task.get("deadline_due_at"):
-            kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}"))
-            kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"taskdeadel:{wid}:{company_idx}:{task_idx}"))
-        else:
-            kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}"))
-
     if company.get("categories"):
         if task.get("category_id"):
             kb.add(kb_btn("📥 Перевсунуть", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
         else:
             kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
 
+    if not task.get("done"):
+        if task.get("deadline_due_at"):
+            kb.add(kb_btn("⏰ Дедлайн", callback_data=f"taskdeadlinebox:{wid}:{company_idx}:{task_idx}", style="primary"))
+        else:
+            kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style="primary"))
+
     kb.add(kb_btn("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
     back = f"cat:{wid}:{company_idx}:{find_category_index(company.get('categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(company.get('categories', []), task.get('category_id')) is not None else f"cmp:{wid}:{company_idx}"
     kb.add(kb_btn("⬅️", callback_data=back))
+    return kb
+
+
+def task_deadline_kb(wid: str, company_idx: int, task_idx: int):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style="primary"))
+    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"taskdeadel:{wid}:{company_idx}:{task_idx}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"))
     return kb
 
 
@@ -2376,19 +2384,26 @@ def template_category_settings_kb(wid: str, category_idx: int):
 def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("✍️ Переименовать", callback_data=f"tpltaskren:{wid}:{task_idx}"))
-    if task.get("deadline_seconds"):
-        kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}"))
-        kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}"))
-    else:
-        kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}"))
     if ws.get("template_categories"):
         if task.get("category_id"):
             kb.add(kb_btn("📥 Перевсунуть", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
         else:
             kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
+    if task.get("deadline_seconds"):
+        kb.add(kb_btn("⏰ Дедлайн", callback_data=f"tpltaskdeadlinebox:{wid}:{task_idx}", style="primary"))
+    else:
+        kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style="primary"))
     kb.add(kb_btn("🗑 Удалить", callback_data=f"tpltaskdel:{wid}:{task_idx}"))
     back = f"tplcat:{wid}:{find_category_index(ws.get('template_categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(ws.get('template_categories', []), task.get('category_id')) is not None else f"tpl:{wid}"
     kb.add(kb_btn("⬅️", callback_data=back))
+    return kb
+
+
+def template_task_deadline_kb(wid: str, task_idx: int):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style="primary"))
+    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"))
     return kb
 
 
@@ -2645,6 +2660,12 @@ def prompt_kb(wid: str):
     return kb
 
 
+def back_kb(callback_data: str):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("⬅️", callback_data=callback_data, style="primary"))
+    return kb
+
+
 # =========================
 # VIEW HELPERS
 # =========================
@@ -2810,15 +2831,37 @@ async def publish_company_reports(ws: dict, company_idx: int, now_value: int) ->
 
 async def delete_old_prompt_if_any(ws: dict):
     awaiting = ws.get("awaiting") or {}
-    if awaiting.get("prompt_msg_id"):
+    prompt_msg_id = awaiting.get("prompt_msg_id")
+    current_menu_id = RUNTIME_MENU_IDS.get(ws.get("id")) or ws.get("menu_msg_id")
+    if prompt_msg_id and prompt_msg_id != current_menu_id:
         await safe_delete_message(ws["chat_id"], awaiting["prompt_msg_id"])
+
+
+async def upsert_ws_menu_inline(ws: dict, text: str, reply_markup):
+    wid = ws["id"]
+    current_id = RUNTIME_MENU_IDS.get(wid) or ws.get("menu_msg_id")
+    if current_id:
+        ws["menu_msg_id"] = current_id
+        ok = await try_edit_text(ws["chat_id"], current_id, text, reply_markup=reply_markup)
+        if ok:
+            RUNTIME_MENU_IDS[wid] = current_id
+            return False
+
+    msg = await send_message(ws["chat_id"], text, reply_markup=reply_markup, thread_id=ws["thread_id"])
+    ws["menu_msg_id"] = msg.message_id
+    RUNTIME_MENU_IDS[wid] = msg.message_id
+    return True
 
 
 async def set_prompt(ws: dict, prompt_text: str, awaiting_payload: dict):
     await delete_old_prompt_if_any(ws)
-    msg = await send_message(ws["chat_id"], prompt_text, reply_markup=prompt_kb(ws["id"]), thread_id=ws["thread_id"])
-    awaiting_payload["prompt_msg_id"] = msg.message_id
+    await upsert_ws_menu_inline(ws, prompt_text, prompt_kb(ws["id"]))
+    awaiting_payload["prompt_msg_id"] = None
     ws["awaiting"] = awaiting_payload
+
+
+async def show_instruction_menu(data: dict, wid: str, text: str, back_cb: str):
+    await upsert_ws_menu(data, wid, text, back_kb(back_cb))
 
 
 async def send_or_replace_ws_home_menu(data: dict, wid: str):
@@ -3051,6 +3094,26 @@ async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
     await upsert_ws_menu(data, wid, task_menu_title(ws, company, task, category), task_menu_kb(wid, company_idx, task_idx, task, company))
 
 
+async def edit_task_deadline_menu(data: dict, wid: str, company_idx: int, task_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    if company_idx < 0 or company_idx >= len(ws["companies"]):
+        await edit_ws_home_menu(data, wid)
+        return
+    company = ws["companies"][company_idx]
+    if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
+        await edit_company_menu(data, wid, company_idx)
+        return
+    task = company["tasks"][task_idx]
+    category = None
+    if task.get("category_id"):
+        cat_idx = find_category_index(company.get("categories", []), task.get("category_id"))
+        if cat_idx is not None:
+            category = company["categories"][cat_idx]
+    await upsert_ws_menu(data, wid, task_menu_title(ws, company, task, category), task_deadline_kb(wid, company_idx, task_idx))
+
+
 async def edit_task_move_menu(data: dict, wid: str, company_idx: int, task_idx: int):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
@@ -3174,6 +3237,23 @@ async def edit_template_task_menu(data: dict, wid: str, task_idx: int):
     await upsert_ws_menu(data, wid, template_task_title(ws, active, task, category), template_task_menu_kb(wid, task_idx, task, ws))
 
 
+async def edit_template_task_deadline_menu(data: dict, wid: str, task_idx: int):
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected"):
+        return
+    if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
+        await edit_template_menu(data, wid)
+        return
+    task = ws["template_tasks"][task_idx]
+    active = get_active_template(ws)
+    category = None
+    if task.get("category_id"):
+        cat_idx = find_category_index(ws.get("template_categories", []), task.get("category_id"))
+        if cat_idx is not None:
+            category = ws["template_categories"][cat_idx]
+    await upsert_ws_menu(data, wid, template_task_title(ws, active, task, category), template_task_deadline_kb(wid, task_idx))
+
+
 async def edit_template_task_move_menu(data: dict, wid: str, task_idx: int):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
@@ -3189,7 +3269,7 @@ async def edit_template_task_move_menu(data: dict, wid: str, task_idx: int):
 async def clear_workspace_contents(ws: dict):
     awaiting = ws.get("awaiting") or {}
     prompt_msg_id = awaiting.get("prompt_msg_id")
-    if prompt_msg_id:
+    if prompt_msg_id and prompt_msg_id != ws.get("menu_msg_id"):
         await safe_delete_message(ws["chat_id"], prompt_msg_id)
 
     for company in ws.get("companies", []):
@@ -3458,7 +3538,8 @@ async def pm_delete_workspace(cb: types.CallbackQuery):
         await save_data_unlocked(data)
 
     await safe_delete_message(chat_id, menu_msg_id)
-    await safe_delete_message(chat_id, prompt_msg_id)
+    if prompt_msg_id and prompt_msg_id != menu_msg_id:
+        await safe_delete_message(chat_id, prompt_msg_id)
     await safe_edit_text(int(current_uid), cb.message.message_id, pm_main_text(current_uid, data), reply_markup=pm_main_kb(current_uid, data))
     for uid in affected_users:
         if uid != current_uid:
@@ -3682,17 +3763,16 @@ async def mirror_on(cb: types.CallbackQuery):
         }
         await save_data_unlocked(data)
 
-    msg = await send_message(ws["chat_id"], mirror_instruction_text(token), thread_id=ws["thread_id"])
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        if token in data.get("mirror_tokens", {}):
-            data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
-            await save_data_unlocked(data)
     fresh = await load_data()
     ws2 = fresh["workspaces"].get(wid)
     if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
         company2 = ws2["companies"][company_idx]
-        await upsert_ws_menu(fresh, wid, mirrors_menu_title(ws2, company2), mirrors_menu_kb(wid, company_idx, company2))
+        await show_instruction_menu(
+            fresh,
+            wid,
+            binding_instruction_text("📤 Чтобы добавить связку", token),
+            f"mirrors:{wid}:{company_idx}",
+        )
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrornew:"))
@@ -3720,17 +3800,15 @@ async def mirror_new(cb: types.CallbackQuery):
         }
         await save_data_unlocked(data)
 
-    msg = await send_message(ws["chat_id"], mirror_instruction_text(token), thread_id=ws["thread_id"])
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        if token in data.get("mirror_tokens", {}):
-            data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
-            await save_data_unlocked(data)
     fresh = await load_data()
     ws2 = fresh["workspaces"].get(wid)
     if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
-        company2 = ws2["companies"][company_idx]
-        await upsert_ws_menu(fresh, wid, mirrors_menu_title(ws2, company2), mirrors_menu_kb(wid, company_idx, company2))
+        await show_instruction_menu(
+            fresh,
+            wid,
+            binding_instruction_text("📤 Чтобы добавить связку", token),
+            f"mirrors:{wid}:{company_idx}",
+        )
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrorcopy:"))
@@ -4353,15 +4431,13 @@ async def report_bind_on(cb: types.CallbackQuery):
         }
         await save_data_unlocked(data)
 
-    msg = await send_message(ws["chat_id"], mirror_instruction_text(token), thread_id=ws["thread_id"])
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        if token in data.get("mirror_tokens", {}):
-            data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
-            await save_data_unlocked(data)
-
     fresh = await load_data()
-    await edit_report_targets_menu(fresh, wid, company_idx)
+    await show_instruction_menu(
+        fresh,
+        wid,
+        binding_instruction_text("🧾 Чтобы добавить привязку для отчетности", token),
+        f"reportbind:{wid}:{company_idx}",
+    )
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindnew:"))
@@ -4390,15 +4466,13 @@ async def report_bind_new(cb: types.CallbackQuery):
         }
         await save_data_unlocked(data)
 
-    msg = await send_message(ws["chat_id"], mirror_instruction_text(token), thread_id=ws["thread_id"])
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        if token in data.get("mirror_tokens", {}):
-            data["mirror_tokens"][token]["instruction_msg_id"] = msg.message_id
-            await save_data_unlocked(data)
-
     fresh = await load_data()
-    await edit_report_targets_menu(fresh, wid, company_idx)
+    await show_instruction_menu(
+        fresh,
+        wid,
+        binding_instruction_text("🧾 Чтобы добавить привязку для отчетности", token),
+        f"reportbind:{wid}:{company_idx}",
+    )
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindcopy:"))
@@ -4939,6 +5013,8 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
         await edit_category_settings_menu(data, wid, back_to["company_idx"], back_to["category_idx"])
     elif view == "task":
         await edit_task_menu(data, wid, back_to["company_idx"], back_to["task_idx"])
+    elif view == "task_deadline":
+        await edit_task_deadline_menu(data, wid, back_to["company_idx"], back_to["task_idx"])
     elif view == "ws_settings":
         await edit_ws_settings_menu(data, wid)
     elif view == "template":
@@ -4959,6 +5035,8 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
         await edit_template_category_settings_menu(data, wid, back_to["category_idx"])
     elif view == "template_task":
         await edit_template_task_menu(data, wid, back_to["task_idx"])
+    elif view == "template_task_deadline":
+        await edit_template_task_deadline_menu(data, wid, back_to["task_idx"])
     else:
         await edit_ws_home_menu(data, wid)
 
@@ -4976,10 +5054,12 @@ async def cancel_input(cb: types.CallbackQuery):
             return
         awaiting = ws.get("awaiting") or {}
         prompt_msg_id = awaiting.get("prompt_msg_id")
+        menu_msg_id = ws.get("menu_msg_id")
         back_to = awaiting.get("back_to", {"view": "ws"})
         ws["awaiting"] = back_to.get("restore_awaiting")
         await save_data_unlocked(data)
-    await safe_delete_message(ws["chat_id"], prompt_msg_id)
+    if prompt_msg_id and prompt_msg_id != menu_msg_id:
+        await safe_delete_message(ws["chat_id"], prompt_msg_id)
     if ws.get("is_connected"):
         fresh = await load_data()
         await show_back_view(fresh, wid, back_to)
@@ -5208,8 +5288,21 @@ async def task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰Пришли мне дату или срок", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
+        company = ws["companies"][company_idx]
+        task = company["tasks"][task_idx]
+        back_view = "task_deadline" if task.get("deadline_due_at") else "task"
+        await set_prompt(ws, "⏰ Пришли мне дату или срок для дедлайна", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": back_view, "company_idx": company_idx, "task_idx": task_idx}})
         await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("taskdeadlinebox:"))
+async def open_task_deadline_box(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, task_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_task_deadline_menu(data, wid, int(company_idx), int(task_idx))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskdeadel:"))
@@ -5505,8 +5598,20 @@ async def template_task_deadline_prompt(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "⏰ Пришли срок, например: 3 дня, 7ч20м, 45 минут.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
+        task = ws["template_tasks"][task_idx]
+        back_view = "template_task_deadline" if task.get("deadline_seconds") else "template_task"
+        await set_prompt(ws, "⏰ Пришли срок для дедлайна, например: 3 дня, 7ч20м, 45 минут.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": back_view, "task_idx": task_idx}})
         await save_data_unlocked(data)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("tpltaskdeadlinebox:"))
+async def open_template_task_deadline_box(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, task_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_template_task_deadline_menu(data, wid, int(task_idx))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskdeadel:"))
@@ -6044,7 +6149,8 @@ async def handle_group_text(message: types.Message):
             await save_data_unlocked(data)
             return
 
-    await safe_delete_message(message.chat.id, prompt_msg_id)
+    if prompt_msg_id and prompt_msg_id != ws.get("menu_msg_id"):
+        await safe_delete_message(message.chat.id, prompt_msg_id)
     await try_delete_user_message(message)
     fresh = await load_data()
     ws = fresh["workspaces"].get(wid)
