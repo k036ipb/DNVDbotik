@@ -252,17 +252,16 @@ def ensure_report_accumulation(accumulation, interval_kind: str):
     if mode == "month" and interval_kind == "monthly":
         return {"mode": "month"}
     if mode == "specific":
-        if interval_kind == "once":
-            start_at = accumulation.get("start_at")
-            if isinstance(start_at, int):
-                return {"mode": "specific", "type": "datetime", "start_at": start_at}
-        elif interval_kind == "monthly":
+        start_at = accumulation.get("start_at")
+        if isinstance(start_at, int):
+            return {"mode": "specific", "type": "datetime", "start_at": start_at}
+        if interval_kind == "monthly":
             day = accumulation.get("day")
             hour = accumulation.get("hour")
             minute = accumulation.get("minute")
             if isinstance(day, int) and 1 <= day <= 31 and isinstance(hour, int) and 0 <= hour <= 23 and isinstance(minute, int) and 0 <= minute <= 59:
                 return {"mode": "specific", "type": "month_day", "day": day, "hour": hour, "minute": minute}
-        elif interval_kind in {"daily", "weekly"}:
+        if interval_kind in {"daily", "weekly"}:
             weekday = accumulation.get("weekday")
             hour = accumulation.get("hour")
             minute = accumulation.get("minute")
@@ -1349,6 +1348,8 @@ def resolve_report_period(interval: dict, occurrence_ts: int) -> tuple[int, int]
         start_at = int((end_dt - timedelta(days=7)).timestamp())
     elif mode == "month":
         start_at = int(shift_month(end_dt, -1, interval.get("day")).timestamp())
+    elif accumulation.get("type") == "datetime":
+        start_at = accumulation.get("start_at") or interval.get("created_at") or max(end_at - 1, 0)
     elif interval.get("kind") == "once":
         start_at = accumulation.get("start_at") or interval.get("created_at") or max(end_at - 1, 0)
     elif interval.get("kind") == "monthly":
@@ -1898,7 +1899,7 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
 
 def kb_btn(text: str, callback_data: str | None = None, style: str | None = None, **kwargs):
     btn = InlineKeyboardButton(text=text, callback_data=callback_data, **kwargs)
-    btn_style = style or infer_button_style(text, callback_data)
+    btn_style = None if style is False else (style or infer_button_style(text, callback_data))
     if btn_style:
         try:
             btn.values['style'] = btn_style
@@ -2081,13 +2082,13 @@ def company_menu_kb(wid: str, company_idx: int, company: dict):
     kb.row(*row2)
     return kb
 
-def company_settings_kb(wid: str, company_idx: int):
+def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("✍️ Переименовать список", callback_data=f"cmpren:{wid}:{company_idx}"))
     kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
-    kb.add(kb_btn("🧬 Копия Списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
+    kb.add(kb_btn("🧬 Копия списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
     kb.add(kb_btn("📤 Дублирование списка", callback_data=f"mirrors:{wid}:{company_idx}"))
-    kb.add(kb_btn("🧾 Отчетность", callback_data=f"reports:{wid}:{company_idx}"))
+    kb.add(kb_btn("🧾 Отчетность", callback_data=f"reports:{wid}:{company_idx}", style=False))
     format_label = "дата" if company.get("deadline_format") == "date" else "время"
     kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
     kb.add(kb_btn("🗑 Удалить список", callback_data=f"cmpdelask:{wid}:{company_idx}"))
@@ -2263,7 +2264,7 @@ def template_settings_kb(wid: str):
     kb.add(kb_btn("✍️ Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
     kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}"))
     kb.add(kb_btn("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
-    kb.add(kb_btn("🧾 Отчетность", callback_data=f"tplreport:{wid}"))
+    kb.add(kb_btn("🧾 Отчетность", callback_data=f"tplreport:{wid}", style=False))
     kb.add(kb_btn("🗑 Удалить шаблон", callback_data=f"tpldelset:{wid}"))
     kb.add(kb_btn("⬅️", callback_data=f"tpl:{wid}"))
     return kb
@@ -2370,11 +2371,11 @@ def report_menu_kb(wid: str, company_idx: int, company: dict):
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORTS)
 
     for title, callback_data in visible:
-        kb.add(kb_btn(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data, style=False))
 
-    kb.add(kb_btn("➕ Добавить Интервал", callback_data=f"reportadd:{wid}:{company_idx}", style="success"))
+    kb.add(kb_btn("➕ Добавить время отчета", callback_data=f"reportadd:{wid}:{company_idx}", style="success"))
     kb.add(kb_btn("Привязка", callback_data=f"reportbind:{wid}:{company_idx}"))
-    kb.add(kb_btn("🧹 Очистить График", callback_data=f"reportclearask:{wid}:{company_idx}", style="danger"))
+    kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}", style="danger"))
 
     row = [kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")]
     if has_prev:
@@ -2391,8 +2392,8 @@ def reports_menu_kb(wid: str, company_idx: int, company: dict):
 
 def report_interval_kb(wid: str, company_idx: int, interval_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("Изменить Время Отчета", callback_data=f"reportedit:{wid}:{company_idx}:{interval_idx}"))
-    kb.add(kb_btn("Изменить Интервал Накопления", callback_data=f"reportaccedit:{wid}:{company_idx}:{interval_idx}"))
+    kb.add(kb_btn("Изменить время отчета", callback_data=f"reportedit:{wid}:{company_idx}:{interval_idx}", style=False))
+    kb.add(kb_btn("Изменить интервал накопления", callback_data=f"reportaccedit:{wid}:{company_idx}:{interval_idx}", style=False))
     kb.add(kb_btn("🗑 Удалить", callback_data=f"reportdelask:{wid}:{company_idx}:{interval_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"reports:{wid}:{company_idx}", style="primary"))
     return kb
@@ -2402,21 +2403,21 @@ def report_interval_kind_kb(wid: str, company_idx: int, flow: str, interval_idx:
     kb = InlineKeyboardMarkup(row_width=1)
     token = "x" if interval_idx is None else str(interval_idx)
     kb.row(
-        kb_btn("Понедельник", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:0"),
-        kb_btn("Вторник", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:1"),
+        kb_btn("Понедельник", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:0", style=False),
+        kb_btn("Вторник", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:1", style=False),
     )
     kb.row(
-        kb_btn("Среда", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:2"),
-        kb_btn("Четверг", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:3"),
+        kb_btn("Среда", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:2", style=False),
+        kb_btn("Четверг", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:3", style=False),
     )
     kb.row(
-        kb_btn("Пятница", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:4"),
-        kb_btn("Суббота", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:5"),
+        kb_btn("Пятница", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:4", style=False),
+        kb_btn("Суббота", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:5", style=False),
     )
-    kb.add(kb_btn("Воскресение", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:6"))
-    kb.add(kb_btn("Каждый День", callback_data=f"reportdaily:{wid}:{company_idx}:{token}:{flow}"))
-    kb.add(kb_btn("Каждый Месяц", callback_data=f"reportmonth:{wid}:{company_idx}:{token}:{flow}"))
-    kb.add(kb_btn("Один Раз", callback_data=f"reportonce:{wid}:{company_idx}:{token}:{flow}"))
+    kb.add(kb_btn("Воскресение", callback_data=f"reportweek:{wid}:{company_idx}:{token}:{flow}:6", style=False))
+    kb.add(kb_btn("Каждый день", callback_data=f"reportdaily:{wid}:{company_idx}:{token}:{flow}", style=False))
+    kb.add(kb_btn("Каждый месяц", callback_data=f"reportmonth:{wid}:{company_idx}:{token}:{flow}", style=False))
+    kb.add(kb_btn("Один раз", callback_data=f"reportonce:{wid}:{company_idx}:{token}:{flow}", style=False))
     back_cb = f"reportitem:{wid}:{company_idx}:{interval_idx}" if flow == "edit" and interval_idx is not None else f"reports:{wid}:{company_idx}"
     kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
@@ -2424,12 +2425,12 @@ def report_interval_kind_kb(wid: str, company_idx: int, flow: str, interval_idx:
 
 def report_accumulation_kb(wid: str, interval: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("От Определенного Дня", callback_data=f"reportacc:{wid}:specific"))
+    kb.add(kb_btn("От определенного дня", callback_data=f"reportacc:{wid}:specific"))
     if interval.get("kind") == "monthly":
-        kb.add(kb_btn("Весь Месяц", callback_data=f"reportacc:{wid}:month"))
+        kb.add(kb_btn("Весь месяц", callback_data=f"reportacc:{wid}:month"))
     elif interval.get("kind") in {"daily", "weekly"}:
-        kb.add(kb_btn("Всю Неделю", callback_data=f"reportacc:{wid}:week"))
-    kb.add(kb_btn("От Последнего Отчета", callback_data=f"reportacc:{wid}:last"))
+        kb.add(kb_btn("Всю неделю", callback_data=f"reportacc:{wid}:week"))
+    kb.add(kb_btn("От последнего отчета", callback_data=f"reportacc:{wid}:last"))
     kb.add(kb_btn("⬅️", callback_data=f"reportaccback:{wid}", style="primary"))
     return kb
 
@@ -2474,10 +2475,10 @@ def template_report_menu_kb(wid: str, ws: dict):
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORTS)
 
     for title, callback_data in visible:
-        kb.add(kb_btn(title, callback_data=callback_data))
+        kb.add(kb_btn(title, callback_data=callback_data, style=False))
 
-    kb.add(kb_btn("➕ Добавить Интервал", callback_data=f"tplreportadd:{wid}", style="success"))
-    kb.add(kb_btn("🧹 Очистить График", callback_data=f"tplreportclearask:{wid}", style="danger"))
+    kb.add(kb_btn("➕ Добавить время отчета", callback_data=f"tplreportadd:{wid}", style="success"))
+    kb.add(kb_btn("🧹 Очистить график", callback_data=f"tplreportclearask:{wid}", style="danger"))
     row = [kb_btn("⬅️", callback_data=f"tplsettings:{wid}", style="primary")]
     if has_prev:
         row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tpr:x:x:prev"))
@@ -2489,8 +2490,8 @@ def template_report_menu_kb(wid: str, ws: dict):
 
 def template_report_interval_kb(wid: str, interval_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("Изменить Время Отчета", callback_data=f"tplreportedit:{wid}:{interval_idx}"))
-    kb.add(kb_btn("Изменить Интервал Накопления", callback_data=f"tplreportaccedit:{wid}:{interval_idx}"))
+    kb.add(kb_btn("Изменить время отчета", callback_data=f"tplreportedit:{wid}:{interval_idx}", style=False))
+    kb.add(kb_btn("Изменить интервал накопления", callback_data=f"tplreportaccedit:{wid}:{interval_idx}", style=False))
     kb.add(kb_btn("🗑 Удалить", callback_data=f"tplreportdelask:{wid}:{interval_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"tplreport:{wid}", style="primary"))
     return kb
@@ -2500,20 +2501,20 @@ def template_report_interval_kind_kb(wid: str, flow: str, interval_idx: int | No
     kb = InlineKeyboardMarkup(row_width=1)
     token = "x" if interval_idx is None else str(interval_idx)
     kb.row(
-        kb_btn("Понедельник", callback_data=f"tplreportweek:{wid}:{token}:{flow}:0"),
-        kb_btn("Вторник", callback_data=f"tplreportweek:{wid}:{token}:{flow}:1"),
+        kb_btn("Понедельник", callback_data=f"tplreportweek:{wid}:{token}:{flow}:0", style=False),
+        kb_btn("Вторник", callback_data=f"tplreportweek:{wid}:{token}:{flow}:1", style=False),
     )
     kb.row(
-        kb_btn("Среда", callback_data=f"tplreportweek:{wid}:{token}:{flow}:2"),
-        kb_btn("Четверг", callback_data=f"tplreportweek:{wid}:{token}:{flow}:3"),
+        kb_btn("Среда", callback_data=f"tplreportweek:{wid}:{token}:{flow}:2", style=False),
+        kb_btn("Четверг", callback_data=f"tplreportweek:{wid}:{token}:{flow}:3", style=False),
     )
     kb.row(
-        kb_btn("Пятница", callback_data=f"tplreportweek:{wid}:{token}:{flow}:4"),
-        kb_btn("Суббота", callback_data=f"tplreportweek:{wid}:{token}:{flow}:5"),
+        kb_btn("Пятница", callback_data=f"tplreportweek:{wid}:{token}:{flow}:4", style=False),
+        kb_btn("Суббота", callback_data=f"tplreportweek:{wid}:{token}:{flow}:5", style=False),
     )
-    kb.add(kb_btn("Воскресение", callback_data=f"tplreportweek:{wid}:{token}:{flow}:6"))
-    kb.add(kb_btn("Каждый День", callback_data=f"tplreportdaily:{wid}:{token}:{flow}"))
-    kb.add(kb_btn("Каждый Месяц", callback_data=f"tplreportmonth:{wid}:{token}:{flow}"))
+    kb.add(kb_btn("Воскресение", callback_data=f"tplreportweek:{wid}:{token}:{flow}:6", style=False))
+    kb.add(kb_btn("Каждый день", callback_data=f"tplreportdaily:{wid}:{token}:{flow}", style=False))
+    kb.add(kb_btn("Каждый месяц", callback_data=f"tplreportmonth:{wid}:{token}:{flow}", style=False))
     back_cb = f"tplreportitem:{wid}:{interval_idx}" if flow == "edit" and interval_idx is not None else f"tplreport:{wid}"
     kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
@@ -2746,7 +2747,7 @@ async def edit_company_settings_menu(data: dict, wid: str, company_idx: int):
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
-    await upsert_ws_menu(data, wid, company_settings_title(ws, company), company_settings_kb(wid, company_idx))
+    await upsert_ws_menu(data, wid, company_settings_title(ws, company), company_settings_kb(wid, company_idx, company))
 
 
 async def edit_report_menu(data: dict, wid: str, company_idx: int):
@@ -2787,7 +2788,7 @@ async def edit_report_interval_kind_menu(data: dict, wid: str, company_idx: int,
         await edit_ws_home_menu(data, wid)
         return
     company = ws["companies"][company_idx]
-    label = "Изменить интервал отчета" if flow == "edit" and interval_idx is not None else "Добавить интервал"
+    label = "Изменить время отчета" if flow == "edit" and interval_idx is not None else "Добавить время отчета"
     await upsert_ws_menu(
         data,
         wid,
@@ -2996,7 +2997,7 @@ async def edit_template_report_interval_kind_menu(data: dict, wid: str, flow: st
     if not ws or not ws.get("is_connected"):
         return
     active = get_active_template(ws)
-    label = "Изменить Время Отчета" if flow == "edit" and interval_idx is not None else "Добавить Интервал"
+    label = "Изменить время отчета" if flow == "edit" and interval_idx is not None else "Добавить время отчета"
     await upsert_ws_menu(
         data,
         wid,
@@ -3722,7 +3723,7 @@ async def finalize_report_interval(wid: str, company_idx: int, draft_interval: d
         await save_data_unlocked(data)
 
     fresh = await load_data()
-    await edit_report_interval_menu(fresh, wid, company_idx, target_idx if target_idx is not None else 0)
+    await edit_report_menu(fresh, wid, company_idx)
 
 
 async def finalize_template_report_interval(wid: str, draft_interval: dict, flow: str, interval_idx: int | None):
@@ -3749,7 +3750,7 @@ async def finalize_template_report_interval(wid: str, draft_interval: dict, flow
         await save_data_unlocked(data)
 
     fresh = await load_data()
-    await edit_template_report_interval_menu(fresh, wid, target_idx if target_idx is not None else 0)
+    await edit_template_report_menu(fresh, wid)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reports:"))
@@ -3924,7 +3925,7 @@ async def report_accumulation_choice(cb: types.CallbackQuery):
             elif draft_interval.get("kind") == "monthly":
                 prompt_text = "🧾 Пришли число и время начала накопления, например: 15 08:30"
             else:
-                prompt_text = "🧾 Пришли день недели и время начала накопления, например: вторник 03:30"
+                prompt_text = "🧾 Пришли точную дату и время начала накопления"
             await set_prompt(
                 ws,
                 prompt_text,
@@ -5492,13 +5493,12 @@ async def handle_group_text(message: types.Message):
                 day, hour, minute = parsed
                 draft_interval["accumulation"] = {"mode": "specific", "type": "month_day", "day": day, "hour": hour, "minute": minute}
             else:
-                parsed = parse_weekday_time(text)
-                if parsed is None:
+                start_at = parse_flexible_datetime(text)
+                if start_at is None or start_at >= report_preview_occurrence(draft_interval):
                     await save_data_unlocked(data)
-                    asyncio.create_task(send_temp_message(ws["chat_id"], "Пришли день недели и время, например: вторник 03:30", ws["thread_id"], delay=6))
+                    asyncio.create_task(send_temp_message(ws["chat_id"], "Пришли точную дату и время раньше даты отчета.", ws["thread_id"], delay=6))
                     return
-                weekday, hour, minute = parsed
-                draft_interval["accumulation"] = {"mode": "specific", "type": "weekday_time", "weekday": weekday, "hour": hour, "minute": minute}
+                draft_interval["accumulation"] = {"mode": "specific", "type": "datetime", "start_at": start_at}
 
             finish()
             await save_data_unlocked(data)
@@ -5556,13 +5556,12 @@ async def handle_group_text(message: types.Message):
                 day, hour, minute = parsed
                 draft_interval["accumulation"] = {"mode": "specific", "type": "month_day", "day": day, "hour": hour, "minute": minute}
             else:
-                parsed = parse_weekday_time(text)
-                if parsed is None:
+                start_at = parse_flexible_datetime(text)
+                if start_at is None or start_at >= report_preview_occurrence(draft_interval):
                     await save_data_unlocked(data)
-                    asyncio.create_task(send_temp_message(ws["chat_id"], "Пришли день недели и время, например: вторник 03:30", ws["thread_id"], delay=6))
+                    asyncio.create_task(send_temp_message(ws["chat_id"], "Пришли точную дату и время раньше даты отчета.", ws["thread_id"], delay=6))
                     return
-                weekday, hour, minute = parsed
-                draft_interval["accumulation"] = {"mode": "specific", "type": "weekday_time", "weekday": weekday, "hour": hour, "minute": minute}
+                draft_interval["accumulation"] = {"mode": "specific", "type": "datetime", "start_at": start_at}
 
             finish()
             await save_data_unlocked(data)
