@@ -2146,7 +2146,9 @@ def company_create_mode_kb(wid: str, ws: dict):
 def company_menu_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     items = []
-    for task_idx, task in enumerate(iter_company_root_tasks(company)):
+    for task_idx, task in enumerate(company.get("tasks", [])):
+        if task.get("category_id"):
+            continue
         icon = task_status_icon(task)
         items.append((f"{icon} {task['text']}", f"task:{wid}:{company_idx}:{task_idx}"))
     for category_idx, category in enumerate(company.get("categories", [])):
@@ -2292,11 +2294,11 @@ def task_move_kb(wid: str, company_idx: int, task_idx: int, company: dict, task:
             kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:prev"))
             kb.row(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"))
             return kb
+        kb.row(out_btn)
         row = [kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary")]
         if has_next:
             row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:next"))
         kb.row(*row)
-        kb.row(out_btn)
         return kb
     row = [kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary")]
     if has_next:
@@ -2354,7 +2356,9 @@ def template_menu_kb(wid: str, ws: dict):
         return templates_root_kb(wid, ws)
 
     items = []
-    for task_idx, task in enumerate(iter_template_root_tasks(template)):
+    for task_idx, task in enumerate(template.get("tasks", [])):
+        if task.get("category_id"):
+            continue
         items.append((display_template_task_button(task), f"tpltask:{wid}:{task_idx}"))
     for category_idx, category in enumerate(template.get("categories", [])):
         items.append((display_category_name(category), f"tplcat:{wid}:{category_idx}"))
@@ -2489,11 +2493,11 @@ def template_task_move_kb(wid: str, task_idx: int, ws: dict, task: dict):
             kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:prev"))
             kb.row(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"))
             return kb
+        kb.row(out_btn)
         row = [kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary")]
         if has_next:
             row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:next"))
         kb.row(*row)
-        kb.row(out_btn)
         return kb
     row = [kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary")]
     if has_next:
@@ -3610,7 +3614,6 @@ async def pm_clear_workspace_confirm(cb: types.CallbackQuery):
         ws = data["workspaces"].get(wid)
         if not ws:
             return
-        ws_name = ws["name"]
         await clear_workspace_contents(ws)
         clear_pending_mirror_tokens_for_workspace(data, wid)
         ensure_user(data, uid)["pm_menu_msg_id"] = cb.message.message_id
@@ -3619,7 +3622,7 @@ async def pm_clear_workspace_confirm(cb: types.CallbackQuery):
     ws = fresh["workspaces"].get(wid)
     if ws and ws.get("is_connected"):
         await edit_ws_home_menu(fresh, wid)
-    await safe_edit_text(int(uid), cb.message.message_id, f"📂 {esc(ws_name)}", reply_markup=pm_ws_manage_kb(wid))
+    await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, fresh), reply_markup=pm_main_kb(uid, fresh))
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsdelask:"))
@@ -3696,6 +3699,7 @@ async def cmd_connect(message: types.Message):
     topic_title = extract_topic_title(message)
     old_menu_id = None
     old_prompt_id = None
+    old_company_card_ids = []
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -3723,6 +3727,9 @@ async def cmd_connect(message: types.Message):
         if existing_ws:
             old_menu_id = existing_ws.get("menu_msg_id")
             old_prompt_id = (existing_ws.get("awaiting") or {}).get("prompt_msg_id")
+            old_company_card_ids = [company.get("card_msg_id") for company in old_companies if company.get("card_msg_id")]
+            for company in old_companies:
+                company["card_msg_id"] = None
 
         data["workspaces"][wid] = {
             "id": wid,
@@ -3746,6 +3753,8 @@ async def cmd_connect(message: types.Message):
 
     await safe_delete_message(message.chat.id, old_menu_id)
     await safe_delete_message(message.chat.id, old_prompt_id)
+    for card_msg_id in old_company_card_ids:
+        await safe_delete_message(message.chat.id, card_msg_id)
 
     fresh = await load_data()
     ws = fresh["workspaces"].get(wid)
