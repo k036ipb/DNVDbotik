@@ -3965,9 +3965,11 @@ async def mirror_copy_existing(cb: types.CallbackQuery):
         picked = next((target for idx, target in candidates if idx == source_idx), None)
         if not picked:
             return
+        chat_id = picked.get("chat_id")
+        thread_id = picked.get("thread_id") or 0
         company.setdefault("mirrors", []).append({
-            "chat_id": picked.get("chat_id"),
-            "thread_id": picked.get("thread_id") or 0,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
             "message_id": None,
             "label": picked.get("label"),
         })
@@ -3978,6 +3980,22 @@ async def mirror_copy_existing(cb: types.CallbackQuery):
     ws2 = fresh["workspaces"].get(wid)
     if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
         company2 = ws2["companies"][company_idx]
+        published_message_id = await publish_initial_company_mirror(company2, chat_id, thread_id)
+        if published_message_id:
+            for mirror in company2.get("mirrors", []):
+                if mirror.get("chat_id") == chat_id and (mirror.get("thread_id") or 0) == thread_id:
+                    mirror["message_id"] = published_message_id
+                    break
+            async with FILE_LOCK:
+                data = await load_data_unlocked()
+                source_ws = data.get("workspaces", {}).get(wid)
+                if source_ws and 0 <= company_idx < len(source_ws.get("companies", [])):
+                    live_company = source_ws["companies"][company_idx]
+                    for mirror in live_company.get("mirrors", []):
+                        if mirror.get("chat_id") == chat_id and (mirror.get("thread_id") or 0) == thread_id:
+                            mirror["message_id"] = published_message_id
+                            break
+                    await save_data_unlocked(data)
         await upsert_ws_menu(fresh, wid, mirrors_menu_title(ws2, company2), mirrors_menu_kb(wid, company_idx, company2))
 
 
