@@ -973,11 +973,6 @@ def report_targets_title(ws: dict, company: dict) -> str:
     return workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", "📎 Привязка")
 
 
-def report_target_title(ws: dict, company: dict, target: dict) -> str:
-    label = target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"
-    return workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", "📎 Привязка", label)
-
-
 def report_settings_title(ws: dict, company: dict, target: dict | None = None) -> str:
     parts = [rich_display_company_name(company), "🧾 Отчетность"]
     if target:
@@ -2652,13 +2647,6 @@ def report_settings_kb(wid: str, company_idx: int, target_idx: int):
     return kb
 
 
-def report_target_item_kb(wid: str, company_idx: int, target_idx: int):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("🔌 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"reportbind:{wid}:{company_idx}", style="primary"))
-    return kb
-
-
 def report_import_candidates_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     items = []
@@ -3193,21 +3181,6 @@ async def edit_report_targets_menu(data: dict, wid: str, company_idx: int):
         return
     company = ws["companies"][company_idx]
     await upsert_ws_menu(data, wid, report_targets_title(ws, company), report_targets_kb(wid, company_idx, company))
-
-
-async def edit_report_target_item_menu(data: dict, wid: str, company_idx: int, target_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
-        return
-    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    targets = get_effective_report_targets(company)
-    if target_idx < 0 or target_idx >= len(targets):
-        await edit_report_targets_menu(data, wid, company_idx)
-        return
-    await upsert_ws_menu(data, wid, report_target_title(ws, company, targets[target_idx]), report_target_item_kb(wid, company_idx, target_idx))
 
 
 async def edit_category_menu(data: dict, wid: str, company_idx: int, category_idx: int):
@@ -4181,24 +4154,6 @@ async def open_report_schedule_prompt(wid: str, company_idx: int, target_idx: in
         await save_data_unlocked(data)
 
 
-async def open_report_accumulation_state(wid: str, company_idx: int, draft_interval: dict, flow: str, interval_idx: int | None):
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        ws["awaiting"] = {
-            "type": "report_accumulation_choice",
-            "company_idx": company_idx,
-            "interval_idx": interval_idx,
-            "flow": flow,
-            "draft_interval": ensure_report_interval(draft_interval) or draft_interval,
-        }
-        await save_data_unlocked(data)
-    fresh = await load_data()
-    await edit_report_accumulation_menu(fresh, wid)
-
-
 async def finalize_report_interval(wid: str, company_idx: int, draft_interval: dict, flow: str, interval_idx: int | None):
     normalized = ensure_report_interval(draft_interval)
     if not normalized:
@@ -4237,7 +4192,6 @@ async def finalize_template_report_interval(wid: str, draft_interval: dict, flow
     if not normalized:
         return
 
-    target_idx = interval_idx
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
@@ -4251,7 +4205,6 @@ async def finalize_template_report_interval(wid: str, draft_interval: dict, flow
             intervals[interval_idx] = normalized
         else:
             intervals.append(normalized)
-            target_idx = len(intervals) - 1
         ws["awaiting"] = None
         await save_data_unlocked(data)
 
@@ -5334,8 +5287,6 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
         await edit_report_accumulation_menu(data, wid)
     elif view == "report_targets":
         await edit_report_targets_menu(data, wid, back_to["company_idx"])
-    elif view == "report_target_item":
-        await edit_report_target_item_menu(data, wid, back_to["company_idx"], back_to["target_idx"])
     elif view == "category":
         await edit_category_menu(data, wid, back_to["company_idx"], back_to["category_idx"])
     elif view == "category_settings":
