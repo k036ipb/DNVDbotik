@@ -32,18 +32,12 @@ RUNTIME_REPORT_OCCURRENCES: dict[tuple[str, str, str], int] = {}
 RECENT_CALLBACKS: dict[tuple[int, int, str], float] = {}
 CALLBACK_DEBOUNCE_SECONDS = 0.9
 
-
 # =========================
 # LOW LEVEL HELPERS
 # =========================
 
 def now_ts() -> int:
     return int(time.time())
-
-
-def now_dt() -> datetime:
-    return datetime.now(TIMEZONE)
-
 
 async def tg_call(factory, retries: int = 2):
     last_error = None
@@ -60,7 +54,6 @@ async def tg_call(factory, retries: int = 2):
     if last_error:
         raise last_error
 
-
 async def safe_delete_message(chat_id: int, message_id: int | None):
     if not message_id:
         return
@@ -68,7 +61,6 @@ async def safe_delete_message(chat_id: int, message_id: int | None):
         await tg_call(lambda: bot.delete_message(chat_id, message_id), retries=1)
     except Exception:
         pass
-
 
 async def try_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None) -> bool:
     try:
@@ -79,10 +71,8 @@ async def try_edit_text(chat_id: int, message_id: int, text: str, reply_markup=N
     except Exception:
         return False
 
-
 async def safe_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None):
     await try_edit_text(chat_id, message_id, text, reply_markup=reply_markup)
-
 
 async def send_message(chat_id: int, text: str, reply_markup=None, thread_id: int = 0):
     return await tg_call(
@@ -96,7 +86,6 @@ async def send_message(chat_id: int, text: str, reply_markup=None, thread_id: in
         retries=1,
     )
 
-
 async def send_temp_message(chat_id: int, text: str, thread_id: int = 0, delay: int = 8):
     try:
         msg = await send_message(chat_id, text, thread_id=thread_id)
@@ -109,22 +98,11 @@ async def send_temp_message(chat_id: int, text: str, thread_id: int = 0, delay: 
 
     asyncio.create_task(remover())
 
-
-async def send_week_notice_pm(user_id: str, text: str):
-    await send_temp_message(int(user_id), text, delay=10)
-
-
 async def try_delete_user_message(message: types.Message):
     try:
         await tg_call(lambda: message.delete(), retries=1)
     except Exception:
         pass
-
-
-def get_menu_lock(wid: str) -> asyncio.Lock:
-    MENU_LOCKS.setdefault(wid, asyncio.Lock())
-    return MENU_LOCKS[wid]
-
 
 def should_ignore_callback(cb: types.CallbackQuery) -> bool:
     key = (cb.from_user.id, cb.message.message_id if cb.message else 0, cb.data or "")
@@ -140,7 +118,6 @@ def should_ignore_callback(cb: types.CallbackQuery) -> bool:
 
     return prev is not None and ts - prev < CALLBACK_DEBOUNCE_SECONDS
 
-
 # =========================
 # DATA
 # =========================
@@ -152,9 +129,7 @@ def default_data():
         "mirror_tokens": {},
     }
 
-
 EMOJI_VARIATION_CHARS = {"\ufe0f", "\u200d"}
-
 
 def is_single_emoji(text: str) -> bool:
     text = (text or "").strip()
@@ -163,8 +138,6 @@ def is_single_emoji(text: str) -> bool:
     cleaned = "".join(ch for ch in text if ch not in EMOJI_VARIATION_CHARS)
     return 1 <= len(cleaned) <= 4
 
-
-COMMON_PREFIXES = ["📁", "😀", "😄", "🔥", "💋", "✅", "✔", "🗂", "⚙️", "⚙", "📂"]
 WEEKDAY_NAMES = [
     "понедельник",
     "вторник",
@@ -174,31 +147,6 @@ WEEKDAY_NAMES = [
     "суббота",
     "воскресение",
 ]
-WEEKDAY_ALIASES = {
-    "пн": 0,
-    "пон": 0,
-    "понедельник": 0,
-    "вт": 1,
-    "вто": 1,
-    "вторник": 1,
-    "ср": 2,
-    "сре": 2,
-    "среда": 2,
-    "чт": 3,
-    "чет": 3,
-    "четверг": 3,
-    "пт": 4,
-    "пят": 4,
-    "пятница": 4,
-    "сб": 5,
-    "суб": 5,
-    "суббота": 5,
-    "вс": 6,
-    "вск": 6,
-    "воскресенье": 6,
-    "воскресение": 6,
-}
-
 
 def default_reporting() -> dict:
     return {
@@ -206,7 +154,6 @@ def default_reporting() -> dict:
         "targets": None,
         "history": [],
     }
-
 
 def ensure_report_target(target):
     if not isinstance(target, dict):
@@ -221,10 +168,8 @@ def ensure_report_target(target):
         "message_id": target.get("message_id"),
     }
 
-
 def report_target_key(target: dict) -> str:
     return f"{target.get('chat_id')}:{target.get('thread_id') or 0}"
-
 
 def default_accumulation_for_kind(kind: str) -> dict:
     if kind == "on_done":
@@ -234,7 +179,6 @@ def default_accumulation_for_kind(kind: str) -> dict:
     if kind in {"daily", "weekly"}:
         return {"mode": "week"}
     return {"mode": "last_report"}
-
 
 def ensure_report_accumulation(accumulation, interval_kind: str):
     if not isinstance(accumulation, dict):
@@ -266,7 +210,6 @@ def ensure_report_accumulation(accumulation, interval_kind: str):
             if isinstance(weekday, int) and 0 <= weekday <= 6 and isinstance(hour, int) and 0 <= hour <= 23 and isinstance(minute, int) and 0 <= minute <= 59:
                 return {"mode": "specific", "type": "weekday_time", "weekday": weekday, "hour": hour, "minute": minute}
     return default_accumulation_for_kind(interval_kind)
-
 
 def ensure_report_interval(interval):
     if not isinstance(interval, dict):
@@ -323,23 +266,6 @@ def ensure_report_interval(interval):
         normalized["target_key"] = target_key
     return normalized
 
-
-def ensure_completion_entry(entry):
-    if not isinstance(entry, dict):
-        return None
-    completed_at = entry.get("completed_at")
-    task_text = entry.get("task_text")
-    if not isinstance(completed_at, int) or task_text is None:
-        return None
-    return {
-        "id": entry.get("id") or uuid.uuid4().hex,
-        "task_id": entry.get("task_id"),
-        "task_text": str(task_text),
-        "completed_at": completed_at,
-        "canceled_at": entry.get("canceled_at") if isinstance(entry.get("canceled_at"), int) else None,
-    }
-
-
 def ensure_reporting(reporting):
     if not isinstance(reporting, dict):
         reporting = default_reporting()
@@ -366,25 +292,21 @@ def ensure_reporting(reporting):
 
     normalized_history = []
     for entry in reporting.get("history", []):
-        normalized = ensure_completion_entry(entry)
-        if normalized:
-            normalized_history.append(normalized)
+        if not isinstance(entry, dict):
+            continue
+        completed_at = entry.get("completed_at")
+        task_text = entry.get("task_text")
+        if not isinstance(completed_at, int) or task_text is None:
+            continue
+        normalized_history.append({
+            "id": entry.get("id") or uuid.uuid4().hex,
+            "task_id": entry.get("task_id"),
+            "task_text": str(task_text),
+            "completed_at": completed_at,
+            "canceled_at": entry.get("canceled_at") if isinstance(entry.get("canceled_at"), int) else None,
+        })
     reporting["history"] = normalized_history
     return reporting
-
-
-def split_legacy_name(name: str | None, default_emoji: str = "📁") -> tuple[str, str]:
-    raw = (name or "").strip()
-    if not raw:
-        return default_emoji, ""
-    for prefix in COMMON_PREFIXES:
-        if raw.startswith(prefix):
-            title = raw[len(prefix):].lstrip()
-            if title:
-                return prefix, title
-    return default_emoji, raw
-
-
 
 def ensure_task(task, is_template: bool = False):
     if not isinstance(task, dict):
@@ -396,13 +318,7 @@ def ensure_task(task, is_template: bool = False):
     task.setdefault("created_at", now_ts())
 
     if is_template:
-        if task.get("deadline_seconds") is None:
-            days = task.get("deadline_days")
-            if isinstance(days, int) and days > 0:
-                task["deadline_seconds"] = days * 86400
-            else:
-                task["deadline_seconds"] = None
-        task.pop("deadline_days", None)
+        task.setdefault("deadline_seconds", None)
     else:
         task.setdefault("done", False)
         task.setdefault("deadline_due_at", None)
@@ -411,66 +327,56 @@ def ensure_task(task, is_template: bool = False):
         task.setdefault("done_event_id", None)
     return task
 
+def default_template_tasks() -> list[dict]:
+    return [
+        ensure_task({"text": "Создать договор"}, is_template=True),
+        ensure_task({"text": "Выставить счёт"}, is_template=True),
+    ]
 
+def make_template(title: str = "Шаблон", tasks: list[dict] | None = None, categories: list[dict] | None = None) -> dict:
+    return {
+        "id": uuid.uuid4().hex,
+        "title": title,
+        "emoji": "📁",
+        "deadline_format": "relative",
+        "reporting": default_reporting(),
+        "tasks": tasks or [],
+        "categories": categories or [],
+    }
 
 def ensure_category(cat):
     if not isinstance(cat, dict):
-        emoji, title = split_legacy_name(str(cat), "📁")
-        cat = {"title": title or str(cat), "emoji": emoji}
-
-    emoji, title = split_legacy_name(cat.get("name") or cat.get("title"), cat.get("emoji") or "📁")
+        cat = {"title": str(cat), "emoji": "📁"}
     cat.setdefault("id", uuid.uuid4().hex)
-    cat["emoji"] = cat.get("emoji") or emoji or "📁"
-    cat["title"] = cat.get("title") or title or "Подгруппа"
+    cat["emoji"] = cat.get("emoji") or "📁"
+    cat["title"] = cat.get("title") or "Подгруппа"
     cat.setdefault("deadline_format", None)
-    cat.pop("name", None)
     return cat
-
-
 
 def ensure_company(company):
     if not isinstance(company, dict):
         company = {}
 
-    legacy_name = company.get("name") or company.get("title")
-    emoji, title = split_legacy_name(legacy_name, company.get("emoji") or "📁")
-
     company.setdefault("id", uuid.uuid4().hex)
-    company["emoji"] = company.get("emoji") or emoji or "📁"
-    company["title"] = company.get("title") or title or "Список"
+    company["emoji"] = company.get("emoji") or "📁"
+    company["title"] = company.get("title") or "Список"
     company.setdefault("card_msg_id", None)
-    company.setdefault("mirror", None)
     company.setdefault("mirrors", [])
-    company.setdefault("mirror_history", [])
     company.setdefault("tasks", [])
     company.setdefault("categories", [])
     company.setdefault("deadline_format", "relative")
     company.setdefault("reporting", default_reporting())
 
-    if company.get("mirror") and not company.get("mirrors"):
-        company["mirrors"] = [company["mirror"]]
-    if company.get("mirrors") and not company.get("mirror"):
-        company["mirror"] = company["mirrors"][0]
-
     if not isinstance(company["tasks"], list):
         company["tasks"] = []
     if not isinstance(company["categories"], list):
         company["categories"] = []
-    if not isinstance(company["mirror_history"], list):
-        company["mirror_history"] = []
     company["reporting"] = ensure_reporting(company.get("reporting"))
     if not isinstance(company["mirrors"], list):
         company["mirrors"] = []
 
     company["tasks"] = [ensure_task(t, is_template=False) for t in company["tasks"]]
     company["categories"] = [ensure_category(c) for c in company["categories"]]
-
-    for history in company["mirror_history"]:
-        if not isinstance(history, dict):
-            continue
-        history.setdefault("chat_id", None)
-        history.setdefault("thread_id", 0)
-        history.setdefault("message_id", None)
 
     norm_mirrors=[]
     for mirror in company.get("mirrors", []):
@@ -482,38 +388,13 @@ def ensure_company(company):
         mirror.setdefault("label", None)
         norm_mirrors.append(mirror)
     company["mirrors"] = norm_mirrors
-    company["mirror"] = company["mirrors"][0] if company["mirrors"] else None
-
-    company.pop("name", None)
     return company
 
-
-
 def normalize_template(ws: dict):
-    legacy_template = ws.get("template")
-    if "templates" not in ws:
-        if "template_tasks" in ws or "template_categories" in ws or isinstance(legacy_template, list):
-            tasks = ws.get("template_tasks")
-            categories = ws.get("template_categories")
-            if not isinstance(tasks, list):
-                tasks = [ensure_task({"text": item}, is_template=True) for item in legacy_template] if isinstance(legacy_template, list) else []
-            if not isinstance(categories, list):
-                categories = []
-            ws["templates"] = [{
-                "id": uuid.uuid4().hex,
-                "title": ws.get("template_title") or "Шаблон",
-                "emoji": ws.get("template_emoji") or "📁",
-                "deadline_format": ws.get("template_deadline_format") or "relative",
-                "reporting": default_reporting(),
-                "tasks": [ensure_task(t, is_template=True) for t in tasks],
-                "categories": [ensure_category(c) for c in categories],
-            }]
-        else:
-            ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}]
+    if not isinstance(ws.get("templates"), list) or not ws["templates"]:
+        ws["templates"] = [make_template()]
 
-    if not isinstance(ws["templates"], list) or not ws["templates"]:
-        ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}]
-
+    normalized_templates = []
     for tpl in ws["templates"]:
         if not isinstance(tpl, dict):
             tpl = {}
@@ -528,6 +409,8 @@ def normalize_template(ws: dict):
             tpl["categories"] = []
         tpl["tasks"] = [ensure_task(t, is_template=True) for t in tpl["tasks"]]
         tpl["categories"] = [ensure_category(c) for c in tpl["categories"]]
+        normalized_templates.append(tpl)
+    ws["templates"] = normalized_templates
 
     if ws.get("active_template_id") not in {tpl["id"] for tpl in ws["templates"]}:
         ws["active_template_id"] = ws["templates"][0]["id"]
@@ -535,17 +418,11 @@ def normalize_template(ws: dict):
     active = get_active_template(ws)
     ws["template_tasks"] = active["tasks"]
     ws["template_categories"] = active["categories"]
-    ws["template_title"] = active.get("title") or "Шаблон"
-    ws["template_emoji"] = active.get("emoji") or "📁"
-    ws["template_deadline_format"] = active.get("deadline_format") or "relative"
-    ws["template"] = [t["text"] for t in ws["template_tasks"] if not t.get("category_id")]
-
-
 
 def get_active_template(ws: dict) -> dict:
     templates = ws.get("templates") or []
     if not templates:
-        ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}]
+        ws["templates"] = [make_template()]
         templates = ws["templates"]
     active_id = ws.get("active_template_id") or templates[0]["id"]
     for tpl in templates:
@@ -554,55 +431,32 @@ def get_active_template(ws: dict) -> dict:
     ws["active_template_id"] = templates[0]["id"]
     return templates[0]
 
-
-def get_template_by_id(ws: dict, template_id: str | None) -> dict:
-    templates = ws.get("templates") or []
-    for tpl in templates:
-        if tpl.get("id") == template_id:
-            return tpl
-    return get_active_template(ws)
-
-
 def set_active_template(ws: dict, template_id: str):
     for tpl in ws.get("templates", []):
         if tpl.get("id") == template_id:
             ws["active_template_id"] = template_id
             ws["template_tasks"] = tpl["tasks"]
             ws["template_categories"] = tpl["categories"]
-            ws["template_title"] = tpl.get("title") or "Шаблон"
-            ws["template_emoji"] = tpl.get("emoji") or "📁"
-            ws["template_deadline_format"] = tpl.get("deadline_format") or "relative"
-            ws["template"] = [t["text"] for t in ws["template_tasks"] if not t.get("category_id")]
             return tpl
     return get_active_template(ws)
-
-
-def display_template_name(template: dict) -> str:
-    return f"{template.get('emoji') or '📁'}{template.get('title') or 'Шаблон'}"
-
 
 def esc(value) -> str:
     return html.escape(str(value or ""))
 
-
 def rich_display_company_name(company: dict) -> str:
     return f"<u>{esc(company.get('emoji') or '📁')}{esc(company.get('title') or 'Список')}</u>"
-
 
 def rich_display_category_name(category: dict) -> str:
     return f"<u>{esc(category.get('emoji') or '📁')}{esc(category.get('title') or 'Подгруппа')}</u>"
 
-
 def rich_display_template_name(template: dict) -> str:
     return f"<u>{esc(template.get('emoji') or '📁')}{esc(template.get('title') or 'Шаблон')}</u>"
-
 
 def rich_task_text(task_text: str, done: bool = False) -> str:
     inner = f"<b><i>{esc(task_text)}</i></b>"
     if done:
         return f"<s>{inner}</s>"
     return inner
-
 
 def template_exists(templates: list[dict], title: str, exclude_id: str | None = None) -> bool:
     target = (title or '').casefold()
@@ -613,7 +467,6 @@ def template_exists(templates: list[dict], title: str, exclude_id: str | None = 
             return True
     return False
 
-
 def clone_deadline_for_copy(task: dict) -> tuple[int | None, int | None]:
     started_at = task.get('deadline_started_at')
     due_at = task.get('deadline_due_at')
@@ -623,7 +476,6 @@ def clone_deadline_for_copy(task: dict) -> tuple[int | None, int | None]:
     now_value = now_ts()
     return now_value, now_value + total
 
-
 def copy_company_payload(company: dict, new_title: str) -> dict:
     category_map = {}
     new_company = {
@@ -631,9 +483,7 @@ def copy_company_payload(company: dict, new_title: str) -> dict:
         'title': new_title,
         'emoji': company.get('emoji') or '📁',
         'card_msg_id': None,
-        'mirror': None,
         'mirrors': [],
-        'mirror_history': [],
         'deadline_format': company.get('deadline_format') or 'relative',
         'categories': [],
         'tasks': [],
@@ -654,7 +504,6 @@ def copy_company_payload(company: dict, new_title: str) -> dict:
             'deadline_due_at': due_at,
         })
     return new_company
-
 
 def copy_category_into_company(company: dict, category_idx: int, new_title: str):
     source = company['categories'][category_idx]
@@ -679,7 +528,6 @@ def copy_category_into_company(company: dict, category_idx: int, new_title: str)
             'deadline_due_at': due_at,
         })
 
-
 def copy_template_category(template: dict, category_idx: int, new_title: str):
     source = template['categories'][category_idx]
     new_cat_id = uuid.uuid4().hex
@@ -699,7 +547,6 @@ def copy_template_category(template: dict, category_idx: int, new_title: str):
             'created_at': now_ts(),
             'deadline_seconds': task.get('deadline_seconds'),
         })
-
 
 def copy_template_payload(template: dict, new_title: str) -> dict:
     category_map = {}
@@ -725,7 +572,6 @@ def copy_template_payload(template: dict, new_title: str) -> dict:
             'deadline_seconds': task.get('deadline_seconds'),
         })
     return new_tpl
-
 
 def normalize_data(data: dict) -> dict:
     if not isinstance(data, dict):
@@ -769,24 +615,10 @@ def normalize_data(data: dict) -> dict:
     for token, payload in list(data["mirror_tokens"].items()):
         if not isinstance(payload, dict):
             continue
-        source_wid = payload.get("source_wid")
-        if not source_wid:
-            continue
-        if payload.get("company_id"):
+        if payload.get("source_wid") and payload.get("company_id"):
             valid_tokens[token] = payload
-            continue
-        company_idx = payload.get("company_idx")
-        ws = data["workspaces"].get(source_wid)
-        if ws is None or not isinstance(company_idx, int):
-            continue
-        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-            continue
-        payload["company_id"] = ws["companies"][company_idx]["id"]
-        payload.pop("company_idx", None)
-        valid_tokens[token] = payload
     data["mirror_tokens"] = valid_tokens
     return data
-
 
 async def load_data_unlocked():
     if not os.path.exists(DATA_FILE):
@@ -797,22 +629,17 @@ async def load_data_unlocked():
     except Exception:
         return default_data()
 
-
 async def save_data_unlocked(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(normalize_data(data), f, ensure_ascii=False, indent=2)
-
 
 async def load_data():
     async with FILE_LOCK:
         return await load_data_unlocked()
 
-
 async def save_data(data):
     async with FILE_LOCK:
         await save_data_unlocked(data)
-
-
 
 def ensure_user(data, user_id: str):
     data["users"].setdefault(
@@ -825,31 +652,16 @@ def ensure_user(data, user_id: str):
     )
     return data["users"][user_id]
 
-
-
 def make_ws_id(chat_id: int, thread_id: int | None):
     return f"{chat_id}_{thread_id or 0}"
 
-
-
 def clean_text(text: str) -> str:
     return (text or "").strip().lstrip("/").strip()
-
-
-
-def is_known_command(text: str) -> bool:
-    if not text or not text.startswith("/"):
-        return False
-    return text.split()[0].lower() in {"/start", "/connect", "/mirror"}
-
-
 
 def workspace_full_name(chat_title: str, topic_title: str | None, thread_id: int) -> str:
     if thread_id:
         return f"{chat_title} - {(topic_title or f'Тред {thread_id}').strip()}"
     return chat_title
-
-
 
 def extract_topic_title(message: types.Message) -> str | None:
     if getattr(message, "forum_topic_created", None):
@@ -868,21 +680,11 @@ def extract_topic_title(message: types.Message) -> str | None:
                 return new_name
     return None
 
-
-
-def is_topic_service_message(message: types.Message) -> bool:
-    return bool(getattr(message, "forum_topic_created", None) or getattr(message, "forum_topic_edited", None))
-
-
-
 def display_company_name(company: dict) -> str:
     return f"{company.get('emoji') or '📁'}{company.get('title') or 'Список'}"
 
-
-
 def display_category_name(category: dict) -> str:
     return f"{category.get('emoji') or '📁'}{category.get('title') or 'Подгруппа'}"
-
 
 def workspace_path_title(ws: dict, *parts: str) -> str:
     lines = [f"📂 {esc(ws.get('name') or 'Workspace')}:"]
@@ -893,23 +695,6 @@ def workspace_path_title(ws: dict, *parts: str) -> str:
             indent += "    "
     return "\n".join(lines)
 
-
-def company_menu_title(ws: dict, company: dict) -> str:
-    return workspace_path_title(ws, rich_display_company_name(company))
-
-
-def company_settings_title(ws: dict, company: dict) -> str:
-    return workspace_path_title(ws, rich_display_company_name(company), "⚙️ Настройки списка")
-
-
-def category_menu_title(ws: dict, company: dict, category: dict) -> str:
-    return workspace_path_title(ws, rich_display_company_name(company), rich_display_category_name(category))
-
-
-def category_settings_title(ws: dict, company: dict, category: dict) -> str:
-    return workspace_path_title(ws, rich_display_company_name(company), rich_display_category_name(category), "⚙️ Подгруппа")
-
-
 def task_menu_title(ws: dict, company: dict, task: dict, category: dict | None = None) -> str:
     parts = [rich_display_company_name(company)]
     if category:
@@ -917,99 +702,17 @@ def task_menu_title(ws: dict, company: dict, task: dict, category: dict | None =
     parts.append(f"📌 {rich_task_text(task.get('text') or 'Задача', bool(task.get('done')))}")
     return workspace_path_title(ws, *parts)
 
-
-def templates_root_title(ws: dict) -> str:
-    return workspace_path_title(ws, "⚙️ Шаблоны задач")
-
-
-def template_menu_title(ws: dict, template: dict) -> str:
-    return workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(template))
-
-
-def template_settings_title(ws: dict, template: dict) -> str:
-    return workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(template), "⚙️ Шаблон")
-
-
-def template_category_title(ws: dict, template: dict, category: dict) -> str:
-    return workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(template), rich_display_category_name(category))
-
-
-def template_category_settings_title(ws: dict, template: dict, category: dict) -> str:
-    return workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(template), rich_display_category_name(category), "⚙️ Подгруппа")
-
-
 def template_task_title(ws: dict, template: dict, task: dict, category: dict | None = None) -> str:
     parts = ["⚙️ Шаблоны задач", rich_display_template_name(template)]
     if category:
         parts.append(rich_display_category_name(category))
-    parts.append(f"📌 {rich_task_text(task.get('text') or 'Задача')}{esc(template_task_deadline_suffix(task, template.get('deadline_format') or 'relative'))}")
+    parts.append(f"📌 {rich_task_text(task.get('text') or 'Задача')}{esc(template_task_deadline_suffix(task))}")
     return workspace_path_title(ws, *parts)
-
-
-def mirrors_menu_title(ws: dict, company: dict) -> str:
-    return workspace_path_title(ws, rich_display_company_name(company), "📤 Дублирование списка")
-
-
-
-def reports_menu_title(ws: dict, company: dict, target: dict | None = None) -> str:
-    parts = [rich_display_company_name(company), "🧾 Отчетность"]
-    if target:
-        parts.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
-    return workspace_path_title(ws, *parts)
-
-
-def report_interval_title(ws: dict, company: dict, interval: dict, target: dict | None = None) -> str:
-    parts = [rich_display_company_name(company), "🧾 Отчетность"]
-    if target:
-        parts.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
-    parts.append(format_report_schedule_label(interval))
-    if interval.get("kind") != "on_done":
-        start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval), company)
-        parts.append(format_report_period_preview(interval, start_at, end_at))
-    return workspace_path_title(ws, *parts)
-
-
-def report_targets_title(ws: dict, company: dict) -> str:
-    return workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", "📎 Привязка")
-
-
-def report_settings_title(ws: dict, company: dict, target: dict | None = None) -> str:
-    parts = [rich_display_company_name(company), "🧾 Отчетность"]
-    if target:
-        parts.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
-    parts.append("⚙️ Отчетность")
-    return workspace_path_title(ws, *parts)
-
-
-def template_reports_menu_title(ws: dict, template: dict) -> str:
-    return workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(template), "🧾 Отчетность")
-
-
-def template_report_interval_title(ws: dict, template: dict, interval: dict) -> str:
-    parts = [
-        "⚙️ Шаблоны задач",
-        rich_display_template_name(template),
-        "🧾 Отчетность",
-        format_report_schedule_label(interval),
-    ]
-    if interval.get("kind") != "on_done":
-        start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval))
-        parts.append(format_report_period_preview(interval, start_at, end_at))
-    return workspace_path_title(ws, *parts)
-
-
-def template_report_settings_title(ws: dict, template: dict) -> str:
-    return workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(template), "🧾 Отчетность", "⚙️ Отчетность")
-
-
-def ceil_minutes(seconds: int) -> int:
-    return max(0, math.ceil(seconds / 60))
-
 
 def format_duration_text(seconds: int | None) -> str:
     if seconds is None:
         return ""
-    minutes = ceil_minutes(seconds)
+    minutes = max(0, math.ceil(seconds / 60))
     days, rem = divmod(minutes, 60 * 24)
     hours, mins = divmod(rem, 60)
     parts = []
@@ -1020,46 +723,19 @@ def format_duration_text(seconds: int | None) -> str:
     parts.append(f"{mins} м.")
     return "; ".join(parts)
 
-
-def format_due_date_text(ts: int | None) -> str:
-    if not ts:
-        return ""
-    return datetime.fromtimestamp(ts, TIMEZONE).strftime("до %d.%m.%Y г. %H:%M")
-
-
-
-
-def iter_company_root_tasks(company: dict):
-    return [task for task in company.get("tasks", []) if not task.get("category_id")]
-
-
-def iter_template_root_tasks(template: dict):
-    return [task for task in template.get("tasks", []) if not task.get("category_id")]
-
-
-def task_status_icon(task: dict) -> str:
-    return task_deadline_icon(task)
-
-
-def template_task_deadline_suffix(task: dict, deadline_format: str = "relative") -> str:
+def template_task_deadline_suffix(task: dict) -> str:
     value = task.get("deadline_value")
     if not value:
         return ""
     return f" ({format_duration_text(value)})"
 
-
-def display_template_task_button(task: dict) -> str:
-    text = str(task.get("text") or "Без названия")
-    return f"{task_status_icon(task)} {text}{template_task_deadline_suffix(task)}"
 def display_task_deadline_suffix(task: dict, deadline_format: str = "relative") -> str:
     due_at = task.get("deadline_due_at")
     if not due_at:
         return ""
     if deadline_format == "date":
-        return f" ({format_due_date_text(due_at)})"
+        return f" ({datetime.fromtimestamp(due_at, TIMEZONE).strftime('до %d.%m.%Y г. %H:%M')})"
     return f" ({format_duration_text(due_at - now_ts())})"
-
-
 
 def task_deadline_icon(task: dict) -> str:
     if task.get("done"):
@@ -1080,19 +756,6 @@ def task_deadline_icon(task: dict) -> str:
     if remaining_part >= 0.25:
         return "🧡"
     return "❤️"
-
-
-
-def sort_company_tasks(tasks: list[dict]) -> list[dict]:
-    def key(task: dict):
-        done = 1 if task.get("done") else 0
-        due_at = task.get("deadline_due_at")
-        no_due = 1 if not due_at else 0
-        return (done, no_due, due_at or 10**18, task.get("created_at") or 0)
-
-    return sorted(tasks, key=key)
-
-
 
 def build_progress_bar(done_count: int, total_count: int) -> str:
     if total_count <= 0:
@@ -1121,24 +784,22 @@ def build_progress_bar(done_count: int, total_count: int) -> str:
     percent = 0.0 if total_count <= 0 else (done_count / total_count) * 100
     return f"{''.join(cells)} <b>{percent:.1f} %</b>"
 
-
-
-def task_progress_bar_line(tasks: list[dict], indent: str = "") -> str:
-    total = len(tasks)
-    done = sum(1 for task in tasks if task.get("done"))
-    return f"{indent}{build_progress_bar(done, total)}"
-
-
 def company_card_text(company: dict) -> str:
     lines = [f"{rich_display_company_name(company)}:"]
     company_deadline_format = company.get("deadline_format") or "relative"
     all_tasks = company.get("tasks", [])
-    lines.append(task_progress_bar_line(all_tasks))
+    sort_key = lambda task: (
+        1 if task.get("done") else 0,
+        1 if not task.get("deadline_due_at") else 0,
+        task.get("deadline_due_at") or 10**18,
+        task.get("created_at") or 0,
+    )
+    lines.append(build_progress_bar(sum(1 for task in all_tasks if task.get("done")), len(all_tasks)))
     lines.append("")
 
     uncategorized = [t for t in all_tasks if not t.get("category_id")]
     if uncategorized:
-        for task in sort_company_tasks(uncategorized):
+        for task in sorted(uncategorized, key=sort_key):
             icon = task_deadline_icon(task)
             suffix = display_task_deadline_suffix(task, company_deadline_format) if not task.get("done") and task.get("deadline_due_at") else ""
             lines.append(f"{icon} {rich_task_text(task.get('text') or 'Задача', bool(task.get('done')))}{esc(suffix)}")
@@ -1148,10 +809,10 @@ def company_card_text(company: dict) -> str:
             lines.append("")
         cat_tasks = [t for t in all_tasks if t.get("category_id") == category["id"]]
         lines.append(f"    {rich_display_category_name(category)}:")
-        lines.append(task_progress_bar_line(cat_tasks, indent="    "))
+        lines.append(f"    {build_progress_bar(sum(1 for task in cat_tasks if task.get('done')), len(cat_tasks))}")
         lines.append("")
         if cat_tasks:
-            for task in sort_company_tasks(cat_tasks):
+            for task in sorted(cat_tasks, key=sort_key):
                 icon = task_deadline_icon(task)
                 suffix = display_task_deadline_suffix(task, category.get("deadline_format") or company_deadline_format) if not task.get("done") and task.get("deadline_due_at") else ""
                 lines.append(f"        {icon} {rich_task_text(task.get('text') or 'Задача', bool(task.get('done')))}{esc(suffix)}")
@@ -1163,9 +824,6 @@ def company_card_text(company: dict) -> str:
         lines.append("—")
     return "\n".join(lines)
 
-
-
-
 def pm_main_text(user_id: str, data: dict) -> str:
     user = ensure_user(data, user_id)
     ws_ids = [wid for wid in user.get("workspaces", []) if data["workspaces"].get(wid, {}).get("is_connected")]
@@ -1173,34 +831,27 @@ def pm_main_text(user_id: str, data: dict) -> str:
         return "📂 Ваши workspace: Нет workspace"
     return "📂 Ваши workspace:"
 
-
 def generate_mirror_token() -> str:
     return uuid.uuid4().hex[:8].upper()
-
-
 
 def get_reporting(company: dict) -> dict:
     company["reporting"] = ensure_reporting(company.get("reporting"))
     return company["reporting"]
-
 
 def get_report_intervals(company: dict) -> list[dict]:
     reporting = get_reporting(company)
     reporting.setdefault("intervals", [])
     return reporting["intervals"]
 
-
 def get_report_history(company: dict) -> list[dict]:
     reporting = get_reporting(company)
     reporting.setdefault("history", [])
     return reporting["history"]
 
-
 def get_effective_report_targets(company: dict) -> list[dict]:
     reporting = get_reporting(company)
     targets = reporting.get("targets") or []
     return [target for target in (ensure_report_target(item) for item in targets) if target]
-
 
 def ensure_explicit_report_targets(company: dict) -> list[dict]:
     reporting = get_reporting(company)
@@ -1208,25 +859,20 @@ def ensure_explicit_report_targets(company: dict) -> list[dict]:
         reporting["targets"] = []
     return reporting["targets"]
 
-
 def normalize_company_report_target_keys(company: dict):
     targets = get_effective_report_targets(company)
     if not targets:
         return
     fallback_key = report_target_key(targets[0])
     for interval in get_report_intervals(company):
-        if interval.get("kind") == "on_done" and not interval.get("target_key"):
+        if not interval.get("target_key"):
             interval["target_key"] = fallback_key
-        elif not interval.get("target_key"):
-            interval["target_key"] = fallback_key
-
 
 def get_report_target(company: dict, target_idx: int) -> dict | None:
     targets = get_effective_report_targets(company)
     if 0 <= target_idx < len(targets):
         return targets[target_idx]
     return None
-
 
 def get_target_report_pairs(company: dict, target_idx: int) -> list[tuple[int, dict]]:
     target = get_report_target(company, target_idx)
@@ -1240,13 +886,11 @@ def get_target_report_pairs(company: dict, target_idx: int) -> list[tuple[int, d
         if interval.get("target_key") == target_key
     ]
 
-
 def same_binding_place(left: dict, right: dict) -> bool:
     return (
         (left.get("chat_id") if isinstance(left, dict) else None) == (right.get("chat_id") if isinstance(right, dict) else None)
         and ((left.get("thread_id") or 0) if isinstance(left, dict) else 0) == ((right.get("thread_id") or 0) if isinstance(right, dict) else 0)
     )
-
 
 def missing_report_targets_for_mirrors(company: dict) -> list[tuple[int, dict]]:
     mirrors = company.get("mirrors", [])
@@ -1257,7 +901,6 @@ def missing_report_targets_for_mirrors(company: dict) -> list[tuple[int, dict]]:
         result.append((idx, target))
     return result
 
-
 def missing_mirrors_for_report_targets(company: dict) -> list[tuple[int, dict]]:
     targets = get_effective_report_targets(company)
     result = []
@@ -1266,7 +909,6 @@ def missing_mirrors_for_report_targets(company: dict) -> list[tuple[int, dict]]:
             continue
         result.append((idx, mirror))
     return result
-
 
 def binding_instruction_text(title: str, token: str) -> str:
     return (
@@ -1278,7 +920,6 @@ def binding_instruction_text(title: str, token: str) -> str:
         "4) Пердани."
     )
 
-
 def find_completion_entry(history: list[dict], entry_id: str | None) -> dict | None:
     if not entry_id:
         return None
@@ -1286,7 +927,6 @@ def find_completion_entry(history: list[dict], entry_id: str | None) -> dict | N
         if entry.get("id") == entry_id:
             return entry
     return None
-
 
 def add_task_completion_event(company: dict, task: dict, completed_at: int | None = None):
     ts = completed_at or now_ts()
@@ -1301,7 +941,6 @@ def add_task_completion_event(company: dict, task: dict, completed_at: int | Non
     task["done_at"] = ts
     task["done_event_id"] = entry["id"]
 
-
 def cancel_task_completion_event(company: dict, task: dict, canceled_at: int | None = None):
     entry = find_completion_entry(get_report_history(company), task.get("done_event_id"))
     if entry and entry.get("canceled_at") is None:
@@ -1309,20 +948,11 @@ def cancel_task_completion_event(company: dict, task: dict, canceled_at: int | N
     task["done_at"] = None
     task["done_event_id"] = None
 
-
-def update_task_completion_event_text(company: dict, task: dict):
-    entry = find_completion_entry(get_report_history(company), task.get("done_event_id"))
-    if entry and entry.get("canceled_at") is None:
-        entry["task_text"] = task.get("text") or ""
-
-
 def format_clock(hour: int, minute: int) -> str:
     return f"{hour:02d}:{minute:02d}"
 
-
 def format_report_timestamp(ts: int) -> str:
     return datetime.fromtimestamp(ts, TIMEZONE).strftime("%d.%m.%Y, %H:%M")
-
 
 def format_report_schedule_label(interval: dict) -> str:
     kind = interval.get("kind")
@@ -1336,29 +966,25 @@ def format_report_schedule_label(interval: dict) -> str:
         return f"каждый месяц {interval['day']}-го, {format_clock(interval['hour'], interval['minute'])}"
     return format_report_timestamp(interval["scheduled_at"])
 
-
-def format_report_point_for_menu(kind: str, ts: int) -> str:
-    dt = datetime.fromtimestamp(ts, TIMEZONE)
-    if kind == "weekly":
-        return f"{WEEKDAY_NAMES[dt.weekday()]} {dt.strftime('%H:%M')}"
-    if kind == "daily":
-        return dt.strftime("%H:%M")
-    return dt.strftime("%d.%m.%Y, %H:%M")
-
-
 def format_report_period_preview(interval: dict, start_at: int, end_at: int) -> str:
+    def point_label(ts: int) -> str:
+        dt = datetime.fromtimestamp(ts, TIMEZONE)
+        if interval.get("kind") == "weekly":
+            return f"{WEEKDAY_NAMES[dt.weekday()]} {dt.strftime('%H:%M')}"
+        if interval.get("kind") == "daily":
+            return dt.strftime("%H:%M")
+        return dt.strftime("%d.%m.%Y, %H:%M")
+
     accumulation = interval.get("accumulation") or {}
-    end_label = format_report_point_for_menu(interval.get("kind"), end_at)
+    end_label = point_label(end_at)
     if accumulation.get("mode") == "last_report":
         return f"от последнего отчета - {end_label}"
-    start_label = format_report_point_for_menu(interval.get("kind"), start_at)
+    start_label = point_label(start_at)
     return f"{start_label} - {end_label}"
-
 
 def build_month_datetime(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
     last_day = monthrange(year, month)[1]
     return datetime(year, month, min(day, last_day), hour, minute, tzinfo=TIMEZONE)
-
 
 def shift_month(dt: datetime, months: int, preferred_day: int | None = None) -> datetime:
     absolute_month = dt.year * 12 + (dt.month - 1) + months
@@ -1366,7 +992,6 @@ def shift_month(dt: datetime, months: int, preferred_day: int | None = None) -> 
     month = absolute_month % 12 + 1
     day = preferred_day if preferred_day is not None else dt.day
     return build_month_datetime(year, month, day, dt.hour, dt.minute)
-
 
 def next_report_occurrence_after(interval: dict, after_ts: int) -> int | None:
     kind = interval.get("kind")
@@ -1394,7 +1019,6 @@ def next_report_occurrence_after(interval: dict, after_ts: int) -> int | None:
         candidate = shift_month(candidate, 1, interval["day"])
     return int(candidate.timestamp())
 
-
 def get_last_company_report_at(company: dict | None, before_ts: int | None = None) -> int | None:
     if not company:
         return None
@@ -1408,7 +1032,6 @@ def get_last_company_report_at(company: dict | None, before_ts: int | None = Non
         if latest is None or published_at > latest:
             latest = published_at
     return latest
-
 
 def resolve_report_period(interval: dict, occurrence_ts: int, company: dict | None = None) -> tuple[int, int]:
     end_at = occurrence_ts
@@ -1443,7 +1066,6 @@ def resolve_report_period(interval: dict, occurrence_ts: int, company: dict | No
         start_at = max(end_at - 1, 0)
     return start_at, end_at
 
-
 def collect_report_entries(company: dict, start_at: int, end_at: int) -> list[dict]:
     entries = []
     for entry in get_report_history(company):
@@ -1456,7 +1078,6 @@ def collect_report_entries(company: dict, start_at: int, end_at: int) -> list[di
             continue
         entries.append(entry)
     return sorted(entries, key=lambda item: (item.get("completed_at") or 0, item.get("task_text") or ""))
-
 
 def build_report_message(company: dict, start_at: int, end_at: int) -> str:
     title = company.get("title") or "Список"
@@ -1471,7 +1092,6 @@ def build_report_message(company: dict, start_at: int, end_at: int) -> str:
     lines.append(build_progress_bar(sum(1 for task in company.get("tasks", []) if task.get("done")), len(company.get("tasks", []))))
     return "\n".join(lines)
 
-
 def build_task_completion_report_message(company: dict, task: dict) -> str:
     title = company.get("title") or "Список"
     task_text = task.get("text") or "Задача"
@@ -1485,17 +1105,14 @@ def build_task_completion_report_message(company: dict, task: dict) -> str:
     ]
     return "\n".join(lines)
 
-
 def find_report_interval(company: dict, interval_idx: int) -> dict | None:
     intervals = get_report_intervals(company)
     if 0 <= interval_idx < len(intervals):
         return intervals[interval_idx]
     return None
 
-
 def clone_report_interval(interval: dict) -> dict:
     return ensure_report_interval(copy.deepcopy(interval)) or copy.deepcopy(interval)
-
 
 def report_preview_occurrence(interval: dict) -> int:
     kind = interval.get("kind")
@@ -1509,7 +1126,6 @@ def report_preview_occurrence(interval: dict) -> int:
         occurrence = interval.get("last_report_at") or now_ts()
     return occurrence
 
-
 def report_interval_sort_key(interval: dict, original_idx: int) -> tuple:
     kind = interval.get("kind")
     if kind == "weekly":
@@ -1521,12 +1137,6 @@ def report_interval_sort_key(interval: dict, original_idx: int) -> tuple:
     else:
         secondary = (3, interval.get("scheduled_at") or 0)
     return (report_preview_occurrence(interval), secondary, original_idx)
-
-
-def build_report_menu_items(intervals: list[dict], callback_factory) -> list[tuple[str, str]]:
-    ordered = sorted(enumerate(intervals), key=lambda pair: report_interval_sort_key(pair[1], pair[0]))
-    return [(format_report_schedule_label(interval), callback_factory(idx)) for idx, interval in ordered]
-
 
 def make_report_interval_base(kind: str, created_at: int | None = None, target_key: str | None = None) -> dict:
     base = {
@@ -1548,12 +1158,18 @@ def make_report_interval_base(kind: str, created_at: int | None = None, target_k
         base.update({"scheduled_at": created_at or now_ts()})
     return base
 
+def upsert_report_interval(intervals: list[dict], normalized: dict, flow: str, interval_idx: int | None):
+    if flow == "edit_accumulation":
+        flow = "edit"
+    if flow == "edit" and interval_idx is not None and 0 <= interval_idx < len(intervals):
+        intervals[interval_idx] = normalized
+    else:
+        intervals.append(normalized)
 
 def parse_optional_index(value: str) -> int | None:
     if value in {"x", "", None}:
         return None
     return int(value)
-
 
 def prepare_report_interval_draft(company: dict, interval_idx: int | None, kind: str, target_key: str | None = None) -> dict:
     existing = find_report_interval(company, interval_idx) if interval_idx is not None else None
@@ -1569,6 +1185,12 @@ def prepare_report_interval_draft(company: dict, interval_idx: int | None, kind:
     draft["accumulation"] = ensure_report_accumulation(existing.get("accumulation"), kind)
     return draft
 
+def report_schedule_prompt_text(kind: str) -> str:
+    if kind == "once":
+        return "🧾 Пришли дату и время отчета"
+    if kind == "monthly":
+        return "🧾 Пришли число и время отчета, например: 30 20:44"
+    return "🧾 Пришли время отчета, например: 21:30"
 
 PAGE_SIZE_PM = 8
 PAGE_SIZE_WS = 8
@@ -1579,22 +1201,16 @@ PAGE_SIZE_CREATE = 8
 PAGE_SIZE_REPORTS = 8
 PAGE_SIZE_REPORT_BINDINGS = 8
 
-
-def ui_pages(owner: dict) -> dict:
-    owner.setdefault("ui_pages", {})
-    return owner["ui_pages"]
-
-
 def get_ui_page(owner: dict, key: str) -> int:
     try:
-        return max(0, int(ui_pages(owner).get(key, 0) or 0))
+        owner.setdefault("ui_pages", {})
+        return max(0, int(owner["ui_pages"].get(key, 0) or 0))
     except Exception:
         return 0
 
-
 def set_ui_page(owner: dict, key: str, page: int):
-    ui_pages(owner)[key] = max(0, int(page))
-
+    owner.setdefault("ui_pages", {})
+    owner["ui_pages"][key] = max(0, int(page))
 
 def paginate_items(items, page: int, page_size: int):
     total = len(items)
@@ -1606,85 +1222,17 @@ def paginate_items(items, page: int, page_size: int):
     end = start + page_size
     return items[start:end], page > 0, page < max_page
 
-
-def ws_home_page_key() -> str:
-    return "ws_home"
-
-
-def company_create_page_key() -> str:
-    return "cmp_create"
-
-
-def templates_root_page_key() -> str:
-    return "tpl_root"
-
-
-def company_menu_page_key(company_idx: int) -> str:
-    return f"cmp_{company_idx}"
-
-
-def category_menu_page_key(company_idx: int, category_idx: int) -> str:
-    return f"cat_{company_idx}_{category_idx}"
-
-
-def active_template_page_key(ws: dict) -> str:
-    tpl = get_active_template(ws)
-    tpl_id = tpl.get("id") if tpl else "none"
-    return f"tpl_{tpl_id}"
-
-
-def active_template_category_page_key(ws: dict, category_idx: int) -> str:
-    tpl = get_active_template(ws)
-    tpl_id = tpl.get("id") if tpl else "none"
-    return f"tplcat_{tpl_id}_{category_idx}"
-
-
-
-def report_menu_page_key(company_idx: int, target_idx: int) -> str:
-    return f"report_{company_idx}_{target_idx}"
-
-
-def report_targets_page_key(company_idx: int) -> str:
-    return f"report_targets_{company_idx}"
-
-
-def mirror_import_page_key(company_idx: int) -> str:
-    return f"mirror_import_{company_idx}"
-
-
-def report_import_page_key(company_idx: int) -> str:
-    return f"report_import_{company_idx}"
-
-
-def task_move_page_key(company_idx: int, task_idx: int) -> str:
-    return f"task_move_{company_idx}_{task_idx}"
-
-
-def template_task_move_page_key(task_idx: int) -> str:
-    return f"template_task_move_{task_idx}"
-
-
-def active_template_report_page_key(ws: dict) -> str:
-    tpl = get_active_template(ws)
-    tpl_id = tpl.get("id") if tpl else "none"
-    return f"tpl_report_{tpl_id}"
-
-
 def find_company_index_by_id(ws: dict, company_id: str) -> int | None:
     for idx, company in enumerate(ws.get("companies", [])):
         if company.get("id") == company_id:
             return idx
     return None
 
-
-
 def find_category_index(categories: list[dict], category_id: str) -> int | None:
     for idx, category in enumerate(categories):
         if category.get("id") == category_id:
             return idx
     return None
-
-
 
 def company_exists(ws: dict, title: str, exclude_idx: int | None = None) -> bool:
     target = title.casefold()
@@ -1695,8 +1243,6 @@ def company_exists(ws: dict, title: str, exclude_idx: int | None = None) -> bool
             return True
     return False
 
-
-
 def category_exists(categories: list[dict], title: str, exclude_id: str | None = None) -> bool:
     target = title.casefold()
     for category in categories:
@@ -1706,21 +1252,15 @@ def category_exists(categories: list[dict], title: str, exclude_id: str | None =
             return True
     return False
 
-
-
 def delete_category_keep_tasks(tasks: list[dict], categories: list[dict], category_id: str):
     for task in tasks:
         if task.get("category_id") == category_id:
             task["category_id"] = None
     categories[:] = [c for c in categories if c.get("id") != category_id]
 
-
-
 def delete_category_with_tasks(tasks: list[dict], categories: list[dict], category_id: str):
     tasks[:] = [t for t in tasks if t.get("category_id") != category_id]
     categories[:] = [c for c in categories if c.get("id") != category_id]
-
-
 
 def make_company(title: str, with_template: bool, ws: dict, template_id: str | None = None) -> dict:
     company = {
@@ -1728,9 +1268,7 @@ def make_company(title: str, with_template: bool, ws: dict, template_id: str | N
         "title": title,
         "emoji": "📁",
         "card_msg_id": None,
-        "mirror": None,
         "mirrors": [],
-        "mirror_history": [],
         "deadline_format": "relative",
         "reporting": default_reporting(),
         "categories": [],
@@ -1739,7 +1277,7 @@ def make_company(title: str, with_template: bool, ws: dict, template_id: str | N
     if not with_template:
         return company
 
-    template = get_template_by_id(ws, template_id)
+    template = next((tpl for tpl in ws.get("templates") or [] if tpl.get("id") == template_id), get_active_template(ws))
     company["deadline_format"] = template.get("deadline_format") or "relative"
     tpl_reporting = ensure_reporting(copy.deepcopy(template.get("reporting")))
     company["reporting"]["intervals"] = []
@@ -1776,8 +1314,6 @@ def make_company(title: str, with_template: bool, ws: dict, template_id: str | N
         })
     return company
 
-
-
 def parse_relative_duration_seconds(text: str) -> int | None:
     raw = clean_text(text).lower()
     if not raw:
@@ -1805,7 +1341,6 @@ def parse_relative_duration_seconds(text: str) -> int | None:
             return None
     return total if total > 0 else None
 
-
 def parse_flexible_datetime(text: str) -> int | None:
     raw = clean_text(text)
     m = re.match(r'^\s*(\d{1,2})\D+(\d{1,2})\D+(\d{2,4})(?:\D+(\d{1,2})(?:\D+(\d{1,2}))?)?\s*$', raw)
@@ -1823,7 +1358,6 @@ def parse_flexible_datetime(text: str) -> int | None:
         return None
     return int(dt.timestamp())
 
-
 def parse_flexible_time(text: str) -> tuple[int, int] | None:
     raw = clean_text(text)
     if not raw:
@@ -1837,7 +1371,6 @@ def parse_flexible_time(text: str) -> tuple[int, int] | None:
         return None
     return hour, minute
 
-
 def parse_month_day_time(text: str) -> tuple[int, int, int] | None:
     raw = clean_text(text).lower().replace("-го", " ").replace("го", " ")
     m = re.match(r'^\s*(\d{1,2})\D+(\d{1,2})(?:\D+(\d{1,2}))?\s*$', raw)
@@ -1849,7 +1382,6 @@ def parse_month_day_time(text: str) -> tuple[int, int, int] | None:
     if not (1 <= day <= 31 and 0 <= hour <= 23 and 0 <= minute <= 59):
         return None
     return day, hour, minute
-
 
 def parse_deadline_input(text: str, keep_started_at: int | None = None) -> tuple[int | None, int | None, str | None]:
     raw = clean_text(text)
@@ -1867,7 +1399,6 @@ def parse_deadline_input(text: str, keep_started_at: int | None = None) -> tuple
         return None, None, "Дату или срок введи корректно, барсурка стахановская"
     return started_at, due_at, None
 
-
 def parse_template_deadline_seconds(text: str) -> tuple[int | None, str | None]:
     raw = clean_text(text)
     seconds = parse_relative_duration_seconds(raw)
@@ -1875,11 +1406,20 @@ def parse_template_deadline_seconds(text: str) -> tuple[int | None, str | None]:
         return None, "Пришли срок, например: 3 дня, 7ч20м, 45 минут."
     return seconds, None
 
-
 # =========================
 # KEYBOARDS
 # =========================
 
+NEUTRAL_BUTTON_PREFIXES = tuple(
+    f"{prefix}:"
+    for prefix in (
+        "pmws pmpersonal cmp cat task tpl tplcat tpltask tplselect cmpmode mirroritem "
+        "taskmoveto tpltaskmoveto cmpren cmpemoji cmpcopy cmpdeadlinefmt "
+        "catren catemoji catcopy catdeadlinefmt taskdone taskren taskmove "
+        "tpltaskren tpltaskmove tplrenameset tplemojiset tplcopy "
+        "tplcatren tplcatemoji tplcatcopy reportacc"
+    ).split()
+)
 
 def infer_button_style(text: str, callback_data: str | None = None) -> str | None:
     t = (text or '').strip().lower()
@@ -1896,83 +1436,7 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
     if 'удал' in t or 'очист' in t or 'отвяз' in t:
         return 'danger'
 
-    entity_prefixes = (
-        'pmws:',
-        'pmpersonal:',
-        'cmp:',
-        'cat:',
-        'task:',
-        'tpl:',
-        'tplcat:',
-        'tpltask:',
-        'tplselect:',
-        'cmpmode:',
-        'mirroritem:',
-        'reportitem:',
-        'reportbinditem:',
-        'taskmoveto:',
-        'tpltaskmoveto:',
-    )
-
-    neutral_action_prefixes = (
-        'wsclearask:',
-        'pmwsclearask:',
-        'pmwsdelask:',
-        'cmpren:',
-        'cmpemoji:',
-        'cmpcopy:',
-        'cmpdeadlinefmt:',
-        'cmpdelask:',
-        'catren:',
-        'catemoji:',
-        'catcopy:',
-        'catdeadlinefmt:',
-        'catdel:',
-        'catdelall:',
-        'taskdone:',
-        'taskren:',
-        'taskdel:',
-        'taskdeadline:',
-        'taskdeadel:',
-        'taskmove:',
-        'taskmoveout:',
-        'tpltaskren:',
-        'tpltaskdel:',
-        'tpltaskdeadline:',
-        'tpltaskdeadel:',
-        'tpltaskmove:',
-        'tpltaskmoveout:',
-        'tplrenameset:',
-        'tplemojiset:',
-        'tplcopy:',
-        'tpldelset:',
-        'tplcatren:',
-        'tplcatemoji:',
-        'tplcatcopy:',
-        'tplcatdel:',
-        'tplcatdelall:',
-        'mirrors:',
-        'mirroron:',
-        'mirroroff:',
-        'reports:',
-        'reportadd:',
-        'reportedit:',
-        'reportdaily:',
-        'reportmonth:',
-        'reportonce:',
-        'reportweek:',
-        'reportacc:',
-        'reportaccedit:',
-        'reportdelask:',
-        'reportdel:',
-        'reportclearask:',
-        'reportclear:',
-        'reportbind:',
-        'reportbindon:',
-        'reportbindoff:',
-    )
-
-    if cb.startswith(entity_prefixes) or cb.startswith(neutral_action_prefixes):
+    if cb.startswith(NEUTRAL_BUTTON_PREFIXES):
         return None
 
     if (
@@ -1985,7 +1449,6 @@ def infer_button_style(text: str, callback_data: str | None = None) -> str | Non
 
     return 'primary'
 
-
 def kb_btn(text: str, callback_data: str | None = None, style: str | None = None, **kwargs):
     btn = InlineKeyboardButton(text=text, callback_data=callback_data, **kwargs)
     btn_style = None if style is False else (style or infer_button_style(text, callback_data))
@@ -1995,7 +1458,6 @@ def kb_btn(text: str, callback_data: str | None = None, style: str | None = None
         except Exception:
             pass
     return btn
-
 
 def pm_main_kb(user_id: str, data: dict):
     kb = InlineKeyboardMarkup(row_width=1)
@@ -2033,26 +1495,16 @@ def pm_main_kb(user_id: str, data: dict):
         )
     return kb
 
-
-def pm_ws_manage_kb(wid: str):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("🧹 Очистить workspace", callback_data=f"pmwsclearask:{wid}"))
-    kb.add(kb_btn("🗑 Удалить workspace", callback_data=f"pmwsdelask:{wid}"))
-    kb.add(kb_btn("⬅️", callback_data="pmrefresh:root"))
-    return kb
-
-
 def ws_settings_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("🧹 Очистить workspace", callback_data=f"wsclearask:{wid}"))
     kb.add(kb_btn("⬅️", callback_data=f"backws:{wid}"))
     return kb
 
-
 def ws_home_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     items = [(display_company_name(company), f"cmp:{wid}:{idx}") for idx, company in enumerate(ws.get("companies", []))]
-    page = get_ui_page(ws, ws_home_page_key())
+    page = get_ui_page(ws, "ws_home")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_WS)
 
     for title, callback_data in visible:
@@ -2103,12 +1555,11 @@ def ws_home_kb(wid: str, ws: dict):
             )
     return kb
 
-
 def company_create_mode_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     templates = ws.get("templates", [])
-    items = [(f"По шаблону {display_template_name(tpl)}", f"cmpmode:{wid}:tpl:{tpl['id']}") for tpl in templates]
-    page = get_ui_page(ws, company_create_page_key())
+    items = [(f"По шаблону {tpl.get('emoji') or '📁'}{tpl.get('title') or 'Шаблон'}", f"cmpmode:{wid}:tpl:{tpl['id']}") for tpl in templates]
+    page = get_ui_page(ws, "cmp_create")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_CREATE)
 
     for title, callback_data in visible:
@@ -2142,19 +1593,18 @@ def company_create_mode_kb(wid: str, ws: dict):
         )
     return kb
 
-
 def company_menu_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     items = []
     for task_idx, task in enumerate(company.get("tasks", [])):
         if task.get("category_id"):
             continue
-        icon = task_status_icon(task)
+        icon = task_deadline_icon(task)
         items.append((f"{icon} {task['text']}", f"task:{wid}:{company_idx}:{task_idx}"))
     for category_idx, category in enumerate(company.get("categories", [])):
         items.append((display_category_name(category), f"cat:{wid}:{company_idx}:{category_idx}"))
 
-    page = get_ui_page(company, company_menu_page_key(company_idx))
+    page = get_ui_page(company, f"cmp_{company_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_COMPANY)
 
     for title, callback_data in visible:
@@ -2195,16 +1645,15 @@ def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb.add(kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}"))
     return kb
 
-
 def category_menu_kb(wid: str, company_idx: int, category_idx: int, category: dict, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     task_buttons = []
     for task_idx, task in enumerate(company.get("tasks", [])):
         if task.get("category_id") == category.get("id"):
-            icon = task_status_icon(task)
+            icon = task_deadline_icon(task)
             task_buttons.append((f"{icon} {task['text']}", f"task:{wid}:{company_idx}:{task_idx}"))
 
-    page = get_ui_page(company, category_menu_page_key(company_idx, category_idx))
+    page = get_ui_page(company, f"cat_{company_idx}_{category_idx}")
     visible, has_prev, has_next = paginate_items(task_buttons, page, PAGE_SIZE_CATEGORY)
 
     for title, callback_data in visible:
@@ -2262,16 +1711,6 @@ def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company:
     kb.add(kb_btn("⬅️", callback_data=back))
     return kb
 
-
-def task_deadline_kb(wid: str, company_idx: int, task_idx: int):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style=False))
-    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"taskdeadel:{wid}:{company_idx}:{task_idx}", style="danger"))
-    kb.add(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"))
-    return kb
-
-
-
 def task_move_kb(wid: str, company_idx: int, task_idx: int, company: dict, task: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     current_category_id = task.get("category_id")
@@ -2280,7 +1719,7 @@ def task_move_kb(wid: str, company_idx: int, task_idx: int, company: dict, task:
         if category.get("id") == current_category_id:
             continue
         items.append((display_category_name(category), f"taskmoveto:{wid}:{company_idx}:{task_idx}:{category_idx}"))
-    page = get_ui_page(company, task_move_page_key(company_idx, task_idx))
+    page = get_ui_page(company, f"task_move_{company_idx}_{task_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_CATEGORY)
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data))
@@ -2308,13 +1747,10 @@ def task_move_kb(wid: str, company_idx: int, task_idx: int, company: dict, task:
     kb.row(*row)
     return kb
 
-
-
-
 def templates_root_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    items = [(display_template_name(tpl), f"tplselect:{wid}:{tpl['id']}") for tpl in ws.get("templates", [])]
-    page = get_ui_page(ws, templates_root_page_key())
+    items = [(f"{tpl.get('emoji') or '📁'}{tpl.get('title') or 'Шаблон'}", f"tplselect:{wid}:{tpl['id']}") for tpl in ws.get("templates", [])]
+    page = get_ui_page(ws, "tpl_root")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_TEMPLATES)
 
     for title, callback_data in visible:
@@ -2348,22 +1784,18 @@ def templates_root_kb(wid: str, ws: dict):
         )
     return kb
 
-
 def template_menu_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     template = get_active_template(ws)
-    if not template:
-        return templates_root_kb(wid, ws)
-
     items = []
     for task_idx, task in enumerate(template.get("tasks", [])):
         if task.get("category_id"):
             continue
-        items.append((display_template_task_button(task), f"tpltask:{wid}:{task_idx}"))
+        items.append((f"{task_deadline_icon(task)} {str(task.get('text') or 'Без названия')}{template_task_deadline_suffix(task)}", f"tpltask:{wid}:{task_idx}"))
     for category_idx, category in enumerate(template.get("categories", [])):
         items.append((display_category_name(category), f"tplcat:{wid}:{category_idx}"))
 
-    page = get_ui_page(ws, active_template_page_key(ws))
+    page = get_ui_page(ws, f"tpl_{template.get('id')}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_COMPANY)
 
     for title, callback_data in visible:
@@ -2391,7 +1823,6 @@ def template_menu_kb(wid: str, ws: dict):
     kb.row(*row2)
     return kb
 
-
 def template_settings_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("✍️ Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
@@ -2402,13 +1833,12 @@ def template_settings_kb(wid: str):
     kb.add(kb_btn("⬅️", callback_data=f"tpl:{wid}"))
     return kb
 
-
 def template_category_menu_kb(wid: str, category_idx: int, category: dict, template: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     task_buttons = []
     for task_idx, task in enumerate(template.get("tasks", [])):
         if task.get("category_id") == category.get("id"):
-            task_buttons.append((display_template_task_button(task), f"tpltask:{wid}:{task_idx}"))
+            task_buttons.append((f"{task_deadline_icon(task)} {str(task.get('text') or 'Без названия')}{template_task_deadline_suffix(task)}", f"tpltask:{wid}:{task_idx}"))
 
     page_key = f"tplcat_{template.get('id') or 'none'}_{category_idx}"
     page = get_ui_page(template, page_key)
@@ -2442,8 +1872,6 @@ def template_category_settings_kb(wid: str, category_idx: int):
     kb.add(kb_btn("⬅️", callback_data=f"tplcat:{wid}:{category_idx}"))
     return kb
 
-
-
 def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("✍️ Переименовать", callback_data=f"tpltaskren:{wid}:{task_idx}"))
@@ -2461,16 +1889,6 @@ def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
     kb.add(kb_btn("⬅️", callback_data=back))
     return kb
 
-
-def template_task_deadline_kb(wid: str, task_idx: int):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style=False))
-    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}", style="danger"))
-    kb.add(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"))
-    return kb
-
-
-
 def template_task_move_kb(wid: str, task_idx: int, ws: dict, task: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     current_category_id = task.get("category_id")
@@ -2479,7 +1897,7 @@ def template_task_move_kb(wid: str, task_idx: int, ws: dict, task: dict):
         if category.get("id") == current_category_id:
             continue
         items.append((display_category_name(category), f"tpltaskmoveto:{wid}:{task_idx}:{category_idx}"))
-    page = get_ui_page(ws, template_task_move_page_key(task_idx))
+    page = get_ui_page(ws, f"template_task_move_{task_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_CATEGORY)
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data))
@@ -2507,8 +1925,6 @@ def template_task_move_kb(wid: str, task_idx: int, ws: dict, task: dict):
     kb.row(*row)
     return kb
 
-
-
 def mirrors_menu_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     for idx, mirror in enumerate(company.get("mirrors", [])):
@@ -2519,14 +1935,13 @@ def mirrors_menu_kb(wid: str, company_idx: int, company: dict):
     kb.add(kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary"))
     return kb
 
-
 def mirror_import_candidates_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     items = []
     for source_idx, target in missing_report_targets_for_mirrors(company):
         label = target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"
         items.append((label, f"mirrorcopy:{wid}:{company_idx}:{source_idx}"))
-    page = get_ui_page(company, mirror_import_page_key(company_idx))
+    page = get_ui_page(company, f"mirror_import_{company_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data, style=False))
@@ -2539,20 +1954,12 @@ def mirror_import_candidates_kb(wid: str, company_idx: int, company: dict):
     kb.row(*row)
     return kb
 
-
-def mirror_item_kb(wid: str, company_idx: int, mirror_idx: int):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
-    return kb
-
-
 def report_menu_kb(wid: str, company_idx: int, target_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     pairs = get_target_report_pairs(company, target_idx)
     ordered = sorted(pairs, key=lambda pair: report_interval_sort_key(pair[1], pair[0]))
     items = [(format_report_schedule_label(interval), f"reportitem:{wid}:{company_idx}:{target_idx}:{idx}") for idx, interval in ordered]
-    page = get_ui_page(company, report_menu_page_key(company_idx, target_idx))
+    page = get_ui_page(company, f"report_{company_idx}_{target_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORTS)
 
     for title, callback_data in visible:
@@ -2570,7 +1977,6 @@ def report_menu_kb(wid: str, company_idx: int, target_idx: int, company: dict):
     kb.row(*row)
     return kb
 
-
 def report_interval_kb(wid: str, company_idx: int, target_idx: int, interval_idx: int, interval: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     if interval.get("kind") != "on_done":
@@ -2579,7 +1985,6 @@ def report_interval_kb(wid: str, company_idx: int, target_idx: int, interval_idx
     kb.add(kb_btn("🗑 Удалить", callback_data=f"reportdelask:{wid}:{company_idx}:{target_idx}:{interval_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"reportmenu:{wid}:{company_idx}:{target_idx}", style="primary"))
     return kb
-
 
 def report_interval_kind_kb(wid: str, company_idx: int, target_idx: int, flow: str, interval_idx: int | None):
     kb = InlineKeyboardMarkup(row_width=1)
@@ -2605,7 +2010,6 @@ def report_interval_kind_kb(wid: str, company_idx: int, target_idx: int, flow: s
     kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
 
-
 def report_accumulation_kb(wid: str, interval: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     if interval.get("kind") == "monthly":
@@ -2620,7 +2024,6 @@ def report_accumulation_kb(wid: str, interval: dict):
     kb.add(kb_btn("⬅️", callback_data=f"reportaccback:{wid}", style="primary"))
     return kb
 
-
 def report_targets_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     items = []
@@ -2628,7 +2031,7 @@ def report_targets_kb(wid: str, company_idx: int, company: dict):
         label = target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"
         items.append((label, f"reportmenu:{wid}:{company_idx}:{idx}"))
 
-    page = get_ui_page(company, report_targets_page_key(company_idx))
+    page = get_ui_page(company, f"report_targets_{company_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data, style=False))
@@ -2642,22 +2045,13 @@ def report_targets_kb(wid: str, company_idx: int, company: dict):
     kb.row(*row)
     return kb
 
-
-def report_settings_kb(wid: str, company_idx: int, target_idx: int):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("🔌 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}", style="danger"))
-    kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}:{target_idx}", style="danger"))
-    kb.add(kb_btn("⬅️", callback_data=f"reportmenu:{wid}:{company_idx}:{target_idx}", style="primary"))
-    return kb
-
-
 def report_import_candidates_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     items = []
     for source_idx, mirror in missing_mirrors_for_report_targets(company):
         label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
         items.append((label, f"reportbindcopy:{wid}:{company_idx}:{source_idx}"))
-    page = get_ui_page(company, report_import_page_key(company_idx))
+    page = get_ui_page(company, f"report_import_{company_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data, style=False))
@@ -2670,13 +2064,15 @@ def report_import_candidates_kb(wid: str, company_idx: int, company: dict):
     kb.row(*row)
     return kb
 
-
 def template_report_menu_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     template = get_active_template(ws)
     intervals = get_report_intervals(template)
-    items = build_report_menu_items(intervals, lambda idx: f"tplreportitem:{wid}:{idx}")
-    page = get_ui_page(template, active_template_report_page_key(ws))
+    items = [
+        (format_report_schedule_label(interval), f"tplreportitem:{wid}:{idx}")
+        for idx, interval in sorted(enumerate(intervals), key=lambda pair: report_interval_sort_key(pair[1], pair[0]))
+    ]
+    page = get_ui_page(template, f"tpl_report_{template.get('id')}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORTS)
 
     for title, callback_data in visible:
@@ -2694,7 +2090,6 @@ def template_report_menu_kb(wid: str, ws: dict):
     kb.row(*row)
     return kb
 
-
 def template_report_interval_kb(wid: str, interval_idx: int, interval: dict | None = None):
     kb = InlineKeyboardMarkup(row_width=1)
     if interval and interval.get("kind") != "on_done":
@@ -2703,14 +2098,6 @@ def template_report_interval_kb(wid: str, interval_idx: int, interval: dict | No
     kb.add(kb_btn("🗑 Удалить", callback_data=f"tplreportdelask:{wid}:{interval_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"tplreport:{wid}", style="primary"))
     return kb
-
-
-def template_report_settings_kb(wid: str):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("🧹 Очистить график", callback_data=f"tplreportclearask:{wid}", style="danger"))
-    kb.add(kb_btn("⬅️", callback_data=f"tplreport:{wid}", style="primary"))
-    return kb
-
 
 def template_report_interval_kind_kb(wid: str, flow: str, interval_idx: int | None):
     kb = InlineKeyboardMarkup(row_width=1)
@@ -2735,45 +2122,23 @@ def template_report_interval_kind_kb(wid: str, flow: str, interval_idx: int | No
     kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
 
-
 def confirm_kb(confirm_cb: str, back_cb: str):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("Да!", callback_data=confirm_cb, style="danger"))
     kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
     return kb
 
-
-def prompt_kb(wid: str):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("⬅️", callback_data=f"cancel:{wid}"))
-    return kb
-
-
-def back_kb(callback_data: str):
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("⬅️", callback_data=callback_data, style="primary"))
-    return kb
-
-
 # =========================
 # VIEW HELPERS
 # =========================
-
-async def persist_ws_menu_id(wid: str, message_id: int):
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data.get("workspaces", {}).get(wid)
-        if ws:
-            ws["menu_msg_id"] = message_id
-            await save_data_unlocked(data)
-
 
 async def upsert_ws_menu(data: dict, wid: str, text: str, reply_markup):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return False
 
-    async with get_menu_lock(wid):
+    MENU_LOCKS.setdefault(wid, asyncio.Lock())
+    async with MENU_LOCKS[wid]:
         current_id = RUNTIME_MENU_IDS.get(wid) or ws.get("menu_msg_id")
         if current_id:
             ws["menu_msg_id"] = current_id
@@ -2796,9 +2161,13 @@ async def upsert_ws_menu(data: dict, wid: str, text: str, reply_markup):
         msg = await send_message(ws["chat_id"], text, reply_markup=reply_markup, thread_id=ws["thread_id"])
         ws["menu_msg_id"] = msg.message_id
         RUNTIME_MENU_IDS[wid] = msg.message_id
-        await persist_ws_menu_id(wid, msg.message_id)
+        async with FILE_LOCK:
+            fresh = await load_data_unlocked()
+            fresh_ws = fresh.get("workspaces", {}).get(wid)
+            if fresh_ws:
+                fresh_ws["menu_msg_id"] = msg.message_id
+                await save_data_unlocked(fresh)
         return True
-
 
 async def update_pm_menu(user_id: str, data: dict):
     user = ensure_user(data, user_id)
@@ -2818,7 +2187,6 @@ async def update_pm_menu(user_id: str, data: dict):
     except Exception:
         pass
 
-
 async def upsert_company_card(ws: dict, company_idx: int):
     if company_idx < 0 or company_idx >= len(ws["companies"]):
         return False
@@ -2833,7 +2201,6 @@ async def upsert_company_card(ws: dict, company_idx: int):
     company["card_msg_id"] = msg.message_id
     return True
 
-
 async def upsert_company_mirror(mirror: dict, company: dict):
     if not mirror:
         return False
@@ -2847,26 +2214,10 @@ async def upsert_company_mirror(mirror: dict, company: dict):
     mirror["message_id"] = msg.message_id
     return True
 
-
 async def publish_initial_company_mirror(company: dict, chat_id: int, thread_id: int = 0) -> int | None:
     text = company_card_text(company)
     msg = await send_message(chat_id, text, thread_id=thread_id)
     return msg.message_id
-
-
-async def ensure_all_company_cards(ws: dict):
-    for idx in range(len(ws.get("companies", []))):
-        await upsert_company_card(ws, idx)
-
-
-def company_has_live_deadlines(company: dict) -> bool:
-    for task in company.get("tasks", []):
-        if task.get("done"):
-            continue
-        if isinstance(task.get("deadline_due_at"), int):
-            return True
-    return False
-
 
 async def sync_company_everywhere(ws: dict, company_idx: int):
     changed = False
@@ -2876,7 +2227,6 @@ async def sync_company_everywhere(ws: dict, company_idx: int):
     for mirror in company.get("mirrors", []):
         mirror_changed = await upsert_company_mirror(mirror, company)
         changed = changed or mirror_changed
-    company["mirror"] = company.get("mirrors", [None])[0] if company.get("mirrors") else None
     if recreated_card and ws.get("is_connected"):
         old_menu_id = ws.get("menu_msg_id")
         ws["menu_msg_id"] = None
@@ -2887,7 +2237,6 @@ async def sync_company_everywhere(ws: dict, company_idx: int):
         RUNTIME_MENU_IDS[ws["id"]] = msg.message_id
         changed = True
     return changed
-
 
 async def publish_company_reports(ws: dict, company_idx: int, now_value: int) -> bool:
     if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
@@ -2940,7 +2289,6 @@ async def publish_company_reports(ws: dict, company_idx: int, now_value: int) ->
 
     return changed
 
-
 async def publish_company_done_reports(ws: dict, company_idx: int, task_idx: int) -> bool:
     if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
         return False
@@ -2974,15 +2322,6 @@ async def publish_company_done_reports(ws: dict, company_idx: int, task_idx: int
             changed = True
     return changed
 
-
-async def delete_old_prompt_if_any(ws: dict):
-    awaiting = ws.get("awaiting") or {}
-    prompt_msg_id = awaiting.get("prompt_msg_id")
-    current_menu_id = RUNTIME_MENU_IDS.get(ws.get("id")) or ws.get("menu_msg_id")
-    if prompt_msg_id and prompt_msg_id != current_menu_id:
-        await safe_delete_message(ws["chat_id"], awaiting["prompt_msg_id"])
-
-
 async def upsert_ws_menu_inline(ws: dict, text: str, reply_markup):
     wid = ws["id"]
     current_id = RUNTIME_MENU_IDS.get(wid) or ws.get("menu_msg_id")
@@ -2998,28 +2337,247 @@ async def upsert_ws_menu_inline(ws: dict, text: str, reply_markup):
     RUNTIME_MENU_IDS[wid] = msg.message_id
     return True
 
-
 async def set_prompt(ws: dict, prompt_text: str, awaiting_payload: dict):
-    await delete_old_prompt_if_any(ws)
-    await upsert_ws_menu_inline(ws, prompt_text, prompt_kb(ws["id"]))
+    awaiting = ws.get("awaiting") or {}
+    prompt_msg_id = awaiting.get("prompt_msg_id")
+    current_menu_id = RUNTIME_MENU_IDS.get(ws.get("id")) or ws.get("menu_msg_id")
+    if prompt_msg_id and prompt_msg_id != current_menu_id:
+        await safe_delete_message(ws["chat_id"], prompt_msg_id)
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("⬅️", callback_data=f"cancel:{ws['id']}"))
+    await upsert_ws_menu_inline(ws, prompt_text, kb)
     awaiting_payload["prompt_msg_id"] = None
     ws["awaiting"] = awaiting_payload
 
-
 async def show_instruction_menu(data: dict, wid: str, text: str, back_cb: str):
-    await upsert_ws_menu(data, wid, text, back_kb(back_cb))
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
+    await upsert_ws_menu(data, wid, text, kb)
 
-
-async def send_or_replace_ws_home_menu(data: dict, wid: str):
+def get_connected_ws(data: dict, wid: str) -> dict | None:
     ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
-        return
-    await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
+    return ws if ws and ws.get("is_connected") else None
 
+async def get_connected_company(data: dict, wid: str, company_idx: int) -> tuple[dict | None, dict | None]:
+    ws = get_connected_ws(data, wid)
+    if not ws:
+        return None, None
+    companies = ws.get("companies", [])
+    if company_idx < 0 or company_idx >= len(companies):
+        await edit_ws_home_menu(data, wid)
+        return None, None
+    return ws, companies[company_idx]
+
+async def get_report_target_context(data: dict, wid: str, company_idx: int, target_idx: int) -> tuple[dict | None, dict | None, dict | None]:
+    ws, company = await get_connected_company(data, wid, company_idx)
+    if not company:
+        return None, None, None
+    target = get_report_target(company, target_idx)
+    if not target:
+        await edit_report_targets_menu(data, wid, company_idx)
+        return None, None, None
+    return ws, company, target
+
+def get_connected_active_template(data: dict, wid: str) -> tuple[dict | None, dict | None]:
+    ws = get_connected_ws(data, wid)
+    return (ws, get_active_template(ws)) if ws else (None, None)
+
+def resolve_task_category(categories: list[dict], task: dict) -> dict | None:
+    category_id = task.get("category_id")
+    if not category_id:
+        return None
+    category_idx = find_category_index(categories, category_id)
+    return categories[category_idx] if category_idx is not None else None
+
+async def get_company_category_context(data: dict, wid: str, company_idx: int, category_idx: int) -> tuple[dict | None, dict | None, dict | None]:
+    ws, company = await get_connected_company(data, wid, company_idx)
+    if not company:
+        return None, None, None
+    categories = company.get("categories", [])
+    if category_idx < 0 or category_idx >= len(categories):
+        await edit_company_menu(data, wid, company_idx)
+        return None, None, None
+    return ws, company, categories[category_idx]
+
+async def get_company_task_context(data: dict, wid: str, company_idx: int, task_idx: int) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+    ws, company = await get_connected_company(data, wid, company_idx)
+    if not company:
+        return None, None, None, None
+    tasks = company.get("tasks", [])
+    if task_idx < 0 or task_idx >= len(tasks):
+        await edit_company_menu(data, wid, company_idx)
+        return None, None, None, None
+    task = tasks[task_idx]
+    return ws, company, task, resolve_task_category(company.get("categories", []), task)
+
+async def get_template_category_context(data: dict, wid: str, category_idx: int) -> tuple[dict | None, dict | None, dict | None]:
+    ws, active = get_connected_active_template(data, wid)
+    if not ws:
+        return None, None, None
+    categories = ws.get("template_categories", [])
+    if category_idx < 0 or category_idx >= len(categories):
+        await edit_template_menu(data, wid)
+        return None, None, None
+    return ws, active, categories[category_idx]
+
+async def get_template_task_context(data: dict, wid: str, task_idx: int) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+    ws, active = get_connected_active_template(data, wid)
+    if not ws:
+        return None, None, None, None
+    tasks = ws.get("template_tasks", [])
+    if task_idx < 0 or task_idx >= len(tasks):
+        await edit_template_menu(data, wid)
+        return None, None, None, None
+    task = tasks[task_idx]
+    return ws, active, task, resolve_task_category(ws.get("template_categories", []), task)
+
+async def begin_callback(cb: types.CallbackQuery) -> bool:
+    await cb.answer()
+    return not should_ignore_callback(cb)
+
+async def open_wid_menu_from_callback(cb: types.CallbackQuery, editor):
+    if not await begin_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    data = await load_data()
+    await editor(data, wid)
+
+async def open_company_menu_from_callback(cb: types.CallbackQuery, editor):
+    if not await begin_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    data = await load_data()
+    await editor(data, wid, int(company_idx))
+
+async def open_company_target_menu_from_callback(cb: types.CallbackQuery, editor):
+    if not await begin_callback(cb):
+        return
+    _, wid, company_idx, target_idx = cb.data.split(":")
+    data = await load_data()
+    await editor(data, wid, int(company_idx), int(target_idx))
+
+async def open_company_target_index_menu_from_callback(cb: types.CallbackQuery, editor):
+    if not await begin_callback(cb):
+        return
+    _, wid, company_idx, target_idx, item_idx = cb.data.split(":")
+    data = await load_data()
+    await editor(data, wid, int(company_idx), int(target_idx), int(item_idx))
+
+async def open_company_category_menu_from_callback(cb: types.CallbackQuery, editor):
+    if not await begin_callback(cb):
+        return
+    _, wid, company_idx, category_idx = cb.data.split(":")
+    data = await load_data()
+    await editor(data, wid, int(company_idx), int(category_idx))
+
+async def open_company_task_menu_from_callback(cb: types.CallbackQuery, editor):
+    if not await begin_callback(cb):
+        return
+    _, wid, company_idx, task_idx = cb.data.split(":")
+    data = await load_data()
+    await editor(data, wid, int(company_idx), int(task_idx))
+
+async def open_template_index_menu_from_callback(cb: types.CallbackQuery, editor):
+    if not await begin_callback(cb):
+        return
+    _, wid, item_idx = cb.data.split(":")
+    data = await load_data()
+    await editor(data, wid, int(item_idx))
+
+async def open_wid_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, awaiting_payload: dict):
+    if not await begin_callback(cb):
+        return
+    wid = cb.data.split(":", 1)[1]
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = get_connected_ws(data, wid)
+        if not ws:
+            return
+        await set_prompt(ws, prompt_text, awaiting_payload)
+        await save_data_unlocked(data)
+
+async def open_company_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
+    if not await begin_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = get_connected_ws(data, wid)
+        if not ws:
+            return
+        await set_prompt(ws, prompt_text, payload_factory(company_idx))
+        await save_data_unlocked(data)
+
+async def open_company_category_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
+    if not await begin_callback(cb):
+        return
+    _, wid, company_idx, category_idx = cb.data.split(":")
+    company_idx, category_idx = int(company_idx), int(category_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = get_connected_ws(data, wid)
+        if not ws:
+            return
+        await set_prompt(ws, prompt_text, payload_factory(company_idx, category_idx))
+        await save_data_unlocked(data)
+
+async def open_company_task_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
+    if not await begin_callback(cb):
+        return
+    _, wid, company_idx, task_idx = cb.data.split(":")
+    company_idx, task_idx = int(company_idx), int(task_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = get_connected_ws(data, wid)
+        if not ws:
+            return
+        await set_prompt(ws, prompt_text, payload_factory(ws, company_idx, task_idx))
+        await save_data_unlocked(data)
+
+async def open_template_category_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
+    if not await begin_callback(cb):
+        return
+    _, wid, category_idx = cb.data.split(":")
+    category_idx = int(category_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = get_connected_ws(data, wid)
+        if not ws:
+            return
+        await set_prompt(ws, prompt_text, payload_factory(category_idx))
+        await save_data_unlocked(data)
+
+async def open_template_task_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
+    if not await begin_callback(cb):
+        return
+    _, wid, task_idx = cb.data.split(":")
+    task_idx = int(task_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = get_connected_ws(data, wid)
+        if not ws:
+            return
+        await set_prompt(ws, prompt_text, payload_factory(ws, task_idx))
+        await save_data_unlocked(data)
+
+async def open_report_schedule_prompt_from_callback(cb: types.CallbackQuery, kind: str):
+    if not await begin_callback(cb):
+        return
+    _, wid, company_idx, target_idx, interval_idx, flow, *rest = cb.data.split(":")
+    await open_report_schedule_prompt(
+        wid,
+        int(company_idx),
+        int(target_idx),
+        parse_optional_index(interval_idx),
+        flow,
+        kind,
+        int(rest[0]) if rest else None,
+    )
 
 async def recreate_ws_home_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws = get_connected_ws(data, wid)
+    if not ws:
         return
     old_id = ws.get("menu_msg_id")
     ws["menu_msg_id"] = None
@@ -3027,110 +2585,79 @@ async def recreate_ws_home_menu(data: dict, wid: str):
     await safe_delete_message(ws["chat_id"], old_id)
     await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
 
-
 async def edit_ws_home_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws = get_connected_ws(data, wid)
+    if not ws:
         return
     await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
 
-
 async def edit_ws_settings_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws = get_connected_ws(data, wid)
+    if not ws:
         return
     await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Настройки Workspace"), ws_settings_kb(wid))
 
-
 async def edit_company_create_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws = get_connected_ws(data, wid)
+    if not ws:
         return
     await upsert_ws_menu(data, wid, "➕ Список", company_create_mode_kb(wid, ws))
 
-
 async def edit_company_menu(data: dict, wid: str, company_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company = await get_connected_company(data, wid, company_idx)
+    if not ws:
         return
-    if company_idx < 0 or company_idx >= len(ws["companies"]):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    await upsert_ws_menu(data, wid, company_menu_title(ws, company), company_menu_kb(wid, company_idx, company))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, rich_display_company_name(company)), company_menu_kb(wid, company_idx, company))
 
 async def edit_company_settings_menu(data: dict, wid: str, company_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company = await get_connected_company(data, wid, company_idx)
+    if not ws:
         return
-    if company_idx < 0 or company_idx >= len(ws["companies"]):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    await upsert_ws_menu(data, wid, company_settings_title(ws, company), company_settings_kb(wid, company_idx, company))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, rich_display_company_name(company), "⚙️ Настройки списка"), company_settings_kb(wid, company_idx, company))
 
 async def edit_report_menu(data: dict, wid: str, company_idx: int, target_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company, target = await get_report_target_context(data, wid, company_idx, target_idx)
+    if not ws:
         return
-    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    target = get_report_target(company, target_idx)
-    if not target:
-        await edit_report_targets_menu(data, wid, company_idx)
-        return
-    await upsert_ws_menu(data, wid, reports_menu_title(ws, company, target), report_menu_kb(wid, company_idx, target_idx, company))
-
+    title = [rich_display_company_name(company), "🧾 Отчетность"]
+    if target:
+        title.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, *title), report_menu_kb(wid, company_idx, target_idx, company))
 
 async def edit_report_settings_menu(data: dict, wid: str, company_idx: int, target_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company, target = await get_report_target_context(data, wid, company_idx, target_idx)
+    if not ws:
         return
-    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    target = get_report_target(company, target_idx)
-    if not target:
-        await edit_report_targets_menu(data, wid, company_idx)
-        return
-    await upsert_ws_menu(data, wid, report_settings_title(ws, company, target), report_settings_kb(wid, company_idx, target_idx))
-
+    title = [rich_display_company_name(company), "🧾 Отчетность"]
+    if target:
+        title.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
+    title.append("⚙️ Отчетность")
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("🔌 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}", style="danger"))
+    kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}:{target_idx}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"reportmenu:{wid}:{company_idx}:{target_idx}", style="primary"))
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, *title), kb)
 
 async def edit_report_interval_menu(data: dict, wid: str, company_idx: int, target_idx: int, interval_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
-        return
-    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    target = get_report_target(company, target_idx)
-    if not target:
-        await edit_report_targets_menu(data, wid, company_idx)
+    ws, company, target = await get_report_target_context(data, wid, company_idx, target_idx)
+    if not ws:
         return
     interval = find_report_interval(company, interval_idx)
     if not interval or interval.get("target_key") != report_target_key(target):
         await edit_report_menu(data, wid, company_idx, target_idx)
         return
-    await upsert_ws_menu(data, wid, report_interval_title(ws, company, interval, target), report_interval_kb(wid, company_idx, target_idx, interval_idx, interval))
-
+    title = [rich_display_company_name(company), "🧾 Отчетность"]
+    if target:
+        title.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
+    title.append(format_report_schedule_label(interval))
+    if interval.get("kind") != "on_done":
+        start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval), company)
+        title.append(format_report_period_preview(interval, start_at, end_at))
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, *title), report_interval_kb(wid, company_idx, target_idx, interval_idx, interval))
 
 async def edit_report_interval_kind_menu(data: dict, wid: str, company_idx: int, target_idx: int, flow: str, interval_idx: int | None):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
-        return
-    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    target = get_report_target(company, target_idx)
-    if not target:
-        await edit_report_targets_menu(data, wid, company_idx)
+    ws, company, target = await get_report_target_context(data, wid, company_idx, target_idx)
+    if not ws:
         return
     label = "Изменить время отчета" if flow == "edit" and interval_idx is not None else "Добавить время отчета"
     await upsert_ws_menu(
@@ -3140,10 +2667,9 @@ async def edit_report_interval_kind_menu(data: dict, wid: str, company_idx: int,
         report_interval_kind_kb(wid, company_idx, target_idx, flow, interval_idx),
     )
 
-
 async def edit_report_accumulation_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws = get_connected_ws(data, wid)
+    if not ws:
         return
     awaiting = ws.get("awaiting") or {}
     draft_interval = awaiting.get("draft_interval")
@@ -3175,185 +2701,114 @@ async def edit_report_accumulation_menu(data: dict, wid: str):
         )
     await upsert_ws_menu(data, wid, title, report_accumulation_kb(wid, draft_interval))
 
-
 async def edit_report_targets_menu(data: dict, wid: str, company_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company = await get_connected_company(data, wid, company_idx)
+    if not ws:
         return
-    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    await upsert_ws_menu(data, wid, report_targets_title(ws, company), report_targets_kb(wid, company_idx, company))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", "📎 Привязка"), report_targets_kb(wid, company_idx, company))
 
 async def edit_category_menu(data: dict, wid: str, company_idx: int, category_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company, category = await get_company_category_context(data, wid, company_idx, category_idx)
+    if not ws:
         return
-    if company_idx < 0 or company_idx >= len(ws["companies"]):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    if category_idx < 0 or category_idx >= len(company.get("categories", [])):
-        await edit_company_menu(data, wid, company_idx)
-        return
-    category = company["categories"][category_idx]
-    await upsert_ws_menu(data, wid, category_menu_title(ws, company, category), category_menu_kb(wid, company_idx, category_idx, category, company))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, rich_display_company_name(company), rich_display_category_name(category)), category_menu_kb(wid, company_idx, category_idx, category, company))
 
 async def edit_category_settings_menu(data: dict, wid: str, company_idx: int, category_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company, category = await get_company_category_context(data, wid, company_idx, category_idx)
+    if not ws:
         return
-    if company_idx < 0 or company_idx >= len(ws["companies"]):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    if category_idx < 0 or category_idx >= len(company.get("categories", [])):
-        await edit_company_menu(data, wid, company_idx)
-        return
-    category = company["categories"][category_idx]
-    await upsert_ws_menu(data, wid, category_settings_title(ws, company, category), category_settings_kb(wid, company_idx, category_idx, category))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, rich_display_company_name(company), rich_display_category_name(category), "⚙️ Подгруппа"), category_settings_kb(wid, company_idx, category_idx, category))
 
 async def edit_task_menu(data: dict, wid: str, company_idx: int, task_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company, task, category = await get_company_task_context(data, wid, company_idx, task_idx)
+    if not ws:
         return
-    if company_idx < 0 or company_idx >= len(ws["companies"]):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
-        await edit_company_menu(data, wid, company_idx)
-        return
-    task = company["tasks"][task_idx]
-    category = None
-    if task.get("category_id"):
-        cat_idx = find_category_index(company.get("categories", []), task.get("category_id"))
-        if cat_idx is not None:
-            category = company["categories"][cat_idx]
     await upsert_ws_menu(data, wid, task_menu_title(ws, company, task, category), task_menu_kb(wid, company_idx, task_idx, task, company))
 
-
 async def edit_task_deadline_menu(data: dict, wid: str, company_idx: int, task_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company, task, category = await get_company_task_context(data, wid, company_idx, task_idx)
+    if not ws:
         return
-    if company_idx < 0 or company_idx >= len(ws["companies"]):
-        await edit_ws_home_menu(data, wid)
-        return
-    company = ws["companies"][company_idx]
-    if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
-        await edit_company_menu(data, wid, company_idx)
-        return
-    task = company["tasks"][task_idx]
-    category = None
-    if task.get("category_id"):
-        cat_idx = find_category_index(company.get("categories", []), task.get("category_id"))
-        if cat_idx is not None:
-            category = company["categories"][cat_idx]
-    await upsert_ws_menu(data, wid, task_menu_title(ws, company, task, category), task_deadline_kb(wid, company_idx, task_idx))
-
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style=False))
+    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"taskdeadel:{wid}:{company_idx}:{task_idx}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"))
+    await upsert_ws_menu(data, wid, task_menu_title(ws, company, task, category), kb)
 
 async def edit_task_move_menu(data: dict, wid: str, company_idx: int, task_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, company, task, _ = await get_company_task_context(data, wid, company_idx, task_idx)
+    if not ws:
         return
-    company = ws["companies"].get(company_idx) if isinstance(ws.get("companies"), dict) else None
-    if company is None:
-        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-            await edit_ws_home_menu(data, wid)
-            return
-        company = ws["companies"][company_idx]
-    if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
-        await edit_company_menu(data, wid, company_idx)
-        return
-    task = company["tasks"][task_idx]
     await upsert_ws_menu(data, wid, f"📥 {task['text']}", task_move_kb(wid, company_idx, task_idx, company, task))
 
-
 async def edit_templates_root_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws = get_connected_ws(data, wid)
+    if not ws:
         return
-    await upsert_ws_menu(data, wid, templates_root_title(ws), templates_root_kb(wid, ws))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач"), templates_root_kb(wid, ws))
 
 async def edit_template_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active = get_connected_active_template(data, wid)
+    if not ws:
         return
-    active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_menu_title(ws, active), template_menu_kb(wid, ws))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active)), template_menu_kb(wid, ws))
 
 async def edit_template_category_menu(data: dict, wid: str, category_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active, category = await get_template_category_context(data, wid, category_idx)
+    if not ws:
         return
-    if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
-        await edit_template_menu(data, wid)
-        return
-    category = ws["template_categories"][category_idx]
-    active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_category_title(ws, active, category), template_category_menu_kb(wid, category_idx, category, active))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), rich_display_category_name(category)), template_category_menu_kb(wid, category_idx, category, active))
 
 async def edit_template_category_settings_menu(data: dict, wid: str, category_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active, category = await get_template_category_context(data, wid, category_idx)
+    if not ws:
         return
-    if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
-        await edit_template_menu(data, wid)
-        return
-    category = ws["template_categories"][category_idx]
-    active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_category_settings_title(ws, active, category), template_category_settings_kb(wid, category_idx))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), rich_display_category_name(category), "⚙️ Подгруппа"), template_category_settings_kb(wid, category_idx))
 
 async def edit_template_settings_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active = get_connected_active_template(data, wid)
+    if not ws:
         return
-    active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_settings_title(ws, active), template_settings_kb(wid))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), "⚙️ Шаблон"), template_settings_kb(wid))
 
 async def edit_template_report_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active = get_connected_active_template(data, wid)
+    if not ws:
         return
-    active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_reports_menu_title(ws, active), template_report_menu_kb(wid, ws))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), "🧾 Отчетность"), template_report_menu_kb(wid, ws))
 
 async def edit_template_report_settings_menu(data: dict, wid: str):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active = get_connected_active_template(data, wid)
+    if not ws:
         return
-    active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, template_report_settings_title(ws, active), template_report_settings_kb(wid))
-
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("🧹 Очистить график", callback_data=f"tplreportclearask:{wid}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"tplreport:{wid}", style="primary"))
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), "🧾 Отчетность", "⚙️ Отчетность"), kb)
 
 async def edit_template_report_interval_menu(data: dict, wid: str, interval_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active = get_connected_active_template(data, wid)
+    if not ws:
         return
-    active = get_active_template(ws)
     interval = find_report_interval(active, interval_idx)
     if not interval:
         await edit_template_report_menu(data, wid)
         return
-    await upsert_ws_menu(data, wid, template_report_interval_title(ws, active, interval), template_report_interval_kb(wid, interval_idx, interval))
-
+    title = [
+        "⚙️ Шаблоны задач",
+        rich_display_template_name(active),
+        "🧾 Отчетность",
+        format_report_schedule_label(interval),
+    ]
+    if interval.get("kind") != "on_done":
+        start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval))
+        title.append(format_report_period_preview(interval, start_at, end_at))
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, *title), template_report_interval_kb(wid, interval_idx, interval))
 
 async def edit_template_report_interval_kind_menu(data: dict, wid: str, flow: str, interval_idx: int | None):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active = get_connected_active_template(data, wid)
+    if not ws:
         return
-    active = get_active_template(ws)
     label = "Изменить время отчета" if flow == "edit" and interval_idx is not None else "Добавить время отчета"
     await upsert_ws_menu(
         data,
@@ -3362,52 +2817,27 @@ async def edit_template_report_interval_kind_menu(data: dict, wid: str, flow: st
         template_report_interval_kind_kb(wid, flow, interval_idx),
     )
 
-
 async def edit_template_task_menu(data: dict, wid: str, task_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active, task, category = await get_template_task_context(data, wid, task_idx)
+    if not ws:
         return
-    if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
-        await edit_template_menu(data, wid)
-        return
-    task = ws["template_tasks"][task_idx]
-    active = get_active_template(ws)
-    category = None
-    if task.get("category_id"):
-        cat_idx = find_category_index(ws.get("template_categories", []), task.get("category_id"))
-        if cat_idx is not None:
-            category = ws["template_categories"][cat_idx]
     await upsert_ws_menu(data, wid, template_task_title(ws, active, task, category), template_task_menu_kb(wid, task_idx, task, ws))
 
-
 async def edit_template_task_deadline_menu(data: dict, wid: str, task_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, active, task, category = await get_template_task_context(data, wid, task_idx)
+    if not ws:
         return
-    if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
-        await edit_template_menu(data, wid)
-        return
-    task = ws["template_tasks"][task_idx]
-    active = get_active_template(ws)
-    category = None
-    if task.get("category_id"):
-        cat_idx = find_category_index(ws.get("template_categories", []), task.get("category_id"))
-        if cat_idx is not None:
-            category = ws["template_categories"][cat_idx]
-    await upsert_ws_menu(data, wid, template_task_title(ws, active, task, category), template_task_deadline_kb(wid, task_idx))
-
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style=False))
+    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"))
+    await upsert_ws_menu(data, wid, template_task_title(ws, active, task, category), kb)
 
 async def edit_template_task_move_menu(data: dict, wid: str, task_idx: int):
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
+    ws, _, task, _ = await get_template_task_context(data, wid, task_idx)
+    if not ws:
         return
-    if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
-        await edit_template_menu(data, wid)
-        return
-    task = ws["template_tasks"][task_idx]
     await upsert_ws_menu(data, wid, f"📥 {task['text']}", template_task_move_kb(wid, task_idx, ws, task))
-
-
 
 async def clear_workspace_contents(ws: dict):
     awaiting = ws.get("awaiting") or {}
@@ -3423,18 +2853,10 @@ async def clear_workspace_contents(ws: dict):
     ws["companies"] = []
     ws["awaiting"] = None
 
-
-def clear_pending_mirror_tokens_for_company(data: dict, wid: str, company_id: str):
-    for token, payload in list(data.get("mirror_tokens", {}).items()):
-        if payload.get("source_wid") == wid and payload.get("company_id") == company_id:
-            data["mirror_tokens"].pop(token, None)
-
-
 def clear_pending_mirror_tokens_for_workspace(data: dict, wid: str):
     for token, payload in list(data.get("mirror_tokens", {}).items()):
         if payload.get("source_wid") == wid:
             data["mirror_tokens"].pop(token, None)
-
 
 # =========================
 # PM
@@ -3462,7 +2884,6 @@ async def cmd_start(message: types.Message):
     except Exception:
         pass
 
-
 @dp.callback_query_handler(lambda c: c.data == "pmrefresh:root")
 async def pm_refresh(cb: types.CallbackQuery):
     await cb.answer()
@@ -3475,7 +2896,6 @@ async def pm_refresh(cb: types.CallbackQuery):
         await save_data_unlocked(data)
     await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
 
-
 @dp.callback_query_handler(lambda c: c.data == "pmhelp:root")
 async def pm_help(cb: types.CallbackQuery):
     await cb.answer()
@@ -3487,9 +2907,8 @@ async def pm_help(cb: types.CallbackQuery):
         int(uid),
         cb.message.message_id,
         "📌 Как подключить workspace:\n1) Добавь меня в нужную группу;\n2) Перейди в нужный тред;\n3) Отправь команду /connect;\n4) Дождись появления меню;\n5) Profit!",
-        reply_markup=back_kb("pmrefresh:root"),
+        reply_markup=InlineKeyboardMarkup(row_width=1).add(kb_btn("⬅️", callback_data="pmrefresh:root", style="primary")),
     )
-
 
 @dp.callback_query_handler(lambda c: c.data == "pmpersonal:root")
 async def pm_personal_workspace(cb: types.CallbackQuery):
@@ -3511,9 +2930,7 @@ async def pm_personal_workspace(cb: types.CallbackQuery):
                 "chat_id": int(uid),
                 "thread_id": 0,
                 "menu_msg_id": cb.message.message_id,
-                "template_tasks": [ensure_task({"text": "Создать договор"}, is_template=True), ensure_task({"text": "Выставить счёт"}, is_template=True)],
-                "template_categories": [],
-                "templates": [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "tasks": [ensure_task({"text": "Создать договор"}, is_template=True), ensure_task({"text": "Выставить счёт"}, is_template=True)], "categories": []}],
+                "templates": [make_template(tasks=default_template_tasks())],
                 "active_template_id": None,
                 "companies": [],
                 "awaiting": None,
@@ -3529,7 +2946,6 @@ async def pm_personal_workspace(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_ws_home_menu(fresh, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("pmws:"))
 async def pm_open_workspace(cb: types.CallbackQuery):
     await cb.answer()
@@ -3542,21 +2958,15 @@ async def pm_open_workspace(cb: types.CallbackQuery):
     if not ws or not ws.get("is_connected") or wid not in data["users"].get(uid, {}).get("workspaces", []):
         await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
         return
-    await safe_edit_text(int(uid), cb.message.message_id, f"📂 {esc(ws.get('name') or 'Workspace')}", reply_markup=pm_ws_manage_kb(wid))
-
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("🧹 Очистить workspace", callback_data=f"pmwsclearask:{wid}"))
+    kb.add(kb_btn("🗑 Удалить workspace", callback_data=f"pmwsdelask:{wid}"))
+    kb.add(kb_btn("⬅️", callback_data="pmrefresh:root"))
+    await safe_edit_text(int(uid), cb.message.message_id, f"📂 {esc(ws.get('name') or 'Workspace')}", reply_markup=kb)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("wsset:"))
 async def open_ws_settings(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":", 1)[1]
-    data = await load_data()
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected"):
-        return
-    await edit_ws_settings_menu(data, wid)
-
+    await open_wid_menu_from_callback(cb, edit_ws_settings_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("wsclearask:"))
 async def ws_clear_ask(cb: types.CallbackQuery):
@@ -3569,7 +2979,6 @@ async def ws_clear_ask(cb: types.CallbackQuery):
     if not ws or not ws.get("is_connected"):
         return
     await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Настройки Workspace", "🧹 Очистить workspace?"), confirm_kb(f"wsclear:{wid}", f"wsset:{wid}"))
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("wsclear:"))
 async def ws_clear_confirm(cb: types.CallbackQuery):
@@ -3588,7 +2997,6 @@ async def ws_clear_confirm(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_ws_home_menu(fresh, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsclearask:"))
 async def pm_clear_workspace_ask(cb: types.CallbackQuery):
     await cb.answer()
@@ -3600,7 +3008,6 @@ async def pm_clear_workspace_ask(cb: types.CallbackQuery):
     if not ws:
         return
     await safe_edit_text(int(cb.from_user.id), cb.message.message_id, f"📂 {esc(ws.get('name') or 'Workspace')}\n\nОчистить workspace?", reply_markup=confirm_kb(f"pmwsclear:{wid}", f"pmws:{wid}"))
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsclear:"))
 async def pm_clear_workspace_confirm(cb: types.CallbackQuery):
@@ -3624,7 +3031,6 @@ async def pm_clear_workspace_confirm(cb: types.CallbackQuery):
         await edit_ws_home_menu(fresh, wid)
     await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, fresh), reply_markup=pm_main_kb(uid, fresh))
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsdelask:"))
 async def pm_delete_workspace_ask(cb: types.CallbackQuery):
     await cb.answer()
@@ -3636,7 +3042,6 @@ async def pm_delete_workspace_ask(cb: types.CallbackQuery):
     ws = data["workspaces"].get(wid)
     title = f"Удалить workspace «{esc(ws.get('name') or 'Workspace')}»?" if ws else "Удалить workspace?"
     await safe_edit_text(int(uid), cb.message.message_id, title, reply_markup=confirm_kb(f"pmwsdel:{wid}", f"pmws:{wid}"))
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsdel:"))
 async def pm_delete_workspace(cb: types.CallbackQuery):
@@ -3683,7 +3088,6 @@ async def pm_delete_workspace(cb: types.CallbackQuery):
         await send_temp_message(int(uid), f"Workspace «{ws_name}» отключен", delay=10)
     await send_temp_message(chat_id, f"Workspace «{ws_name}» отключен", thread_id, delay=10)
 
-
 # =========================
 # CONNECT / TOPIC TRACKING
 # =========================
@@ -3718,11 +3122,8 @@ async def cmd_connect(message: types.Message):
         ws_name = workspace_full_name(chat_title, topic_title, thread_id)
 
         old_companies = existing_ws["companies"] if existing_ws else []
-        old_template_tasks = existing_ws.get("template_tasks") if existing_ws else [
-            ensure_task({"text": "Создать договор"}, is_template=True),
-            ensure_task({"text": "Выставить счёт"}, is_template=True),
-        ]
-        old_template_categories = existing_ws.get("template_categories") if existing_ws else []
+        old_templates = existing_ws.get("templates") if existing_ws else [make_template(tasks=default_template_tasks())]
+        old_active_template_id = existing_ws.get("active_template_id") if existing_ws else None
 
         if existing_ws:
             old_menu_id = existing_ws.get("menu_msg_id")
@@ -3739,14 +3140,14 @@ async def cmd_connect(message: types.Message):
             "chat_id": message.chat.id,
             "thread_id": thread_id,
             "menu_msg_id": existing_ws.get("menu_msg_id") if existing_ws else None,
-            "template_tasks": old_template_tasks,
-            "template_categories": old_template_categories,
-            "template": [t["text"] for t in old_template_tasks if not t.get("category_id")],
+            "templates": old_templates,
+            "active_template_id": old_active_template_id,
             "companies": old_companies,
             "awaiting": None,
             "is_connected": True,
         }
         ws = data["workspaces"][wid]
+        normalize_template(ws)
         if wid not in data["users"][uid]["workspaces"]:
             data["users"][uid]["workspaces"].append(wid)
         await save_data_unlocked(data)
@@ -3761,21 +3162,21 @@ async def cmd_connect(message: types.Message):
     if not ws:
         return
 
-    await ensure_all_company_cards(ws)
+    for idx in range(len(ws.get("companies", []))):
+        await upsert_company_card(ws, idx)
     for company in ws.get("companies", []):
         for mirror in company.get("mirrors", []):
             await upsert_company_mirror(mirror, company)
-    await send_or_replace_ws_home_menu(fresh, wid)
+    await edit_ws_home_menu(fresh, wid)
     await update_pm_menu(uid, fresh)
     await save_data(fresh)
     await try_delete_user_message(message)
     try:
-        await send_week_notice_pm(uid, f"Workspace «{ws['name']}» подключён")
+        await send_temp_message(int(uid), f"Workspace «{ws['name']}» подключён", delay=10)
     except Exception:
         pass
 
-
-@dp.message_handler(is_topic_service_message, content_types=types.ContentTypes.ANY)
+@dp.message_handler(lambda message: bool(getattr(message, "forum_topic_created", None) or getattr(message, "forum_topic_edited", None)), content_types=types.ContentTypes.ANY)
 async def track_forum_topic_updates(message: types.Message):
     if message.chat.type == "private":
         return
@@ -3801,7 +3202,6 @@ async def track_forum_topic_updates(message: types.Message):
         if wid in user.get("workspaces", []):
             await update_pm_menu(uid, data)
 
-
 # =========================
 # MIRROR
 # =========================
@@ -3820,8 +3220,7 @@ async def open_mirrors_menu(cb: types.CallbackQuery):
     if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
         return
     company = ws["companies"][company_idx]
-    await upsert_ws_menu(data, wid, mirrors_menu_title(ws, company), mirrors_menu_kb(wid, company_idx, company))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, rich_display_company_name(company), "📤 Дублирование списка"), mirrors_menu_kb(wid, company_idx, company))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroritem:"))
 async def open_mirror_item(cb: types.CallbackQuery):
@@ -3842,8 +3241,10 @@ async def open_mirror_item(cb: types.CallbackQuery):
         return
     mirror = company["mirrors"][mirror_idx]
     label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
-    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "📤 Дублирование списка", label), mirror_item_kb(wid, company_idx, mirror_idx))
-
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "📤 Дублирование списка", label), kb)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrorsrefresh:"))
 async def refresh_mirrors_menu(cb: types.CallbackQuery):
@@ -3859,8 +3260,7 @@ async def refresh_mirrors_menu(cb: types.CallbackQuery):
     if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
         return
     company = ws["companies"][company_idx]
-    await upsert_ws_menu(data, wid, mirrors_menu_title(ws, company), mirrors_menu_kb(wid, company_idx, company))
-
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, rich_display_company_name(company), "📤 Дублирование списка"), mirrors_menu_kb(wid, company_idx, company))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroron:"))
 async def mirror_on(cb: types.CallbackQuery):
@@ -3911,7 +3311,6 @@ async def mirror_on(cb: types.CallbackQuery):
         f"mirrors:{wid}:{company_idx}",
     )
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrornew:"))
 async def mirror_new(cb: types.CallbackQuery):
     await cb.answer()
@@ -3945,7 +3344,6 @@ async def mirror_new(cb: types.CallbackQuery):
             f"mirrors:{wid}:{company_idx}",
         )
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrorcopy:"))
 async def mirror_copy_existing(cb: types.CallbackQuery):
     await cb.answer()
@@ -3973,7 +3371,6 @@ async def mirror_copy_existing(cb: types.CallbackQuery):
             "message_id": None,
             "label": picked.get("label"),
         })
-        company["mirror"] = company.get("mirrors", [None])[0] if company.get("mirrors") else None
         await save_data_unlocked(data)
 
     fresh = await load_data()
@@ -3996,8 +3393,7 @@ async def mirror_copy_existing(cb: types.CallbackQuery):
                             mirror["message_id"] = published_message_id
                             break
                     await save_data_unlocked(data)
-        await upsert_ws_menu(fresh, wid, mirrors_menu_title(ws2, company2), mirrors_menu_kb(wid, company_idx, company2))
-
+        await upsert_ws_menu(fresh, wid, workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка"), mirrors_menu_kb(wid, company_idx, company2))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroroff:"))
 async def mirror_off(cb: types.CallbackQuery):
@@ -4021,7 +3417,6 @@ async def mirror_off(cb: types.CallbackQuery):
         if mirror_idx < 0 or mirror_idx >= len(company.get("mirrors", [])):
             return
         target = company["mirrors"].pop(mirror_idx)
-        company["mirror"] = company.get("mirrors", [None])[0] if company.get("mirrors") else None
         await save_data_unlocked(data)
 
     if target and target.get("message_id"):
@@ -4031,7 +3426,6 @@ async def mirror_off(cb: types.CallbackQuery):
     if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
         company2 = ws2["companies"][company_idx]
         await upsert_ws_menu(fresh, wid, f"📤 Дублирование списка: {display_company_name(company2)}", mirrors_menu_kb(wid, company_idx, company2))
-
 
 @dp.message_handler(commands=["mirror"])
 async def cmd_mirror(message: types.Message):
@@ -4133,12 +3527,11 @@ async def cmd_mirror(message: types.Message):
             ws2 = fresh["workspaces"].get(source_wid)
             if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
                 company2 = ws2["companies"][company_idx]
-                await upsert_ws_menu(fresh, source_wid, mirrors_menu_title(ws2, company2), mirrors_menu_kb(source_wid, company_idx, company2))
+                await upsert_ws_menu(fresh, source_wid, workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка"), mirrors_menu_kb(source_wid, company_idx, company2))
     if token_kind == "report_target":
         await send_temp_message(ws["chat_id"], f"🧾 Отчеты по списку «{company['title']}» теперь будут выгружаться еще в один тред/чат", source_thread_id, delay=10)
     else:
         await send_temp_message(ws["chat_id"], f"📤 Список «{company['title']}» дублируется ещё в один тред/чат", source_thread_id, delay=10)
-
 
 # =========================
 # REPORTS
@@ -4158,16 +3551,9 @@ async def open_report_schedule_prompt(wid: str, company_idx: int, target_idx: in
         if kind == "weekly" and weekday is not None:
             draft["weekday"] = weekday
 
-        if kind == "once":
-            prompt_text = "🧾 Пришли дату и время отчета"
-        elif kind == "monthly":
-            prompt_text = "🧾 Пришли число и время отчета, например: 30 20:44"
-        else:
-            prompt_text = "🧾 Пришли время отчета, например: 21:30"
-
         await set_prompt(
             ws,
-            prompt_text,
+            report_schedule_prompt_text(kind),
             {
                 "type": "report_schedule_time",
                 "company_idx": company_idx,
@@ -4180,7 +3566,6 @@ async def open_report_schedule_prompt(wid: str, company_idx: int, target_idx: in
         )
         await save_data_unlocked(data)
 
-
 async def finalize_report_interval(wid: str, company_idx: int, draft_interval: dict, flow: str, interval_idx: int | None):
     normalized = ensure_report_interval(draft_interval)
     if not normalized:
@@ -4192,13 +3577,7 @@ async def finalize_report_interval(wid: str, company_idx: int, draft_interval: d
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        intervals = get_report_intervals(company)
-        if flow == "edit_accumulation":
-            flow = "edit"
-        if flow == "edit" and interval_idx is not None and 0 <= interval_idx < len(intervals):
-            intervals[interval_idx] = normalized
-        else:
-            intervals.append(normalized)
+        upsert_report_interval(get_report_intervals(company), normalized, flow, interval_idx)
         ws["awaiting"] = None
         await save_data_unlocked(data)
 
@@ -4213,7 +3592,6 @@ async def finalize_report_interval(wid: str, company_idx: int, draft_interval: d
                 break
     await edit_report_menu(fresh, wid, company_idx, target_idx)
 
-
 async def finalize_template_report_interval(wid: str, draft_interval: dict, flow: str, interval_idx: int | None):
     normalized = ensure_report_interval(draft_interval)
     if not normalized:
@@ -4225,114 +3603,93 @@ async def finalize_template_report_interval(wid: str, draft_interval: dict, flow
         if not ws:
             return
         template = get_active_template(ws)
-        intervals = get_report_intervals(template)
-        if flow == "edit_accumulation":
-            flow = "edit"
-        if flow == "edit" and interval_idx is not None and 0 <= interval_idx < len(intervals):
-            intervals[interval_idx] = normalized
-        else:
-            intervals.append(normalized)
+        upsert_report_interval(get_report_intervals(template), normalized, flow, interval_idx)
         ws["awaiting"] = None
         await save_data_unlocked(data)
 
     fresh = await load_data()
     await edit_template_report_menu(fresh, wid)
 
+async def open_template_report_schedule_prompt(
+    wid: str,
+    interval_idx: int | None,
+    flow: str,
+    kind: str,
+    weekday: int | None = None,
+):
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected"):
+            return
+        template = get_active_template(ws)
+        draft = prepare_report_interval_draft(template, interval_idx, kind)
+        if kind == "weekly" and weekday is not None:
+            draft["weekday"] = weekday
+        await set_prompt(
+            ws,
+            report_schedule_prompt_text(kind),
+            {
+                "type": "template_report_schedule_time",
+                "interval_idx": interval_idx,
+                "flow": flow,
+                "draft_interval": draft,
+                "back_to": {"view": "template_report_interval_kind", "interval_idx": interval_idx, "flow": flow},
+            },
+        )
+        await save_data_unlocked(data)
+
+async def open_template_report_schedule_prompt_from_callback(cb: types.CallbackQuery, kind: str):
+    if not await begin_callback(cb):
+        return
+    _, wid, interval_idx, flow, *rest = cb.data.split(":")
+    await open_template_report_schedule_prompt(
+        wid,
+        parse_optional_index(interval_idx),
+        flow,
+        kind,
+        int(rest[0]) if rest else None,
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reports:"))
 async def open_reports_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_report_targets_menu(data, wid, int(company_idx))
-
+    await open_company_menu_from_callback(cb, edit_report_targets_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportsettings:"))
 async def open_report_settings_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_report_settings_menu(data, wid, int(company_idx), int(target_idx))
+    await open_company_target_menu_from_callback(cb, edit_report_settings_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportmenu:"))
 async def open_report_target_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_report_menu(data, wid, int(company_idx), int(target_idx))
-
+    await open_company_target_menu_from_callback(cb, edit_report_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportitem:"))
 async def open_report_item(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx, interval_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_report_interval_menu(data, wid, int(company_idx), int(target_idx), int(interval_idx))
-
+    await open_company_target_index_menu_from_callback(cb, edit_report_interval_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportadd:"))
 async def open_report_add_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_report_interval_kind_menu(data, wid, int(company_idx), int(target_idx), "new", None)
-
+    await open_company_target_menu_from_callback(cb, lambda data, wid, company_idx, target_idx: edit_report_interval_kind_menu(data, wid, company_idx, target_idx, "new", None))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportedit:"))
 async def open_report_edit_schedule_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx, interval_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_report_interval_kind_menu(data, wid, int(company_idx), int(target_idx), "edit", int(interval_idx))
-
+    await open_company_target_index_menu_from_callback(cb, lambda data, wid, company_idx, target_idx, interval_idx: edit_report_interval_kind_menu(data, wid, company_idx, target_idx, "edit", interval_idx))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportdaily:"))
 async def open_report_daily_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx, interval_idx, flow = cb.data.split(":")
-    await open_report_schedule_prompt(wid, int(company_idx), int(target_idx), parse_optional_index(interval_idx), flow, "daily")
-
+    await open_report_schedule_prompt_from_callback(cb, "daily")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportmonth:"))
 async def open_report_monthly_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx, interval_idx, flow = cb.data.split(":")
-    await open_report_schedule_prompt(wid, int(company_idx), int(target_idx), parse_optional_index(interval_idx), flow, "monthly")
-
+    await open_report_schedule_prompt_from_callback(cb, "monthly")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportonce:"))
 async def open_report_once_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx, interval_idx, flow = cb.data.split(":")
-    await open_report_schedule_prompt(wid, int(company_idx), int(target_idx), parse_optional_index(interval_idx), flow, "once")
-
+    await open_report_schedule_prompt_from_callback(cb, "once")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportweek:"))
 async def open_report_weekly_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx, interval_idx, flow, weekday = cb.data.split(":")
-    await open_report_schedule_prompt(wid, int(company_idx), int(target_idx), parse_optional_index(interval_idx), flow, "weekly", int(weekday))
-
+    await open_report_schedule_prompt_from_callback(cb, "weekly")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportinstant:"))
 async def open_report_instant(cb: types.CallbackQuery):
@@ -4354,17 +3711,12 @@ async def open_report_instant(cb: types.CallbackQuery):
         if not target:
             return
         normalized = prepare_report_interval_draft(company, interval_idx_value, "on_done", report_target_key(target))
-        intervals = get_report_intervals(company)
-        if flow == "edit" and interval_idx_value is not None and 0 <= interval_idx_value < len(intervals):
-            intervals[interval_idx_value] = normalized
-        else:
-            intervals.append(normalized)
+        upsert_report_interval(get_report_intervals(company), normalized, flow, interval_idx_value)
         ws["awaiting"] = None
         await save_data_unlocked(data)
 
     fresh = await load_data()
     await edit_report_menu(fresh, wid, company_idx_value, target_idx_value)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportaccedit:"))
 async def open_report_edit_accumulation_menu(cb: types.CallbackQuery):
@@ -4401,7 +3753,6 @@ async def open_report_edit_accumulation_menu(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_report_accumulation_menu(fresh, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("reportaccback:"))
 async def report_accumulation_back(cb: types.CallbackQuery):
     await cb.answer()
@@ -4434,7 +3785,6 @@ async def report_accumulation_back(cb: types.CallbackQuery):
         await edit_report_interval_menu(data, wid, company_idx, target_idx, interval_idx)
         return
     await edit_report_interval_kind_menu(data, wid, company_idx, target_idx, "edit" if flow == "edit" else "new", interval_idx)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportacc:"))
 async def report_accumulation_choice(cb: types.CallbackQuery):
@@ -4509,7 +3859,6 @@ async def report_accumulation_choice(cb: types.CallbackQuery):
         else:
             await finalize_report_interval(wid, awaiting.get("company_idx"), draft_interval, flow, interval_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("reportdelask:"))
 async def report_delete_ask(cb: types.CallbackQuery):
     await cb.answer()
@@ -4523,7 +3872,6 @@ async def report_delete_ask(cb: types.CallbackQuery):
         "Удалить интервал отчета?",
         confirm_kb(f"reportdel:{wid}:{company_idx}:{target_idx}:{interval_idx}", f"reportitem:{wid}:{company_idx}:{target_idx}:{interval_idx}"),
     )
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportdel:"))
 async def report_delete(cb: types.CallbackQuery):
@@ -4552,7 +3900,6 @@ async def report_delete(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_report_menu(fresh, wid, company_idx, target_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("reportclearask:"))
 async def report_clear_ask(cb: types.CallbackQuery):
     await cb.answer()
@@ -4566,7 +3913,6 @@ async def report_clear_ask(cb: types.CallbackQuery):
         "Очистить весь график отчетности?",
         confirm_kb(f"reportclear:{wid}:{company_idx}:{target_idx}", f"reportsettings:{wid}:{company_idx}:{target_idx}"),
     )
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportclear:"))
 async def report_clear(cb: types.CallbackQuery):
@@ -4593,7 +3939,6 @@ async def report_clear(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_report_menu(fresh, wid, company_idx, target_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbind:"))
 async def open_report_bindings_menu(cb: types.CallbackQuery):
     await cb.answer()
@@ -4602,27 +3947,6 @@ async def open_report_bindings_menu(cb: types.CallbackQuery):
     _, wid, company_idx = cb.data.split(":")
     data = await load_data()
     await edit_report_targets_menu(data, wid, int(company_idx))
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("reportbinditem:"))
-async def open_report_binding_item(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, target_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_report_menu(data, wid, int(company_idx), int(target_idx))
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("reportbindrefresh:"))
-async def refresh_report_bindings_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_report_targets_menu(data, wid, int(company_idx))
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindon:"))
 async def report_bind_on(cb: types.CallbackQuery):
@@ -4672,7 +3996,6 @@ async def report_bind_on(cb: types.CallbackQuery):
         f"reportbind:{wid}:{company_idx}",
     )
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindnew:"))
 async def report_bind_new(cb: types.CallbackQuery):
     await cb.answer()
@@ -4705,7 +4028,6 @@ async def report_bind_new(cb: types.CallbackQuery):
         f"reportbind:{wid}:{company_idx}",
     )
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindcopy:"))
 async def report_bind_copy_existing(cb: types.CallbackQuery):
     await cb.answer()
@@ -4737,7 +4059,6 @@ async def report_bind_copy_existing(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_report_targets_menu(fresh, wid, company_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindoff:"))
 async def report_bind_off(cb: types.CallbackQuery):
     await cb.answer()
@@ -4767,108 +4088,37 @@ async def report_bind_off(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_report_targets_menu(fresh, wid, company_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreport:"))
 async def open_template_reports_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":", 1)[1]
-    data = await load_data()
-    await edit_template_report_menu(data, wid)
-
+    await open_wid_menu_from_callback(cb, edit_template_report_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportsettings:"))
 async def open_template_report_settings_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":", 1)[1]
-    data = await load_data()
-    await edit_template_report_settings_menu(data, wid)
-
+    await open_wid_menu_from_callback(cb, edit_template_report_settings_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportitem:"))
 async def open_template_report_item(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, interval_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_template_report_interval_menu(data, wid, int(interval_idx))
-
+    await open_template_index_menu_from_callback(cb, edit_template_report_interval_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportadd:"))
 async def open_template_report_add_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":", 1)[1]
-    data = await load_data()
-    await edit_template_report_interval_kind_menu(data, wid, "new", None)
-
+    await open_wid_menu_from_callback(cb, lambda data, wid: edit_template_report_interval_kind_menu(data, wid, "new", None))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportedit:"))
 async def open_template_report_edit_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, interval_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_template_report_interval_kind_menu(data, wid, "edit", int(interval_idx))
-
+    await open_template_index_menu_from_callback(cb, lambda data, wid, interval_idx: edit_template_report_interval_kind_menu(data, wid, "edit", interval_idx))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportdaily:"))
 async def open_template_report_daily_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, interval_idx, flow = cb.data.split(":")
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        template = get_active_template(ws)
-        draft = prepare_report_interval_draft(template, parse_optional_index(interval_idx), "daily")
-        await set_prompt(ws, "🧾 Пришли Время Отчета", {"type": "template_report_schedule_time", "interval_idx": parse_optional_index(interval_idx), "flow": flow, "draft_interval": draft, "back_to": {"view": "template_report_interval_kind", "interval_idx": parse_optional_index(interval_idx), "flow": flow}})
-        await save_data_unlocked(data)
-
+    await open_template_report_schedule_prompt_from_callback(cb, "daily")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportmonth:"))
 async def open_template_report_monthly_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, interval_idx, flow = cb.data.split(":")
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        template = get_active_template(ws)
-        draft = prepare_report_interval_draft(template, parse_optional_index(interval_idx), "monthly")
-        await set_prompt(ws, "🧾 Пришли Число И Время Отчета, Например: 30 20:44", {"type": "template_report_schedule_time", "interval_idx": parse_optional_index(interval_idx), "flow": flow, "draft_interval": draft, "back_to": {"view": "template_report_interval_kind", "interval_idx": parse_optional_index(interval_idx), "flow": flow}})
-        await save_data_unlocked(data)
-
+    await open_template_report_schedule_prompt_from_callback(cb, "monthly")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportweek:"))
 async def open_template_report_weekly_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, interval_idx, flow, weekday = cb.data.split(":")
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        template = get_active_template(ws)
-        draft = prepare_report_interval_draft(template, parse_optional_index(interval_idx), "weekly")
-        draft["weekday"] = int(weekday)
-        await set_prompt(ws, "🧾 Пришли Время Отчета", {"type": "template_report_schedule_time", "interval_idx": parse_optional_index(interval_idx), "flow": flow, "draft_interval": draft, "back_to": {"view": "template_report_interval_kind", "interval_idx": parse_optional_index(interval_idx), "flow": flow}})
-        await save_data_unlocked(data)
-
+    await open_template_report_schedule_prompt_from_callback(cb, "weekly")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportinstant:"))
 async def open_template_report_instant(cb: types.CallbackQuery):
@@ -4885,17 +4135,12 @@ async def open_template_report_instant(cb: types.CallbackQuery):
             return
         template = get_active_template(ws)
         normalized = prepare_report_interval_draft(template, interval_idx_value, "on_done")
-        intervals = get_report_intervals(template)
-        if flow == "edit" and interval_idx_value is not None and 0 <= interval_idx_value < len(intervals):
-            intervals[interval_idx_value] = normalized
-        else:
-            intervals.append(normalized)
+        upsert_report_interval(get_report_intervals(template), normalized, flow, interval_idx_value)
         ws["awaiting"] = None
         await save_data_unlocked(data)
 
     fresh = await load_data()
     await edit_template_report_menu(fresh, wid)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportaccedit:"))
 async def open_template_report_accumulation_menu(cb: types.CallbackQuery):
@@ -4918,7 +4163,6 @@ async def open_template_report_accumulation_menu(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_report_accumulation_menu(fresh, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportdelask:"))
 async def template_report_delete_ask(cb: types.CallbackQuery):
     await cb.answer()
@@ -4927,7 +4171,6 @@ async def template_report_delete_ask(cb: types.CallbackQuery):
     _, wid, interval_idx = cb.data.split(":")
     data = await load_data()
     await upsert_ws_menu(data, wid, "Удалить Интервал Отчета?", confirm_kb(f"tplreportdel:{wid}:{interval_idx}", f"tplreportitem:{wid}:{interval_idx}"))
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportdel:"))
 async def template_report_delete(cb: types.CallbackQuery):
@@ -4949,7 +4192,6 @@ async def template_report_delete(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_template_report_menu(fresh, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportclearask:"))
 async def template_report_clear_ask(cb: types.CallbackQuery):
     await cb.answer()
@@ -4958,7 +4200,6 @@ async def template_report_clear_ask(cb: types.CallbackQuery):
     wid = cb.data.split(":", 1)[1]
     data = await load_data()
     await upsert_ws_menu(data, wid, "Очистить весь график отчетности?", confirm_kb(f"tplreportclear:{wid}", f"tplreportsettings:{wid}"))
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportclear:"))
 async def template_report_clear(cb: types.CallbackQuery):
@@ -4977,10 +4218,6 @@ async def template_report_clear(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_template_report_menu(fresh, wid)
 
-
-# =========================
-# NAVIGATION
-# =========================
 # =========================
 # NAVIGATION
 # =========================
@@ -4993,8 +4230,6 @@ async def back_to_ws(cb: types.CallbackQuery):
     wid = cb.data.split(":", 1)[1]
     data = await load_data()
     await edit_ws_home_menu(data, wid)
-
-
 
 async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: str = "x", b: str = "x"):
     if view == "pm":
@@ -5048,7 +4283,6 @@ async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: s
     elif view == "tc" and a != "x":
         await edit_template_category_menu(data, wid, int(a))
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("pgpm:"))
 async def page_pm(cb: types.CallbackQuery):
     await cb.answer()
@@ -5064,7 +4298,6 @@ async def page_pm(cb: types.CallbackQuery):
         set_ui_page(user, "pm_root", get_ui_page(user, "pm_root") + delta)
         await save_data_unlocked(data)
     await update_pm_menu(uid, data)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pg:"))
 async def page_ws(cb: types.CallbackQuery):
@@ -5084,87 +4317,79 @@ async def page_ws(cb: types.CallbackQuery):
             return
 
         if view == "wh":
-            set_ui_page(ws, ws_home_page_key(), get_ui_page(ws, ws_home_page_key()) + delta)
+            set_ui_page(ws, "ws_home", get_ui_page(ws, "ws_home") + delta)
         elif view == "cc":
-            set_ui_page(ws, company_create_page_key(), get_ui_page(ws, company_create_page_key()) + delta)
+            set_ui_page(ws, "cmp_create", get_ui_page(ws, "cmp_create") + delta)
         elif view == "tr":
-            set_ui_page(ws, templates_root_page_key(), get_ui_page(ws, templates_root_page_key()) + delta)
+            set_ui_page(ws, "tpl_root", get_ui_page(ws, "tpl_root") + delta)
         elif view == "cm" and a != "x":
             company_idx = int(a)
             if 0 <= company_idx < len(ws.get("companies", [])):
                 company = ws["companies"][company_idx]
-                key = company_menu_page_key(company_idx)
+                key = f"cmp_{company_idx}"
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "ct" and a != "x" and b != "x":
             company_idx = int(a)
             category_idx = int(b)
             if 0 <= company_idx < len(ws.get("companies", [])):
                 company = ws["companies"][company_idx]
-                key = category_menu_page_key(company_idx, category_idx)
+                key = f"cat_{company_idx}_{category_idx}"
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "rp" and a != "x" and b != "x":
             company_idx = int(a)
             target_idx = int(b)
             if 0 <= company_idx < len(ws.get("companies", [])):
                 company = ws["companies"][company_idx]
-                key = report_menu_page_key(company_idx, target_idx)
+                key = f"report_{company_idx}_{target_idx}"
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "rb" and a != "x":
             company_idx = int(a)
             if 0 <= company_idx < len(ws.get("companies", [])):
                 company = ws["companies"][company_idx]
-                key = report_targets_page_key(company_idx)
+                key = f"report_targets_{company_idx}"
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "mic" and a != "x":
             company_idx = int(a)
             if 0 <= company_idx < len(ws.get("companies", [])):
                 company = ws["companies"][company_idx]
-                key = mirror_import_page_key(company_idx)
+                key = f"mirror_import_{company_idx}"
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "ric" and a != "x":
             company_idx = int(a)
             if 0 <= company_idx < len(ws.get("companies", [])):
                 company = ws["companies"][company_idx]
-                key = report_import_page_key(company_idx)
+                key = f"report_import_{company_idx}"
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "tmv" and a != "x" and b != "x":
             company_idx = int(a)
             task_idx = int(b)
             if 0 <= company_idx < len(ws.get("companies", [])):
                 company = ws["companies"][company_idx]
-                key = task_move_page_key(company_idx, task_idx)
+                key = f"task_move_{company_idx}_{task_idx}"
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "ttmv" and a != "x":
             task_idx = int(a)
-            key = template_task_move_page_key(task_idx)
+            key = f"template_task_move_{task_idx}"
             set_ui_page(ws, key, get_ui_page(ws, key) + delta)
         elif view == "tpr":
             active = get_active_template(ws)
-            key = active_template_report_page_key(ws)
+            key = f"tpl_report_{active.get('id')}"
             set_ui_page(active, key, get_ui_page(active, key) + delta)
         elif view == "tm":
-            key = active_template_page_key(ws)
+            key = f"tpl_{get_active_template(ws).get('id')}"
             set_ui_page(ws, key, get_ui_page(ws, key) + delta)
         elif view == "tc" and a != "x":
             template = get_active_template(ws)
-            owner = template if template else ws
-            key = active_template_category_page_key(ws, int(a))
-            set_ui_page(owner, key, get_ui_page(owner, key) + delta)
+            key = f"tplcat_{template.get('id')}_{int(a)}"
+            set_ui_page(template, key, get_ui_page(template, key) + delta)
 
         await save_data_unlocked(data)
 
     await refresh_paged_view(data, str(cb.from_user.id), wid, view, a, b)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpnew:"))
 async def create_company_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":", 1)[1]
-    data = await load_data()
-    await edit_company_create_menu(data, wid)
-
+    await open_wid_menu_from_callback(cb, edit_company_create_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpmode:"))
 async def create_company_prompt(cb: types.CallbackQuery):
@@ -5183,116 +4408,49 @@ async def create_company_prompt(cb: types.CallbackQuery):
         await set_prompt(ws, "✏️ Напиши название списка:", {"type": "new_company", "use_template": mode == "tpl", "template_id": template_id, "back_to": {"view": "ws"}})
         await save_data_unlocked(data)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("cmp:"))
 async def open_company(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_company_menu(data, wid, int(company_idx))
-
+    await open_company_menu_from_callback(cb, edit_company_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpset:"))
 async def open_company_settings(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_company_settings_menu(data, wid, int(company_idx))
-
+    await open_company_menu_from_callback(cb, edit_company_settings_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cat:"))
 async def open_category(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, category_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_category_menu(data, wid, int(company_idx), int(category_idx))
-
+    await open_company_category_menu_from_callback(cb, edit_category_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catset:"))
 async def open_category_settings(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, category_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_category_settings_menu(data, wid, int(company_idx), int(category_idx))
-
+    await open_company_category_menu_from_callback(cb, edit_category_settings_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("task:"))
 async def open_task_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, task_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_task_menu(data, wid, int(company_idx), int(task_idx))
-
+    await open_company_task_menu_from_callback(cb, edit_task_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskmove:") )
 async def open_task_move_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, task_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_task_move_menu(data, wid, int(company_idx), int(task_idx))
-
+    await open_company_task_menu_from_callback(cb, edit_task_move_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpl:"))
 async def open_template_menu(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":", 1)[1]
-    data = await load_data()
-    await edit_template_menu(data, wid)
-
+    await open_wid_menu_from_callback(cb, edit_template_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcat:"))
 async def open_template_category(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, category_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_template_category_menu(data, wid, int(category_idx))
-
+    await open_template_index_menu_from_callback(cb, edit_template_category_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatset:"))
 async def open_template_category_settings(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, category_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_template_category_settings_menu(data, wid, int(category_idx))
+    await open_template_index_menu_from_callback(cb, edit_template_category_settings_menu)
 
-
-@dp.callback_query_handler(lambda c: c.data.startswith("tpltask:") and not c.data.startswith("tpltasknew:") and not c.data.startswith("tpltaskren:") and not c.data.startswith("tpltaskdeadline:") and not c.data.startswith("tpltaskdeadel:") and not c.data.startswith("tpltaskdel:"))
+@dp.callback_query_handler(lambda c: c.data.startswith("tpltask:"))
 async def open_template_task(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, task_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_template_task_menu(data, wid, int(task_idx))
-
+    await open_template_index_menu_from_callback(cb, edit_template_task_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskmove:"))
 async def open_template_task_move(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, task_idx = cb.data.split(":")
-    data = await load_data()
-    await edit_template_task_move_menu(data, wid, int(task_idx))
-
+    await open_template_index_menu_from_callback(cb, edit_template_task_move_menu)
 
 # =========================
 # CANCEL
@@ -5347,7 +4505,6 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
     else:
         await edit_ws_home_menu(data, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("cancel:"))
 async def cancel_input(cb: types.CallbackQuery):
     await cb.answer()
@@ -5371,42 +4528,25 @@ async def cancel_input(cb: types.CallbackQuery):
         fresh = await load_data()
         await show_back_view(fresh, wid, back_to)
 
-
 # =========================
 # COMPANY / CATEGORY ACTIONS
 # =========================
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpren:"))
 async def rename_company_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    company_idx = int(company_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "✏️ Введи новое название списка:", {"type": "rename_company", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}})
-        await save_data_unlocked(data)
-
+    await open_company_prompt_from_callback(
+        cb,
+        "✏️ Введи новое название списка:",
+        lambda company_idx: {"type": "rename_company", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}},
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpemoji:"))
 async def company_emoji_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    company_idx = int(company_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "😀 Пришли один смайлик для списка:", {"type": "company_emoji", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}})
-        await save_data_unlocked(data)
-
+    await open_company_prompt_from_callback(
+        cb,
+        "😀 Пришли один смайлик для списка:",
+        lambda company_idx: {"type": "company_emoji", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}},
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpdelask:"))
 async def delete_company_ask(cb: types.CallbackQuery):
@@ -5424,7 +4564,6 @@ async def delete_company_ask(cb: types.CallbackQuery):
     company = ws["companies"][company_idx]
     await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "🗑 Удаление списка?"), confirm_kb(f"cmpdel:{wid}:{company_idx}", f"cmpset:{wid}:{company_idx}"))
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpdel:"))
 async def delete_company(cb: types.CallbackQuery):
     await cb.answer()
@@ -5441,63 +4580,50 @@ async def delete_company(cb: types.CallbackQuery):
         company_id = company["id"]
         card_msg_id = company.get("card_msg_id")
         mirrors = list(company.get("mirrors", []))
-        clear_pending_mirror_tokens_for_company(data, wid, company_id)
+        for token, payload in list(data.get("mirror_tokens", {}).items()):
+            if payload.get("source_wid") == wid and payload.get("company_id") == company_id:
+                data["mirror_tokens"].pop(token, None)
         await save_data_unlocked(data)
     await safe_delete_message(ws["chat_id"], card_msg_id)
     for mirror in mirrors:
         if mirror.get("message_id"):
             await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
     fresh = await load_data()
-    await send_or_replace_ws_home_menu(fresh, wid)
-
+    await edit_ws_home_menu(fresh, wid)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catnew:"))
 async def add_category_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx = cb.data.split(":")
-    company_idx = int(company_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "✏️ Введи название подгруппы:", {"type": "new_category", "company_idx": company_idx, "back_to": {"view": "company", "company_idx": company_idx}})
-        await save_data_unlocked(data)
-
+    await open_company_prompt_from_callback(
+        cb,
+        "✏️ Введи название подгруппы:",
+        lambda company_idx: {"type": "new_category", "company_idx": company_idx, "back_to": {"view": "company", "company_idx": company_idx}},
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catren:"))
 async def rename_category_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, category_idx = cb.data.split(":")
-    company_idx, category_idx = int(company_idx), int(category_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "✏️ Введи новое название подгруппы:", {"type": "rename_category", "company_idx": company_idx, "category_idx": category_idx, "back_to": {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx}})
-        await save_data_unlocked(data)
-
+    await open_company_category_prompt_from_callback(
+        cb,
+        "✏️ Введи новое название подгруппы:",
+        lambda company_idx, category_idx: {
+            "type": "rename_category",
+            "company_idx": company_idx,
+            "category_idx": category_idx,
+            "back_to": {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx},
+        },
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catemoji:"))
 async def category_emoji_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, category_idx = cb.data.split(":")
-    company_idx, category_idx = int(company_idx), int(category_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "😀 Пришли один смайлик для подгруппы:", {"type": "category_emoji", "company_idx": company_idx, "category_idx": category_idx, "back_to": {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx}})
-        await save_data_unlocked(data)
-
+    await open_company_category_prompt_from_callback(
+        cb,
+        "😀 Пришли один смайлик для подгруппы:",
+        lambda company_idx, category_idx: {
+            "type": "category_emoji",
+            "company_idx": company_idx,
+            "category_idx": category_idx,
+            "back_to": {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx},
+        },
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catdelall:"))
 async def delete_category_with_tasks_cb(cb: types.CallbackQuery):
@@ -5521,7 +4647,6 @@ async def delete_category_with_tasks_cb(cb: types.CallbackQuery):
     await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
     await edit_company_menu(fresh, wid, company_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("catdel:"))
 async def delete_category_keep_cb(cb: types.CallbackQuery):
     await cb.answer()
@@ -5544,7 +4669,6 @@ async def delete_category_keep_cb(cb: types.CallbackQuery):
     await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
     await edit_company_menu(fresh, wid, company_idx)
 
-
 # =========================
 # TASK ACTIONS
 # =========================
@@ -5566,41 +4690,35 @@ async def add_task_prompt(cb: types.CallbackQuery):
         await set_prompt(ws, "✏️ Введи текст новой задачи:", {"type": "new_task", "company_idx": company_idx, "category_idx": category_idx, "back_to": back_to})
         await save_data_unlocked(data)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("taskren:"))
 async def rename_task_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, task_idx = cb.data.split(":")
-    company_idx, task_idx = int(company_idx), int(task_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "✏️ Введи новое название задачи:", {"type": "rename_task", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx}})
-        await save_data_unlocked(data)
-
+    await open_company_task_prompt_from_callback(
+        cb,
+        "✏️ Введи новое название задачи:",
+        lambda ws, company_idx, task_idx: {
+            "type": "rename_task",
+            "company_idx": company_idx,
+            "task_idx": task_idx,
+            "back_to": {"view": "task", "company_idx": company_idx, "task_idx": task_idx},
+        },
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskdeadline:"))
 async def task_deadline_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, company_idx, task_idx = cb.data.split(":")
-    company_idx, task_idx = int(company_idx), int(task_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        company = ws["companies"][company_idx]
-        task = company["tasks"][task_idx]
-        back_view = "task_deadline" if task.get("deadline_due_at") else "task"
-        await set_prompt(ws, "⏰ Пришли мне дату или срок для дедлайна", {"type": "task_deadline", "company_idx": company_idx, "task_idx": task_idx, "back_to": {"view": back_view, "company_idx": company_idx, "task_idx": task_idx}})
-        await save_data_unlocked(data)
-
+    await open_company_task_prompt_from_callback(
+        cb,
+        "⏰ Пришли мне дату или срок для дедлайна",
+        lambda ws, company_idx, task_idx: {
+            "type": "task_deadline",
+            "company_idx": company_idx,
+            "task_idx": task_idx,
+            "back_to": {
+                "view": "task_deadline" if ws["companies"][company_idx]["tasks"][task_idx].get("deadline_due_at") else "task",
+                "company_idx": company_idx,
+                "task_idx": task_idx,
+            },
+        },
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskdeadlinebox:"))
 async def open_task_deadline_box(cb: types.CallbackQuery):
@@ -5610,7 +4728,6 @@ async def open_task_deadline_box(cb: types.CallbackQuery):
     _, wid, company_idx, task_idx = cb.data.split(":")
     data = await load_data()
     await edit_task_deadline_menu(data, wid, int(company_idx), int(task_idx))
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskdeadel:"))
 async def delete_task_deadline(cb: types.CallbackQuery):
@@ -5633,7 +4750,6 @@ async def delete_task_deadline(cb: types.CallbackQuery):
     fresh = await load_data()
     await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
     await edit_task_menu(fresh, wid, company_idx, task_idx)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskdel:"))
 async def delete_task(cb: types.CallbackQuery):
@@ -5661,7 +4777,6 @@ async def delete_task(cb: types.CallbackQuery):
             await edit_category_menu(fresh, wid, company_idx, cat_idx)
             return
     await edit_company_menu(fresh, wid, company_idx)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskdone:"))
 async def toggle_task_done(cb: types.CallbackQuery):
@@ -5700,7 +4815,6 @@ async def toggle_task_done(cb: types.CallbackQuery):
             return
     await edit_company_menu(fresh, wid, company_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("taskmoveto:"))
 async def move_task_to_category(cb: types.CallbackQuery):
     await cb.answer()
@@ -5730,7 +4844,6 @@ async def move_task_to_category(cb: types.CallbackQuery):
             return
     await edit_company_menu(fresh, wid, company_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("taskmoveout:"))
 async def move_task_out_of_category(cb: types.CallbackQuery):
     await cb.answer()
@@ -5758,57 +4871,37 @@ async def move_task_out_of_category(cb: types.CallbackQuery):
             return
     await edit_company_menu(fresh, wid, company_idx)
 
-
 # =========================
 # TEMPLATE ACTIONS
 # =========================
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatnew:"))
 async def add_template_category_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":", 1)[1]
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "✏️ Введи название подгруппы шаблона:", {"type": "new_template_category", "back_to": {"view": "template"}})
-        await save_data_unlocked(data)
-
+    await open_wid_prompt_from_callback(cb, "✏️ Введи название подгруппы шаблона:", {"type": "new_template_category", "back_to": {"view": "template"}})
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatren:"))
 async def rename_template_category_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, category_idx = cb.data.split(":")
-    category_idx = int(category_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "✏️ Введи новое название подгруппы шаблона:", {"type": "rename_template_category", "category_idx": category_idx, "back_to": {"view": "template_category_settings", "category_idx": category_idx}})
-        await save_data_unlocked(data)
-
+    await open_template_category_prompt_from_callback(
+        cb,
+        "✏️ Введи новое название подгруппы шаблона:",
+        lambda category_idx: {
+            "type": "rename_template_category",
+            "category_idx": category_idx,
+            "back_to": {"view": "template_category_settings", "category_idx": category_idx},
+        },
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatemoji:"))
 async def template_category_emoji_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, category_idx = cb.data.split(":")
-    category_idx = int(category_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "😀 Пришли один смайлик для подгруппы шаблона:", {"type": "template_category_emoji", "category_idx": category_idx, "back_to": {"view": "template_category_settings", "category_idx": category_idx}})
-        await save_data_unlocked(data)
-
+    await open_template_category_prompt_from_callback(
+        cb,
+        "😀 Пришли один смайлик для подгруппы шаблона:",
+        lambda category_idx: {
+            "type": "template_category_emoji",
+            "category_idx": category_idx,
+            "back_to": {"view": "template_category_settings", "category_idx": category_idx},
+        },
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatdelall:"))
 async def delete_template_category_all(cb: types.CallbackQuery):
@@ -5828,7 +4921,6 @@ async def delete_template_category_all(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_template_menu(fresh, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatdel:"))
 async def delete_template_category_keep(cb: types.CallbackQuery):
     await cb.answer()
@@ -5847,22 +4939,17 @@ async def delete_template_category_keep(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_template_menu(fresh, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatcopy:"))
 async def copy_template_category_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, category_idx = cb.data.split(":")
-    category_idx = int(category_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "✏️ Введи имя новой подгруппы-копии:", {"type": "copy_template_category", "category_idx": category_idx, "back_to": {"view": "template_category_settings", "category_idx": category_idx}})
-        await save_data_unlocked(data)
-
+    await open_template_category_prompt_from_callback(
+        cb,
+        "✏️ Введи имя новой подгруппы-копии:",
+        lambda category_idx: {
+            "type": "copy_template_category",
+            "category_idx": category_idx,
+            "back_to": {"view": "template_category_settings", "category_idx": category_idx},
+        },
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltasknew:"))
 async def add_template_task_prompt(cb: types.CallbackQuery):
@@ -5880,40 +4967,25 @@ async def add_template_task_prompt(cb: types.CallbackQuery):
         await set_prompt(ws, "✏️ Введи название новой задачи шаблона:", {"type": "new_template_task", "category_idx": category_idx, "back_to": back_to})
         await save_data_unlocked(data)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskren:"))
 async def rename_template_task_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, task_idx = cb.data.split(":")
-    task_idx = int(task_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        await set_prompt(ws, "✏️ Введи новое название задачи шаблона:", {"type": "rename_template_task", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}})
-        await save_data_unlocked(data)
-
+    await open_template_task_prompt_from_callback(
+        cb,
+        "✏️ Введи новое название задачи шаблона:",
+        lambda ws, task_idx: {"type": "rename_template_task", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}},
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskdeadline:"))
 async def template_task_deadline_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    _, wid, task_idx = cb.data.split(":")
-    task_idx = int(task_idx)
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws or not ws.get("is_connected"):
-            return
-        task = ws["template_tasks"][task_idx]
-        back_view = "template_task_deadline" if task.get("deadline_seconds") else "template_task"
-        await set_prompt(ws, "⏰ Пришли срок для дедлайна, например: 3 дня, 7ч20м, 45 минут.", {"type": "template_task_deadline", "task_idx": task_idx, "back_to": {"view": back_view, "task_idx": task_idx}})
-        await save_data_unlocked(data)
-
+    await open_template_task_prompt_from_callback(
+        cb,
+        "⏰ Пришли срок для дедлайна, например: 3 дня, 7ч20м, 45 минут.",
+        lambda ws, task_idx: {
+            "type": "template_task_deadline",
+            "task_idx": task_idx,
+            "back_to": {"view": "template_task_deadline" if ws["template_tasks"][task_idx].get("deadline_seconds") else "template_task", "task_idx": task_idx},
+        },
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskdeadlinebox:"))
 async def open_template_task_deadline_box(cb: types.CallbackQuery):
@@ -5923,7 +4995,6 @@ async def open_template_task_deadline_box(cb: types.CallbackQuery):
     _, wid, task_idx = cb.data.split(":")
     data = await load_data()
     await edit_template_task_deadline_menu(data, wid, int(task_idx))
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskdeadel:"))
 async def delete_template_task_deadline(cb: types.CallbackQuery):
@@ -5941,7 +5012,6 @@ async def delete_template_task_deadline(cb: types.CallbackQuery):
         await save_data_unlocked(data)
     fresh = await load_data()
     await edit_template_task_menu(fresh, wid, task_idx)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskdel:"))
 async def delete_template_task(cb: types.CallbackQuery):
@@ -5966,7 +5036,6 @@ async def delete_template_task(cb: types.CallbackQuery):
             return
     await edit_template_menu(fresh, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskmoveto:"))
 async def move_template_task_to_category(cb: types.CallbackQuery):
     await cb.answer()
@@ -5989,7 +5058,6 @@ async def move_template_task_to_category(cb: types.CallbackQuery):
         await edit_template_category_menu(fresh, wid, category_idx)
     else:
         await edit_template_menu(fresh, wid)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskmoveout:"))
 async def move_template_task_out_of_category(cb: types.CallbackQuery):
@@ -6014,14 +5082,13 @@ async def move_template_task_out_of_category(cb: types.CallbackQuery):
             return
     await edit_template_menu(fresh, wid)
 
-
 # =========================
 # TEXT INPUT
 # =========================
 
 @dp.message_handler(content_types=types.ContentTypes.TEXT)
 async def handle_group_text(message: types.Message):
-    if is_known_command(message.text):
+    if message.text and message.text.startswith("/") and message.text.split()[0].lower() in {"/start", "/connect", "/mirror"}:
         return
 
     if message.chat.type == "private":
@@ -6166,7 +5233,9 @@ async def handle_group_text(message: types.Message):
             if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
                 finish(); await save_data_unlocked(data); return
             company["tasks"][task_idx]["text"] = text
-            update_task_completion_event_text(company, company["tasks"][task_idx])
+            entry = find_completion_entry(get_report_history(company), company["tasks"][task_idx].get("done_event_id"))
+            if entry and entry.get("canceled_at") is None:
+                entry["task_text"] = company["tasks"][task_idx].get("text") or ""
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "task_deadline":
             company_idx = awaiting["company_idx"]
@@ -6447,7 +5516,7 @@ async def handle_group_text(message: types.Message):
                 await save_data_unlocked(data)
                 asyncio.create_task(send_temp_message(ws["chat_id"], "Такой шаблон уже существует.", ws["thread_id"], delay=6))
                 return
-            tpl = {"id": uuid.uuid4().hex, "title": text, "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}
+            tpl = make_template(text)
             ws.setdefault("templates", []).append(tpl)
             set_active_template(ws, tpl["id"])
             finish(); await save_data_unlocked(data); created_company = False
@@ -6553,7 +5622,6 @@ async def handle_group_text(message: types.Message):
         return
     await show_back_view(fresh, wid, back_to)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpdeadlinefmt:"))
 async def toggle_company_deadline_format(cb: types.CallbackQuery):
     await cb.answer()
@@ -6573,7 +5641,6 @@ async def toggle_company_deadline_format(cb: types.CallbackQuery):
     await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
     await edit_company_settings_menu(fresh, wid, company_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpcopy:"))
 async def copy_company_prompt(cb: types.CallbackQuery):
     await cb.answer()
@@ -6588,7 +5655,6 @@ async def copy_company_prompt(cb: types.CallbackQuery):
             return
         await set_prompt(ws, "✏️ Введи имя новой списка-копии:", {"type": "copy_company", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}})
         await save_data_unlocked(data)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catcopy:"))
 async def copy_category_prompt(cb: types.CallbackQuery):
@@ -6605,7 +5671,6 @@ async def copy_category_prompt(cb: types.CallbackQuery):
             return
         await set_prompt(ws, "✏️ Введи имя новой подгруппы-копии:", {"type": "copy_category", "company_idx": company_idx, "category_idx": category_idx, "back_to": {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx}})
         await save_data_unlocked(data)
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catdeadlinefmt:"))
 async def toggle_category_deadline_format(cb: types.CallbackQuery):
@@ -6630,16 +5695,9 @@ async def toggle_category_deadline_format(cb: types.CallbackQuery):
     await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
     await edit_category_settings_menu(fresh, wid, company_idx, category_idx)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("tplroot:"))
 async def open_templates_root(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":",1)[1]
-    data = await load_data()
-    await edit_templates_root_menu(data, wid)
-
+    await open_wid_menu_from_callback(cb, edit_templates_root_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplselect:"))
 async def select_template(cb: types.CallbackQuery):
@@ -6657,103 +5715,25 @@ async def select_template(cb: types.CallbackQuery):
     fresh = await load_data()
     await edit_template_menu(fresh, wid)
 
-
 @dp.callback_query_handler(lambda c: c.data.startswith("tplsettings:"))
 async def open_template_settings(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":",1)[1]
-    data = await load_data()
-    await edit_template_settings_menu(data, wid)
-
+    await open_wid_menu_from_callback(cb, edit_template_settings_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplnewset:"))
 async def add_template_set_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":",1)[1]
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws:
-            return
-        await set_prompt(ws, "✏️ Введи название нового шаблона:", {"type": "new_template_set", "back_to": {"view": "template_root"}})
-        await save_data_unlocked(data)
-
+    await open_wid_prompt_from_callback(cb, "✏️ Введи название нового шаблона:", {"type": "new_template_set", "back_to": {"view": "template_root"}})
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplrenameset:"))
 async def rename_template_set_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":",1)[1]
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws:
-            return
-        await set_prompt(ws, "✏️ Введи новое название шаблона:", {"type": "rename_template_set", "back_to": {"view": "template_settings"}})
-        await save_data_unlocked(data)
-
+    await open_wid_prompt_from_callback(cb, "✏️ Введи новое название шаблона:", {"type": "rename_template_set", "back_to": {"view": "template_settings"}})
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplemojiset:"))
 async def template_set_emoji_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":",1)[1]
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws:
-            return
-        await set_prompt(ws, "😀 Пришли один смайлик для шаблона:", {"type": "template_set_emoji", "back_to": {"view": "template_settings"}})
-        await save_data_unlocked(data)
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("tpldeadlinefmt:"))
-async def toggle_template_deadline_format(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":",1)[1]
-    data = await load_data()
-    ws = data["workspaces"].get(wid)
-    if not ws:
-        return
-    await edit_template_settings_menu(data, wid)
-
+    await open_wid_prompt_from_callback(cb, "😀 Пришли один смайлик для шаблона:", {"type": "template_set_emoji", "back_to": {"view": "template_settings"}})
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcopy:"))
 async def copy_template_set_prompt(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":",1)[1]
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws:
-            return
-        await set_prompt(ws, "✏️ Введи название копии шаблона:", {"type": "copy_template_set", "back_to": {"view": "template_settings"}})
-        await save_data_unlocked(data)
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("tpldelsetask:"))
-async def delete_template_set_ask(cb: types.CallbackQuery):
-    await cb.answer()
-    if should_ignore_callback(cb):
-        return
-    wid = cb.data.split(":",1)[1]
-    data = await load_data()
-    ws = data["workspaces"].get(wid)
-    if not ws:
-        return
-    active = get_active_template(ws)
-    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач", display_template_name(active), "🗑 Удаление шаблона?"), confirm_kb(f"tpldelset:{wid}", f"tplsettings:{wid}"))
-
+    await open_wid_prompt_from_callback(cb, "✏️ Введи название копии шаблона:", {"type": "copy_template_set", "back_to": {"view": "template_settings"}})
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpldelset:"))
 async def delete_template_set(cb: types.CallbackQuery):
@@ -6771,18 +5751,17 @@ async def delete_template_set(cb: types.CallbackQuery):
         if ws["templates"]:
             set_active_template(ws, ws["templates"][0]["id"])
         else:
-            ws["templates"] = [{"id": uuid.uuid4().hex, "title": "Шаблон", "emoji": "📁", "deadline_format": "relative", "reporting": default_reporting(), "tasks": [], "categories": []}]
+            ws["templates"] = [make_template()]
             set_active_template(ws, ws["templates"][0]["id"])
         await save_data_unlocked(data)
     fresh = await load_data()
     await edit_templates_root_menu(fresh, wid)
 
-
 async def deadline_refresh_worker():
     last_report_tick = None
     last_deadline_tick = None
     while True:
-        now = now_dt()
+        now = datetime.now(TIMEZONE)
         report_tick = now.replace(second=0, microsecond=0)
         deadline_tick = (now.year, now.month, now.day, now.hour, now.minute // 10)
 
@@ -6813,7 +5792,10 @@ async def deadline_refresh_worker():
                         continue
                     for idx in range(len(ws.get("companies", []))):
                         company = ws["companies"][idx]
-                        if not company_has_live_deadlines(company):
+                        if not any(
+                            isinstance(task.get("deadline_due_at"), int) and not task.get("done")
+                            for task in company.get("tasks", [])
+                        ):
                             continue
                         if await sync_company_everywhere(ws, idx):
                             changed = True
@@ -6823,7 +5805,6 @@ async def deadline_refresh_worker():
                 pass
 
         await asyncio.sleep(5 if now.second >= 55 else max(1, 60 - now.second))
-
 
 # =========================
 # RUN
