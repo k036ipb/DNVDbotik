@@ -324,8 +324,8 @@ def ensure_task(task, is_template: bool = False):
         task.setdefault("done", False)
         task.setdefault("deadline_due_at", None)
         task.setdefault("deadline_started_at", None)
-        task.setdefault("done_at", None)
         task.setdefault("done_event_id", None)
+    task.pop("done_at", None)
     return task
 
 def default_template_tasks() -> list[dict]:
@@ -634,7 +634,15 @@ def normalize_data(data: dict) -> dict:
         if not isinstance(payload, dict):
             continue
         if payload.get("source_wid") and payload.get("company_id"):
-            valid_tokens[token] = payload
+            normalized_payload = {
+                "source_wid": payload["source_wid"],
+                "company_id": payload["company_id"],
+            }
+            if payload.get("source_thread_id") is not None:
+                normalized_payload["source_thread_id"] = payload.get("source_thread_id")
+            if payload.get("kind") == "report_target":
+                normalized_payload["kind"] = "report_target"
+            valid_tokens[token] = normalized_payload
     data["mirror_tokens"] = valid_tokens
     return data
 
@@ -814,8 +822,6 @@ def format_duration_text(seconds: int | None) -> str:
 
 def template_task_deadline_suffix(task: dict) -> str:
     value = task.get("deadline_seconds")
-    if value is None:
-        value = task.get("deadline_value")
     if not value:
         return ""
     return f" ({format_duration_text(value)})"
@@ -1029,14 +1035,12 @@ def add_task_completion_event(company: dict, task: dict, completed_at: int | Non
         "canceled_at": None,
     }
     get_report_history(company).append(entry)
-    task["done_at"] = ts
     task["done_event_id"] = entry["id"]
 
 def cancel_task_completion_event(company: dict, task: dict, canceled_at: int | None = None):
     entry = find_completion_entry(get_report_history(company), task.get("done_event_id"))
     if entry and entry.get("canceled_at") is None:
         entry["canceled_at"] = canceled_at or now_ts()
-    task["done_at"] = None
     task["done_event_id"] = None
 
 def format_clock(hour: int, minute: int) -> str:
@@ -3404,7 +3408,6 @@ async def mirror_on(cb: types.CallbackQuery):
             data["mirror_tokens"][token] = {
                 "source_wid": wid,
                 "company_id": company_id,
-                "created_by": cb.from_user.id,
                 "source_thread_id": ws["thread_id"],
             }
             await save_data_unlocked(data)
@@ -3447,7 +3450,6 @@ async def mirror_new(cb: types.CallbackQuery):
         data["mirror_tokens"][token] = {
             "source_wid": wid,
             "company_id": company["id"],
-            "created_by": cb.from_user.id,
             "source_thread_id": ws["thread_id"],
         }
         await save_data_unlocked(data)
@@ -4090,7 +4092,6 @@ async def report_bind_on(cb: types.CallbackQuery):
             data["mirror_tokens"][token] = {
                 "source_wid": wid,
                 "company_id": company["id"],
-                "created_by": cb.from_user.id,
                 "source_thread_id": ws["thread_id"],
                 "kind": "report_target",
             }
@@ -4134,7 +4135,6 @@ async def report_bind_new(cb: types.CallbackQuery):
         data["mirror_tokens"][token] = {
             "source_wid": wid,
             "company_id": company["id"],
-            "created_by": cb.from_user.id,
             "source_thread_id": ws["thread_id"],
             "kind": "report_target",
         }
