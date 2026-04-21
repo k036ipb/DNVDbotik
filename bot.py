@@ -711,22 +711,24 @@ def workspace_full_name(chat_title: str, topic_title: str | None, thread_id: int
         return f"{chat_title} - {(topic_title or f'Тред {thread_id}').strip()}"
     return chat_title
 
-def extract_topic_title(message: types.Message) -> str | None:
+def extract_message_topic_title(message: types.Message) -> str | None:
     if getattr(message, "forum_topic_created", None):
         return message.forum_topic_created.name
     if getattr(message, "forum_topic_edited", None):
         new_name = getattr(message.forum_topic_edited, "name", None)
         if new_name:
             return new_name
-    reply = getattr(message, "reply_to_message", None)
-    if reply:
-        if getattr(reply, "forum_topic_created", None):
-            return reply.forum_topic_created.name
-        if getattr(reply, "forum_topic_edited", None):
-            new_name = getattr(reply.forum_topic_edited, "name", None)
-            if new_name:
-                return new_name
     return None
+
+def resolve_message_topic_title(data: dict, message: types.Message) -> str | None:
+    thread_id = message.message_thread_id or 0
+    if not thread_id:
+        return None
+    direct_title = extract_message_topic_title(message)
+    if direct_title:
+        return direct_title
+    entry = get_known_topic_entry(data, message.chat.id, thread_id) or {}
+    return entry.get("topic_title")
 
 def get_known_topic_entry(data: dict, chat_id: int, thread_id: int) -> dict | None:
     entry = (data.get("known_topics") or {}).get(make_ws_id(chat_id, thread_id))
@@ -743,7 +745,7 @@ def resolve_binding_titles(data: dict, chat_id: int, thread_id: int, chat_title:
     entry = get_known_topic_entry(data, chat_id, thread_id) or {}
     return (
         chat_title or entry.get("chat_title") or ws.get("chat_title"),
-        topic_title or entry.get("topic_title") or ws.get("topic_title"),
+        topic_title if topic_title is not None else (entry.get("topic_title") if entry else ws.get("topic_title")),
     )
 
 def remember_binding_place(data: dict, chat_id: int, thread_id: int, chat_title: str | None = None, topic_title: str | None = None) -> tuple[str | None, str | None]:
@@ -3271,7 +3273,6 @@ async def cmd_connect(message: types.Message):
     thread_id = message.message_thread_id or 0
     wid = make_ws_id(message.chat.id, thread_id)
     chat_title = message.chat.title or "Workspace"
-    topic_title = extract_topic_title(message)
     old_menu_id = None
     old_prompt_id = None
     old_company_card_ids = []
@@ -3280,8 +3281,7 @@ async def cmd_connect(message: types.Message):
         data = await load_data_unlocked()
         ensure_user(data, uid)
         existing_ws = data["workspaces"].get(wid)
-        if not topic_title and existing_ws:
-            topic_title = existing_ws.get("topic_title")
+        topic_title = resolve_message_topic_title(data, message)
         chat_title, topic_title = remember_binding_place(data, message.chat.id, thread_id, chat_title, topic_title)
         ws_name = refresh_binding_labels(data, message.chat.id, thread_id)
         if existing_ws and existing_ws.get("is_connected"):
@@ -3355,7 +3355,7 @@ async def track_forum_topic_updates(message: types.Message):
     thread_id = message.message_thread_id or 0
     if not thread_id:
         return
-    topic_title = extract_topic_title(message)
+    topic_title = extract_message_topic_title(message)
     if not topic_title:
         return
 
@@ -3631,7 +3631,7 @@ async def cmd_mirror(message: types.Message):
         company = ws["companies"][company_idx]
         token_kind = payload.get("kind") or "mirror"
         thread_id = message.message_thread_id or 0
-        remember_binding_place(data, message.chat.id, thread_id, message.chat.title or "Чат", extract_topic_title(message))
+        remember_binding_place(data, message.chat.id, thread_id, message.chat.title or "Чат", resolve_message_topic_title(data, message))
         label = refresh_binding_labels(data, message.chat.id, thread_id)
         existing = None
         created_new_binding = False
