@@ -644,6 +644,28 @@ def normalize_data(data: dict) -> dict:
                 normalized_payload["kind"] = "report_target"
             valid_tokens[token] = normalized_payload
     data["mirror_tokens"] = valid_tokens
+
+    places_to_refresh: set[tuple[int, int]] = set()
+    for ws in data["workspaces"].values():
+        chat_id = ws.get("chat_id")
+        if chat_id is not None:
+            places_to_refresh.add((chat_id, ws.get("thread_id") or 0))
+        for company in ws.get("companies", []):
+            for mirror in company.get("mirrors", []):
+                if mirror.get("chat_id") is not None:
+                    places_to_refresh.add((mirror.get("chat_id"), mirror.get("thread_id") or 0))
+            reporting = company.get("reporting")
+            if not isinstance(reporting, dict):
+                continue
+            targets = reporting.get("targets")
+            if not isinstance(targets, list):
+                continue
+            for target in targets:
+                if isinstance(target, dict) and target.get("chat_id") is not None:
+                    places_to_refresh.add((target.get("chat_id"), target.get("thread_id") or 0))
+
+    for chat_id, thread_id in places_to_refresh:
+        refresh_binding_labels(data, chat_id, thread_id)
     return data
 
 async def load_data_unlocked():
@@ -710,9 +732,19 @@ def get_known_topic_entry(data: dict, chat_id: int, thread_id: int) -> dict | No
     entry = (data.get("known_topics") or {}).get(make_ws_id(chat_id, thread_id))
     return entry if isinstance(entry, dict) else None
 
+def find_workspace_by_binding(data: dict, chat_id: int, thread_id: int) -> dict | None:
+    for ws in data.get("workspaces", {}).values():
+        if ws.get("chat_id") == chat_id and (ws.get("thread_id") or 0) == thread_id:
+            return ws
+    return None
+
 def resolve_binding_titles(data: dict, chat_id: int, thread_id: int, chat_title: str | None = None, topic_title: str | None = None) -> tuple[str | None, str | None]:
+    ws = find_workspace_by_binding(data, chat_id, thread_id) or {}
     entry = get_known_topic_entry(data, chat_id, thread_id) or {}
-    return chat_title or entry.get("chat_title"), topic_title or entry.get("topic_title")
+    return (
+        chat_title or ws.get("chat_title") or entry.get("chat_title"),
+        topic_title or ws.get("topic_title") or entry.get("topic_title"),
+    )
 
 def remember_binding_place(data: dict, chat_id: int, thread_id: int, chat_title: str | None = None, topic_title: str | None = None) -> tuple[str | None, str | None]:
     known_topics = data.setdefault("known_topics", {})
@@ -796,7 +828,9 @@ def task_menu_title(ws: dict, company: dict, task: dict, category: dict | None =
     parts = [rich_display_company_name(company)]
     if category:
         parts.append(rich_display_category_name(category))
-    parts.append(f"📌 {rich_task_text(task.get('text') or 'Задача', bool(task.get('done')))}")
+    deadline_format = (category.get("deadline_format") if category and category.get("deadline_format") else company.get("deadline_format")) or "relative"
+    suffix = display_task_deadline_suffix(task, deadline_format) if not task.get("done") and task.get("deadline_due_at") else ""
+    parts.append(f"📌 {rich_task_text(task.get('text') or 'Задача', bool(task.get('done')))}{esc(suffix)}")
     return workspace_path_title(ws, *parts)
 
 def template_task_title(ws: dict, template: dict, task: dict, category: dict | None = None) -> str:
@@ -2159,13 +2193,25 @@ def report_targets_kb(wid: str, company_idx: int, company: dict):
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data, style=False))
 
-    kb.add(kb_btn("➕ Добавить Связку", callback_data=f"reportbindon:{wid}:{company_idx}", style="success"))
-    row = [kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")]
-    if has_prev:
-        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:rb:{company_idx}:x:prev"))
-    if has_next:
-        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:rb:{company_idx}:x:next"))
-    kb.row(*row)
+    add_btn = kb_btn("➕ Связка", callback_data=f"reportbindon:{wid}:{company_idx}", style="success")
+    refresh_btn = kb_btn("🔄 Обновить", callback_data=f"reportbindrefresh:{wid}:{company_idx}")
+    back_btn = kb_btn("⬅️", callback_data=f"cmpset:{wid}:{company_idx}", style="primary")
+    up_btn = kb_btn("⬆️", callback_data=f"pg:{wid}:rb:{company_idx}:x:prev")
+    down_btn = kb_btn("⬇️", callback_data=f"pg:{wid}:rb:{company_idx}:x:next")
+
+    if has_prev and has_next:
+        kb.row(add_btn)
+        kb.row(refresh_btn, up_btn)
+        kb.row(back_btn, down_btn)
+    elif has_prev:
+        kb.row(add_btn, refresh_btn)
+        kb.row(back_btn, up_btn)
+    elif has_next:
+        kb.row(add_btn, refresh_btn)
+        kb.row(back_btn, down_btn)
+    else:
+        kb.row(add_btn, refresh_btn)
+        kb.row(back_btn)
     return kb
 
 def report_import_candidates_kb(wid: str, company_idx: int, company: dict):
@@ -4063,6 +4109,15 @@ async def report_clear(cb: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbind:"))
 async def open_report_bindings_menu(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx = cb.data.split(":")
+    data = await load_data()
+    await edit_report_targets_menu(data, wid, int(company_idx))
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportbindrefresh:"))
+async def refresh_report_bindings_menu(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
