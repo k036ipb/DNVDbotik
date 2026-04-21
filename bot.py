@@ -131,7 +131,7 @@ def default_data():
     }
 
 EMOJI_VARIATION_CHARS = {"\ufe0f", "\u200d"}
-DEFAULT_BINDING_EMOJI = "📌"
+DEFAULT_BINDING_EMOJI = "📬"
 
 def is_single_emoji(text: str) -> bool:
     text = (text or "").strip()
@@ -1753,8 +1753,8 @@ def ws_settings_kb(wid: str):
 
 def pm_workspace_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать Workspace", callback_data=f"pmwsren:{wid}", style=False))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"pmwsemoji:{wid}"))
+    kb.add(kb_btn("✍🏻 Переименовать Workspace", callback_data=f"pmwsren:{wid}", style=False))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"pmwsemoji:{wid}", style=False))
     kb.add(kb_btn("🧹 Очистить workspace", callback_data=f"pmwsclearask:{wid}"))
     kb.add(kb_btn("🗑 Удалить workspace", callback_data=f"pmwsdelask:{wid}"))
     kb.add(kb_btn("⬅️", callback_data="pmrefresh:root", style="primary"))
@@ -2919,11 +2919,11 @@ async def edit_mirror_item_menu(data: dict, wid: str, company_idx: int, mirror_i
     mirror = mirrors[mirror_idx]
     label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать Связку", callback_data=f"mirrorren:{wid}:{company_idx}:{mirror_idx}", style=False))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"mirroremoji:{wid}:{company_idx}:{mirror_idx}"))
+    kb.add(kb_btn("✍🏻 Переименовать Связку", callback_data=f"mirrorren:{wid}:{company_idx}:{mirror_idx}", style=False))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"mirroremoji:{wid}:{company_idx}:{mirror_idx}", style=False))
     kb.add(kb_btn("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
     kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
-    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "📤 Дублирование списка", label), kb)
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "📤 Дублирование списка", esc(label)), kb)
 
 async def edit_company_create_menu(data: dict, wid: str):
     ws = get_connected_ws(data, wid)
@@ -2949,7 +2949,7 @@ async def edit_report_menu(data: dict, wid: str, company_idx: int, target_idx: i
         return
     title = [rich_display_company_name(company), "🧾 Отчетность"]
     if target:
-        title.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
+        title.append(esc(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"))
     await upsert_ws_menu(data, wid, workspace_path_title(ws, *title), report_menu_kb(wid, company_idx, target_idx, company))
 
 async def edit_report_settings_menu(data: dict, wid: str, company_idx: int, target_idx: int):
@@ -2958,11 +2958,11 @@ async def edit_report_settings_menu(data: dict, wid: str, company_idx: int, targ
         return
     title = [rich_display_company_name(company), "🧾 Отчетность"]
     if target:
-        title.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
+        title.append(esc(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"))
     title.append("⚙️ Отчетность")
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать Связку", callback_data=f"reportren:{wid}:{company_idx}:{target_idx}", style=False))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"reportemoji:{wid}:{company_idx}:{target_idx}"))
+    kb.add(kb_btn("✍🏻 Переименовать Связку", callback_data=f"reportren:{wid}:{company_idx}:{target_idx}", style=False))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"reportemoji:{wid}:{company_idx}:{target_idx}", style=False))
     kb.add(kb_btn("🔌 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}", style="danger"))
     kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}:{target_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"reportmenu:{wid}:{company_idx}:{target_idx}", style="primary"))
@@ -2978,7 +2978,7 @@ async def edit_report_interval_menu(data: dict, wid: str, company_idx: int, targ
         return
     title = [rich_display_company_name(company), "🧾 Отчетность"]
     if target:
-        title.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
+        title.append(esc(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"))
     title.append(format_report_schedule_label(interval))
     if interval.get("kind") != "on_done":
         start_at, end_at = resolve_report_period(interval, report_preview_occurrence(interval), company)
@@ -2993,7 +2993,7 @@ async def edit_report_interval_kind_menu(data: dict, wid: str, company_idx: int,
     await upsert_ws_menu(
         data,
         wid,
-        workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}", label),
+        workspace_path_title(ws, rich_display_company_name(company), "🧾 Отчетность", esc(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"), label),
         report_interval_kind_kb(wid, company_idx, target_idx, flow, interval_idx),
     )
 
@@ -3641,6 +3641,8 @@ async def mirror_rename_binding_prompt(cb: types.CallbackQuery):
         ws, company = await get_connected_company(data, wid, company_idx)
         if not ws:
             return
+        ws["menu_msg_id"] = cb.message.message_id
+        RUNTIME_MENU_IDS[wid] = cb.message.message_id
         mirrors = company.get("mirrors", [])
         if mirror_idx < 0 or mirror_idx >= len(mirrors):
             return
@@ -3670,6 +3672,8 @@ async def mirror_binding_emoji_prompt(cb: types.CallbackQuery):
         ws, company = await get_connected_company(data, wid, company_idx)
         if not ws:
             return
+        ws["menu_msg_id"] = cb.message.message_id
+        RUNTIME_MENU_IDS[wid] = cb.message.message_id
         mirrors = company.get("mirrors", [])
         if mirror_idx < 0 or mirror_idx >= len(mirrors):
             return
@@ -4097,6 +4101,8 @@ async def report_rename_binding_prompt(cb: types.CallbackQuery):
         ws, _, target = await get_report_target_context(data, wid, company_idx, target_idx)
         if not ws or not target:
             return
+        ws["menu_msg_id"] = cb.message.message_id
+        RUNTIME_MENU_IDS[wid] = cb.message.message_id
         await set_prompt(
             ws,
             "✏️ Введи новое имя связки:",
@@ -4122,6 +4128,8 @@ async def report_binding_emoji_prompt(cb: types.CallbackQuery):
         ws, _, target = await get_report_target_context(data, wid, company_idx, target_idx)
         if not ws or not target:
             return
+        ws["menu_msg_id"] = cb.message.message_id
+        RUNTIME_MENU_IDS[wid] = cb.message.message_id
         await set_prompt(
             ws,
             "😀 Пришли один смайлик для связки:",
