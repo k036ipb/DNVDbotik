@@ -131,6 +131,7 @@ def default_data():
     }
 
 EMOJI_VARIATION_CHARS = {"\ufe0f", "\u200d"}
+DEFAULT_BINDING_EMOJI = "📌"
 
 def is_single_emoji(text: str) -> bool:
     text = (text or "").strip()
@@ -138,6 +139,15 @@ def is_single_emoji(text: str) -> bool:
         return False
     cleaned = "".join(ch for ch in text if ch not in EMOJI_VARIATION_CHARS)
     return 1 <= len(cleaned) <= 4
+
+def clean_binding_label_text(text: str | None) -> str:
+    return re.sub(r"\s+", " ", clean_text(text or "")).strip()
+
+def fit_button_text(text: str, limit: int = 60) -> str:
+    normalized = clean_binding_label_text(text) or "..."
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit - 1].rstrip()}…"
 
 WEEKDAY_NAMES = [
     "понедельник",
@@ -603,9 +613,12 @@ def normalize_data(data: dict) -> dict:
         if topic_title and topic_title_source in {"created", "edited"}:
             entry["topic_title"] = topic_title
             entry["topic_title_source"] = topic_title_source
-        custom_label = clean_text(str(value.get("custom_label") or ""))
+        custom_label = clean_binding_label_text(str(value.get("custom_label") or ""))
         if custom_label:
             entry["custom_label"] = custom_label
+        custom_emoji = clean_text(str(value.get("custom_emoji") or ""))
+        if is_single_emoji(custom_emoji):
+            entry["custom_emoji"] = custom_emoji
         if entry:
             normalized_topics[key] = entry
     data["known_topics"] = normalized_topics
@@ -797,17 +810,35 @@ def ensure_known_topic_entry(data: dict, chat_id: int, thread_id: int) -> dict:
 
 def get_binding_custom_label(data: dict, chat_id: int, thread_id: int) -> str | None:
     entry = get_known_topic_entry(data, chat_id, thread_id) or {}
-    label = clean_text(str(entry.get("custom_label") or ""))
+    label = clean_binding_label_text(str(entry.get("custom_label") or ""))
     return label or None
 
 def set_binding_custom_label(data: dict, chat_id: int, thread_id: int, label: str | None) -> str | None:
     entry = ensure_known_topic_entry(data, chat_id, thread_id)
-    custom_label = clean_text(label or "")
+    custom_label = clean_binding_label_text(label)
     if custom_label:
         entry["custom_label"] = custom_label
         return custom_label
     entry.pop("custom_label", None)
     return None
+
+def get_binding_emoji(data: dict, chat_id: int, thread_id: int) -> str:
+    entry = get_known_topic_entry(data, chat_id, thread_id) or {}
+    emoji = clean_text(str(entry.get("custom_emoji") or ""))
+    return emoji if is_single_emoji(emoji) else DEFAULT_BINDING_EMOJI
+
+def set_binding_emoji(data: dict, chat_id: int, thread_id: int, emoji: str | None) -> str | None:
+    entry = ensure_known_topic_entry(data, chat_id, thread_id)
+    custom_emoji = clean_text(emoji or "")
+    if is_single_emoji(custom_emoji):
+        entry["custom_emoji"] = custom_emoji
+        return custom_emoji
+    entry.pop("custom_emoji", None)
+    return None
+
+def decorate_binding_label(data: dict, chat_id: int, thread_id: int, label: str) -> str:
+    base = clean_binding_label_text(label) or f"{chat_id}/{thread_id or 0}"
+    return f"{get_binding_emoji(data, chat_id, thread_id)} {base}"
 
 def find_workspace_by_binding(data: dict, chat_id: int, thread_id: int) -> dict | None:
     for ws in data.get("workspaces", {}).values():
@@ -850,11 +881,14 @@ def binding_place_label(
 ) -> str:
     custom_label = get_binding_custom_label(data, chat_id, thread_id)
     if custom_label:
-        return custom_label
+        return decorate_binding_label(data, chat_id, thread_id, custom_label)
     resolved_chat, resolved_topic = resolve_binding_titles(data, chat_id, thread_id, chat_title, topic_title)
+    base_label = None
     if resolved_chat or thread_id:
-        return workspace_full_name(resolved_chat, resolved_topic, thread_id)
-    return fallback_label or f"{chat_id}/{thread_id or 0}"
+        base_label = workspace_full_name(resolved_chat, resolved_topic, thread_id)
+    else:
+        base_label = fallback_label or f"{chat_id}/{thread_id or 0}"
+    return decorate_binding_label(data, chat_id, thread_id, base_label)
 
 def refresh_binding_labels(data: dict, chat_id: int, thread_id: int) -> str:
     resolved_chat, resolved_topic = resolve_binding_titles(data, chat_id, thread_id)
@@ -1675,7 +1709,13 @@ def pm_main_kb(user_id: str, data: dict):
             continue
         ws = data["workspaces"].get(wid)
         if ws and ws.get("is_connected"):
-            items.append((ws["name"], f"pmws:{wid}"))
+            title = ws.get("name") or binding_place_label(
+                data,
+                ws.get("chat_id"),
+                ws.get("thread_id") or 0,
+                fallback_label="Workspace",
+            )
+            items.append((fit_button_text(title), f"pmws:{wid}"))
 
     page = get_ui_page(user, "pm_root")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_PM)
@@ -1714,6 +1754,7 @@ def ws_settings_kb(wid: str):
 def pm_workspace_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("✍️ Переименовать Workspace", callback_data=f"pmwsren:{wid}", style=False))
+    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"pmwsemoji:{wid}"))
     kb.add(kb_btn("🧹 Очистить workspace", callback_data=f"pmwsclearask:{wid}"))
     kb.add(kb_btn("🗑 Удалить workspace", callback_data=f"pmwsdelask:{wid}"))
     kb.add(kb_btn("⬅️", callback_data="pmrefresh:root", style="primary"))
@@ -2148,7 +2189,7 @@ def mirrors_menu_kb(wid: str, company_idx: int, company: dict):
     items = []
     for idx, mirror in enumerate(company.get("mirrors", [])):
         label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
-        items.append((label, f"mirroritem:{wid}:{company_idx}:{idx}"))
+        items.append((fit_button_text(label), f"mirroritem:{wid}:{company_idx}:{idx}"))
 
     page = get_ui_page(company, f"mirrors_{company_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
@@ -2181,7 +2222,7 @@ def mirror_import_candidates_kb(wid: str, company_idx: int, company: dict):
     items = []
     for source_idx, target in missing_report_targets_for_mirrors(company):
         label = target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"
-        items.append((label, f"mirrorcopy:{wid}:{company_idx}:{source_idx}"))
+        items.append((fit_button_text(label), f"mirrorcopy:{wid}:{company_idx}:{source_idx}"))
     page = get_ui_page(company, f"mirror_import_{company_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
     for title, callback_data in visible:
@@ -2270,7 +2311,7 @@ def report_targets_kb(wid: str, company_idx: int, company: dict):
     items = []
     for idx, target in enumerate(get_effective_report_targets(company)):
         label = target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}"
-        items.append((label, f"reportmenu:{wid}:{company_idx}:{idx}"))
+        items.append((fit_button_text(label), f"reportmenu:{wid}:{company_idx}:{idx}"))
 
     page = get_ui_page(company, f"report_targets_{company_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
@@ -2303,7 +2344,7 @@ def report_import_candidates_kb(wid: str, company_idx: int, company: dict):
     items = []
     for source_idx, mirror in missing_mirrors_for_report_targets(company):
         label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
-        items.append((label, f"reportbindcopy:{wid}:{company_idx}:{source_idx}"))
+        items.append((fit_button_text(label), f"reportbindcopy:{wid}:{company_idx}:{source_idx}"))
     page = get_ui_page(company, f"report_import_{company_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_REPORT_BINDINGS)
     for title, callback_data in visible:
@@ -2449,7 +2490,13 @@ async def edit_pm_workspace_view(data: dict, user_id: str, wid: str, message_id:
     if not ws or not ws.get("is_connected") or wid not in user.get("workspaces", []):
         await safe_edit_text(int(user_id), target_message_id, pm_main_text(user_id, data), reply_markup=pm_main_kb(user_id, data))
         return
-    await safe_edit_text(int(user_id), target_message_id, f"📂 {esc(ws.get('name') or 'Workspace')}", reply_markup=pm_workspace_kb(wid))
+    title = ws.get("name") or binding_place_label(
+        data,
+        ws.get("chat_id"),
+        ws.get("thread_id") or 0,
+        fallback_label="Workspace",
+    )
+    await safe_edit_text(int(user_id), target_message_id, f"📂 {esc(title)}", reply_markup=pm_workspace_kb(wid))
 
 async def upsert_company_card(ws: dict, company_idx: int):
     if company_idx < 0 or company_idx >= len(ws["companies"]):
@@ -2873,6 +2920,7 @@ async def edit_mirror_item_menu(data: dict, wid: str, company_idx: int, mirror_i
     label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("✍️ Переименовать Связку", callback_data=f"mirrorren:{wid}:{company_idx}:{mirror_idx}", style=False))
+    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"mirroremoji:{wid}:{company_idx}:{mirror_idx}"))
     kb.add(kb_btn("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
     kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
     await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "📤 Дублирование списка", label), kb)
@@ -2914,6 +2962,7 @@ async def edit_report_settings_menu(data: dict, wid: str, company_idx: int, targ
     title.append("⚙️ Отчетность")
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("✍️ Переименовать Связку", callback_data=f"reportren:{wid}:{company_idx}:{target_idx}", style=False))
+    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"reportemoji:{wid}:{company_idx}:{target_idx}"))
     kb.add(kb_btn("🔌 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}", style="danger"))
     kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}:{target_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"reportmenu:{wid}:{company_idx}:{target_idx}", style="primary"))
@@ -3271,6 +3320,33 @@ async def pm_rename_workspace_prompt(cb: types.CallbackQuery):
     kb.add(kb_btn("⬅️", callback_data=f"pmws:{wid}", style="primary"))
     await safe_edit_text(int(uid), cb.message.message_id, "✏️ Введи новое имя Workspace:", reply_markup=kb)
 
+@dp.callback_query_handler(lambda c: c.data.startswith("pmwsemoji:"))
+async def pm_workspace_emoji_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if cb.message.chat.type != "private" or should_ignore_callback(cb):
+        return
+    uid = str(cb.from_user.id)
+    wid = cb.data.split(":", 1)[1]
+    show_root = False
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        user = ensure_user(data, uid)
+        user["pm_menu_msg_id"] = cb.message.message_id
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected") or wid not in user.get("workspaces", []):
+            user["pm_awaiting"] = None
+            show_root = True
+        else:
+            user["pm_awaiting"] = {"type": "workspace_label_emoji", "wid": wid}
+        await save_data_unlocked(data)
+    if show_root:
+        fresh = await load_data()
+        await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, fresh), reply_markup=pm_main_kb(uid, fresh))
+        return
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("⬅️", callback_data=f"pmws:{wid}", style="primary"))
+    await safe_edit_text(int(uid), cb.message.message_id, "😀 Пришли один смайлик для Workspace:", reply_markup=kb)
+
 @dp.callback_query_handler(lambda c: c.data.startswith("wsset:"))
 async def open_ws_settings(cb: types.CallbackQuery):
     await open_wid_menu_from_callback(cb, edit_ws_settings_menu)
@@ -3574,6 +3650,35 @@ async def mirror_rename_binding_prompt(cb: types.CallbackQuery):
             "✏️ Введи новое имя связки:",
             {
                 "type": "rename_binding_label",
+                "chat_id": mirror.get("chat_id"),
+                "thread_id": mirror.get("thread_id") or 0,
+                "back_to": {"view": "mirror_item", "company_idx": company_idx, "mirror_idx": mirror_idx},
+            },
+        )
+        await save_data_unlocked(data)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("mirroremoji:"))
+async def mirror_binding_emoji_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, mirror_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    mirror_idx = int(mirror_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws, company = await get_connected_company(data, wid, company_idx)
+        if not ws:
+            return
+        mirrors = company.get("mirrors", [])
+        if mirror_idx < 0 or mirror_idx >= len(mirrors):
+            return
+        mirror = mirrors[mirror_idx]
+        await set_prompt(
+            ws,
+            "😀 Пришли один смайлик для связки:",
+            {
+                "type": "binding_emoji",
                 "chat_id": mirror.get("chat_id"),
                 "thread_id": mirror.get("thread_id") or 0,
                 "back_to": {"view": "mirror_item", "company_idx": company_idx, "mirror_idx": mirror_idx},
@@ -3997,6 +4102,31 @@ async def report_rename_binding_prompt(cb: types.CallbackQuery):
             "✏️ Введи новое имя связки:",
             {
                 "type": "rename_binding_label",
+                "chat_id": target.get("chat_id"),
+                "thread_id": target.get("thread_id") or 0,
+                "back_to": {"view": "report_settings", "company_idx": company_idx, "target_idx": target_idx},
+            },
+        )
+        await save_data_unlocked(data)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportemoji:"))
+async def report_binding_emoji_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, target_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    target_idx = int(target_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws, _, target = await get_report_target_context(data, wid, company_idx, target_idx)
+        if not ws or not target:
+            return
+        await set_prompt(
+            ws,
+            "😀 Пришли один смайлик для связки:",
+            {
+                "type": "binding_emoji",
                 "chat_id": target.get("chat_id"),
                 "thread_id": target.get("thread_id") or 0,
                 "back_to": {"view": "report_settings", "company_idx": company_idx, "target_idx": target_idx},
@@ -5555,6 +5685,21 @@ async def handle_group_text(message: types.Message):
                     await save_data_unlocked(data)
                     pm_rename_wid = wid
                     pm_message_id = user.get("pm_menu_msg_id")
+                elif pm_awaiting.get("type") == "workspace_label_emoji":
+                    if not is_single_emoji(text):
+                        await save_data_unlocked(data)
+                        asyncio.create_task(send_temp_message(int(pm_uid), "Пришли один смайлик, балдабёб!", delay=6))
+                        asyncio.create_task(try_delete_user_message(message))
+                        return
+                    wid = pm_awaiting.get("wid")
+                    ws = data["workspaces"].get(wid)
+                    user["pm_awaiting"] = None
+                    if ws and ws.get("is_connected") and wid in user.get("workspaces", []):
+                        set_binding_emoji(data, ws["chat_id"], ws.get("thread_id") or 0, text)
+                        refresh_binding_labels(data, ws["chat_id"], ws.get("thread_id") or 0)
+                    await save_data_unlocked(data)
+                    pm_rename_wid = wid
+                    pm_message_id = user.get("pm_menu_msg_id")
                 else:
                     await save_data_unlocked(data)
                     asyncio.create_task(try_delete_user_message(message))
@@ -5735,6 +5880,17 @@ async def handle_group_text(message: types.Message):
             if chat_id is None:
                 finish(); await save_data_unlocked(data); return
             set_binding_custom_label(data, chat_id, thread_id, text)
+            refresh_binding_labels(data, chat_id, thread_id)
+            finish(); await save_data_unlocked(data); created_company = False
+        elif mode == "binding_emoji":
+            chat_id = awaiting.get("chat_id")
+            thread_id = awaiting.get("thread_id") or 0
+            if chat_id is None:
+                finish(); await save_data_unlocked(data); return
+            if not is_single_emoji(text):
+                await reject_input("Пришли один смайлик, балдабёб!")
+                return
+            set_binding_emoji(data, chat_id, thread_id, text)
             refresh_binding_labels(data, chat_id, thread_id)
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "report_schedule_time":
