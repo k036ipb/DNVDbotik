@@ -6109,11 +6109,46 @@ async def deadline_refresh_worker():
 
         await asyncio.sleep(5 if now.second >= 55 else max(1, 60 - now.second))
 
+async def drain_startup_updates():
+    offset = None
+    pending_topic_titles: dict[tuple[int, int], tuple[str | None, str, str]] = {}
+
+    for _ in range(20):
+        updates = await bot.get_updates(offset=offset, limit=100, timeout=0)
+        if not updates:
+            break
+        offset = updates[-1].update_id + 1
+        for update in updates:
+            for field_name in ("message", "edited_message", "channel_post", "edited_channel_post"):
+                message = getattr(update, field_name, None)
+                if not message or message.chat.type == "private":
+                    continue
+                thread_id = message.message_thread_id or 0
+                if not thread_id:
+                    continue
+                topic_title = extract_message_topic_title(message)
+                if not topic_title:
+                    continue
+                topic_title_source = "edited" if getattr(message, "forum_topic_edited", None) else "created"
+                pending_topic_titles[(message.chat.id, thread_id)] = (message.chat.title, topic_title, topic_title_source)
+
+    if not pending_topic_titles:
+        return
+
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        for (chat_id, thread_id), (chat_title, topic_title, topic_title_source) in pending_topic_titles.items():
+            remember_binding_place(data, chat_id, thread_id, chat_title, topic_title, topic_title_source)
+            refresh_binding_labels(data, chat_id, thread_id)
+        await save_data_unlocked(data)
+
+async def on_startup_polling(_):
+    await drain_startup_updates()
+    asyncio.create_task(deadline_refresh_worker())
+
 # =========================
 # RUN
 # =========================
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(deadline_refresh_worker())
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=False, on_startup=on_startup_polling)
