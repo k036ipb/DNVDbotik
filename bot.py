@@ -7,6 +7,7 @@ import uuid
 import copy
 import re
 import html
+import traceback
 from calendar import monthrange
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -24,10 +25,14 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 
 DATA_FILE = "data.json"
+DATA_FILE_TMP = f"{DATA_FILE}.tmp"
+DATA_FILE_BAK = f"{DATA_FILE}.bak"
 TIMEZONE = ZoneInfo("Europe/Riga")
 FILE_LOCK = asyncio.Lock()
 MENU_LOCKS: dict[str, asyncio.Lock] = {}
+PM_MENU_LOCKS: dict[str, asyncio.Lock] = {}
 RUNTIME_MENU_IDS: dict[str, int] = {}
+RUNTIME_MENU_PAYLOADS: dict[str, tuple[str, object | None]] = {}
 RUNTIME_REPORT_OCCURRENCES: dict[tuple[str, str, str], int] = {}
 RECENT_CALLBACKS: dict[tuple[int, int, str], float] = {}
 CALLBACK_DEBOUNCE_SECONDS = 0.9
@@ -61,6 +66,10 @@ async def safe_delete_message(chat_id: int, message_id: int | None):
         await tg_call(lambda: bot.delete_message(chat_id, message_id), retries=1)
     except Exception:
         pass
+
+async def delete_message_targets(targets: list[tuple[int, int]]):
+    for chat_id, message_id in targets:
+        await safe_delete_message(chat_id, message_id)
 
 async def try_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None) -> bool:
     try:
@@ -105,6 +114,12 @@ async def try_delete_user_message(message: types.Message):
         pass
 
 def should_ignore_callback(cb: types.CallbackQuery) -> bool:
+    if cb.message and cb.data and not cb.data.startswith("pm"):
+        parts = cb.data.split(":")
+        if len(parts) > 1:
+            candidate_wid = parts[1]
+            if "_" in candidate_wid:
+                RUNTIME_MENU_IDS[candidate_wid] = cb.message.message_id
     key = (cb.from_user.id, cb.message.message_id if cb.message else 0, cb.data or "")
     ts = time.monotonic()
     prev = RECENT_CALLBACKS.get(key)
@@ -695,17 +710,28 @@ def normalize_data(data: dict) -> dict:
     return data
 
 async def load_data_unlocked():
-    if not os.path.exists(DATA_FILE):
-        return default_data()
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return normalize_data(json.load(f))
-    except Exception:
-        return default_data()
+    for path in (DATA_FILE, DATA_FILE_TMP, DATA_FILE_BAK):
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return normalize_data(json.load(f))
+        except Exception:
+            continue
+    return default_data()
 
 async def save_data_unlocked(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(normalize_data(data), f, ensure_ascii=False, indent=2)
+    normalized = normalize_data(data)
+    with open(DATA_FILE_TMP, "w", encoding="utf-8") as f:
+        json.dump(normalized, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    if os.path.exists(DATA_FILE):
+        try:
+            os.replace(DATA_FILE, DATA_FILE_BAK)
+        except Exception:
+            pass
+    os.replace(DATA_FILE_TMP, DATA_FILE)
 
 async def load_data():
     async with FILE_LOCK:
@@ -1133,6 +1159,75 @@ def same_binding_place(left: dict, right: dict) -> bool:
         and ((left.get("thread_id") or 0) if isinstance(left, dict) else 0) == ((right.get("thread_id") or 0) if isinstance(right, dict) else 0)
     )
 
+def resolve_company_idx_reference(ws: dict, company_id: str | None, fallback_idx: int) -> int | None:
+    if company_id:
+        idx = find_company_index_by_id(ws, company_id)
+        if idx is not None:
+            return idx
+    return fallback_idx if 0 <= fallback_idx < len(ws.get("companies", [])) else None
+
+def merge_company_report_runtime_state(dest_ws: dict, source_ws: dict, company_id: str | None, fallback_idx: int) -> bool:
+    dest_idx = resolve_company_idx_reference(dest_ws, company_id, fallback_idx)
+    src_idx = resolve_company_idx_reference(source_ws, company_id, fallback_idx)
+    if dest_idx is None or src_idx is None:
+        return False
+
+    dest_company = dest_ws["companies"][dest_idx]
+    src_company = source_ws["companies"][src_idx]
+    normalize_company_report_target_keys(dest_company)
+    normalize_company_report_target_keys(src_company)
+
+    src_intervals = {
+        interval.get("id"): interval
+        for interval in get_report_intervals(src_company)
+        if interval.get("id")
+    }
+    changed = False
+    for dest_interval in get_report_intervals(dest_company):
+        src_interval = src_intervals.get(dest_interval.get("id"))
+        if not src_interval:
+            continue
+        src_last = src_interval.get("last_report_at") if isinstance(src_interval.get("last_report_at"), int) else None
+        dest_last = dest_interval.get("last_report_at") if isinstance(dest_interval.get("last_report_at"), int) else None
+        if src_last is not None and (dest_last is None or src_last > dest_last):
+            dest_interval["last_report_at"] = src_last
+            changed = True
+        src_target_key = src_interval.get("target_key")
+        if src_target_key and dest_interval.get("target_key") != src_target_key:
+            dest_interval["target_key"] = src_target_key
+            changed = True
+    return changed
+
+def merge_company_delivery_state(dest_ws: dict, source_ws: dict, company_id: str | None, fallback_idx: int) -> bool:
+    dest_idx = resolve_company_idx_reference(dest_ws, company_id, fallback_idx)
+    src_idx = resolve_company_idx_reference(source_ws, company_id, fallback_idx)
+    if dest_idx is None or src_idx is None:
+        return False
+
+    dest_company = dest_ws["companies"][dest_idx]
+    src_company = source_ws["companies"][src_idx]
+    changed = False
+
+    if dest_company.get("card_msg_id") != src_company.get("card_msg_id"):
+        dest_company["card_msg_id"] = src_company.get("card_msg_id")
+        changed = True
+
+    src_mirrors = src_company.get("mirrors", [])
+    for dest_mirror in dest_company.get("mirrors", []):
+        src_mirror = next((mirror for mirror in src_mirrors if same_binding_place(mirror, dest_mirror)), None)
+        if not src_mirror:
+            continue
+        if dest_mirror.get("message_id") != src_mirror.get("message_id"):
+            dest_mirror["message_id"] = src_mirror.get("message_id")
+            changed = True
+
+    src_menu_id = source_ws.get("menu_msg_id")
+    if src_menu_id and dest_ws.get("menu_msg_id") != src_menu_id:
+        dest_ws["menu_msg_id"] = src_menu_id
+        changed = True
+
+    return changed
+
 def missing_report_targets_for_mirrors(company: dict) -> list[tuple[int, dict]]:
     mirrors = company.get("mirrors", [])
     result = []
@@ -1467,10 +1562,104 @@ def find_company_index_by_id(ws: dict, company_id: str) -> int | None:
             return idx
     return None
 
-def find_category_index(categories: list[dict], category_id: str) -> int | None:
-    for idx, category in enumerate(categories):
-        if category.get("id") == category_id:
+def find_item_index_by_id(items: list[dict], item_id: str) -> int | None:
+    for idx, item in enumerate(items):
+        if item.get("id") == item_id:
             return idx
+    return None
+
+def find_category_index(categories: list[dict], category_id: str) -> int | None:
+    return find_item_index_by_id(categories, category_id)
+
+def find_task_index(tasks: list[dict], task_id: str) -> int | None:
+    return find_item_index_by_id(tasks, task_id)
+
+def callback_item_ref(item: dict) -> str:
+    item_id = item.get("id")
+    return f"@{str(item_id)[:8]}" if item_id else ""
+
+def resolve_item_index_token(items: list[dict], token: str) -> int | None:
+    if isinstance(token, str) and token.startswith("@"):
+        short_id = token[1:]
+        for idx, item in enumerate(items):
+            item_id = str(item.get("id") or "")
+            if item_id.startswith(short_id):
+                return idx
+        return None
+    try:
+        idx = int(token)
+    except Exception:
+        return None
+    return idx if 0 <= idx < len(items) else None
+
+def company_category_page_key(company_idx: int, category: dict, fallback_idx: int | None = None) -> str:
+    suffix = category.get("id") or fallback_idx or "x"
+    return f"cat_{company_idx}_{suffix}"
+
+def company_task_move_page_key(company_idx: int, task: dict, fallback_idx: int | None = None) -> str:
+    suffix = task.get("id") or fallback_idx or "x"
+    return f"task_move_{company_idx}_{suffix}"
+
+def template_category_page_key(template: dict, category: dict, fallback_idx: int | None = None) -> str:
+    suffix = category.get("id") or fallback_idx or "x"
+    return f"tplcat_{template.get('id') or 'none'}_{suffix}"
+
+def template_task_move_page_key(task: dict, fallback_idx: int | None = None) -> str:
+    suffix = task.get("id") or fallback_idx or "x"
+    return f"template_task_move_{suffix}"
+
+def resolve_company_category_idx_token(ws: dict, company_idx: int, token: str) -> int | None:
+    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+        return None
+    company = ws["companies"][company_idx]
+    return resolve_item_index_token(company.get("categories", []), token)
+
+def resolve_company_task_idx_token(ws: dict, company_idx: int, token: str) -> int | None:
+    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+        return None
+    company = ws["companies"][company_idx]
+    return resolve_item_index_token(company.get("tasks", []), token)
+
+def resolve_template_category_idx_token(ws: dict, token: str) -> int | None:
+    return resolve_item_index_token(ws.get("template_categories", []), token)
+
+def resolve_template_task_idx_token(ws: dict, token: str) -> int | None:
+    return resolve_item_index_token(ws.get("template_tasks", []), token)
+
+def resolve_category_idx_from_payload(company: dict, payload: dict, idx_key: str = "category_idx", id_key: str = "category_id") -> int | None:
+    category_id = payload.get(id_key)
+    if category_id:
+        return find_category_index(company.get("categories", []), category_id)
+    category_idx = payload.get(idx_key)
+    if isinstance(category_idx, int) and 0 <= category_idx < len(company.get("categories", [])):
+        return category_idx
+    return None
+
+def resolve_task_idx_from_payload(company: dict, payload: dict, idx_key: str = "task_idx", id_key: str = "task_id") -> int | None:
+    task_id = payload.get(id_key)
+    if task_id:
+        return find_task_index(company.get("tasks", []), task_id)
+    task_idx = payload.get(idx_key)
+    if isinstance(task_idx, int) and 0 <= task_idx < len(company.get("tasks", [])):
+        return task_idx
+    return None
+
+def resolve_template_category_idx_from_payload(ws: dict, payload: dict, idx_key: str = "category_idx", id_key: str = "category_id") -> int | None:
+    category_id = payload.get(id_key)
+    if category_id:
+        return find_category_index(ws.get("template_categories", []), category_id)
+    category_idx = payload.get(idx_key)
+    if isinstance(category_idx, int) and 0 <= category_idx < len(ws.get("template_categories", [])):
+        return category_idx
+    return None
+
+def resolve_template_task_idx_from_payload(ws: dict, payload: dict, idx_key: str = "task_idx", id_key: str = "task_id") -> int | None:
+    task_id = payload.get(id_key)
+    if task_id:
+        return find_task_index(ws.get("template_tasks", []), task_id)
+    task_idx = payload.get(idx_key)
+    if isinstance(task_idx, int) and 0 <= task_idx < len(ws.get("template_tasks", [])):
+        return task_idx
     return None
 
 def company_exists(ws: dict, title: str, exclude_idx: int | None = None) -> bool:
@@ -1855,13 +2044,13 @@ def company_create_mode_kb(wid: str, ws: dict):
 def company_menu_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     items = []
-    for task_idx, task in enumerate(company.get("tasks", [])):
+    for task in company.get("tasks", []):
         if task.get("category_id"):
             continue
         icon = task_deadline_icon(task)
-        items.append((f"{icon} {task['text']}", f"task:{wid}:{company_idx}:{task_idx}"))
-    for category_idx, category in enumerate(company.get("categories", [])):
-        items.append((display_category_name(category), f"cat:{wid}:{company_idx}:{category_idx}"))
+        items.append((f"{icon} {task['text']}", f"task:{wid}:{company_idx}:{callback_item_ref(task)}"))
+    for category in company.get("categories", []):
+        items.append((display_category_name(category), f"cat:{wid}:{company_idx}:{callback_item_ref(category)}"))
 
     page = get_ui_page(company, f"cmp_{company_idx}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_COMPANY)
@@ -1893,8 +2082,8 @@ def company_menu_kb(wid: str, company_idx: int, company: dict):
 
 def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать список", callback_data=f"cmpren:{wid}:{company_idx}"))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
+    kb.add(kb_btn("✍🏻 Переименовать список", callback_data=f"cmpren:{wid}:{company_idx}"))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}", style=False))
     format_label = "дата" if company.get("deadline_format") == "date" else "время"
     kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
     kb.add(kb_btn("🧬 Копия списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
@@ -1907,102 +2096,112 @@ def company_settings_kb(wid: str, company_idx: int, company: dict):
 def category_menu_kb(wid: str, company_idx: int, category_idx: int, category: dict, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     task_buttons = []
-    for task_idx, task in enumerate(company.get("tasks", [])):
+    category_ref = callback_item_ref(category) or str(category_idx)
+    for task in company.get("tasks", []):
         if task.get("category_id") == category.get("id"):
             icon = task_deadline_icon(task)
-            task_buttons.append((f"{icon} {task['text']}", f"task:{wid}:{company_idx}:{task_idx}"))
+            task_buttons.append((f"{icon} {task['text']}", f"task:{wid}:{company_idx}:{callback_item_ref(task)}"))
 
-    page = get_ui_page(company, f"cat_{company_idx}_{category_idx}")
+    page = get_ui_page(company, company_category_page_key(company_idx, category, category_idx))
     visible, has_prev, has_next = paginate_items(task_buttons, page, PAGE_SIZE_CATEGORY)
 
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data))
 
     kb.row(
-        kb_btn("➕ Задача", callback_data=f"tasknew:{wid}:{company_idx}:{category_idx}"),
-        kb_btn("⚙️ Подгруппа", callback_data=f"catset:{wid}:{company_idx}:{category_idx}"),
+        kb_btn("➕ Задача", callback_data=f"tasknew:{wid}:{company_idx}:{category_ref}"),
+        kb_btn("⚙️ Подгруппа", callback_data=f"catset:{wid}:{company_idx}:{category_ref}"),
     )
 
     row2 = [kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}")]
     if has_next:
-        row2.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:next"))
+        row2.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_ref}:next"))
     elif has_prev:
-        row2.append(kb_btn("⬆️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:prev"))
+        row2.append(kb_btn("⬆️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_ref}:prev"))
     if has_prev and has_next:
-        row2 = [kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}"), kb_btn("⬆️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:prev"), kb_btn("⬇️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_idx}:next")]
+        row2 = [kb_btn("⬅️", callback_data=f"cmp:{wid}:{company_idx}"), kb_btn("⬆️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_ref}:prev"), kb_btn("⬇️", callback_data=f"pg:{wid}:ct:{company_idx}:{category_ref}:next")]
     kb.row(*row2)
     return kb
 
 def category_settings_kb(wid: str, company_idx: int, category_idx: int, category: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать", callback_data=f"catren:{wid}:{company_idx}:{category_idx}"))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_idx}"))
-    kb.add(kb_btn("🧬 Копия подгруппы", callback_data=f"catcopy:{wid}:{company_idx}:{category_idx}"))
+    category_ref = callback_item_ref(category) or str(category_idx)
+    kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"catren:{wid}:{company_idx}:{category_ref}"))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_ref}", style=False))
+    kb.add(kb_btn("🧬 Копия подгруппы", callback_data=f"catcopy:{wid}:{company_idx}:{category_ref}"))
     format_label = "дата" if category.get("deadline_format") == "date" else "время"
-    kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"catdeadlinefmt:{wid}:{company_idx}:{category_idx}"))
-    kb.add(kb_btn("🗑 Удалить", callback_data=f"catdelask:{wid}:{company_idx}:{category_idx}"))
-    kb.add(kb_btn("🗑 Удалить с задачами", callback_data=f"catdelallask:{wid}:{company_idx}:{category_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"cat:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"catdeadlinefmt:{wid}:{company_idx}:{category_ref}"))
+    kb.add(kb_btn("🗑 Удалить", callback_data=f"catdelask:{wid}:{company_idx}:{category_ref}"))
+    kb.add(kb_btn("🗑 Удалить с задачами", callback_data=f"catdelallask:{wid}:{company_idx}:{category_ref}"))
+    kb.add(kb_btn("⬅️", callback_data=f"cat:{wid}:{company_idx}:{category_ref}"))
     return kb
 
 def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
+    task_ref = callback_item_ref(task) or str(task_idx)
     if task.get("done"):
-        kb.add(kb_btn("⏺️ Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
+        kb.add(kb_btn("⏺️ Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_ref}"))
     else:
-        kb.add(kb_btn("✅ Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
-    kb.add(kb_btn("✍️ Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
+        kb.add(kb_btn("✅ Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_ref}"))
+    kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_ref}"))
 
     if company.get("categories"):
         if task.get("category_id"):
-            kb.add(kb_btn("📥 Перевсунуть", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
+            kb.add(kb_btn("📥 Перевсунуть", callback_data=f"taskmove:{wid}:{company_idx}:{task_ref}"))
         else:
-            kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"taskmove:{wid}:{company_idx}:{task_idx}"))
+            kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"taskmove:{wid}:{company_idx}:{task_ref}"))
 
     if not task.get("done"):
         if task.get("deadline_due_at"):
-            kb.add(kb_btn("⏰ Дедлайн", callback_data=f"taskdeadlinebox:{wid}:{company_idx}:{task_idx}", style="primary"))
+            kb.add(kb_btn("⏰ Дедлайн", callback_data=f"taskdeadlinebox:{wid}:{company_idx}:{task_ref}", style="primary"))
         else:
-            kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style=False))
+            kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_ref}", style=False))
 
-    kb.add(kb_btn("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_idx}"))
-    back = f"cat:{wid}:{company_idx}:{find_category_index(company.get('categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(company.get('categories', []), task.get('category_id')) is not None else f"cmp:{wid}:{company_idx}"
+    kb.add(kb_btn("🗑 Удалить задачу", callback_data=f"taskdel:{wid}:{company_idx}:{task_ref}"))
+    back = f"cmp:{wid}:{company_idx}"
+    if task.get("category_id"):
+        category_idx = find_category_index(company.get("categories", []), task.get("category_id"))
+        if category_idx is not None:
+            category_ref = callback_item_ref(company["categories"][category_idx]) or str(category_idx)
+            back = f"cat:{wid}:{company_idx}:{category_ref}"
     kb.add(kb_btn("⬅️", callback_data=back))
     return kb
 
 def task_move_kb(wid: str, company_idx: int, task_idx: int, company: dict, task: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     current_category_id = task.get("category_id")
+    task_ref = callback_item_ref(task) or str(task_idx)
     items = []
     for category_idx, category in enumerate(company.get("categories", [])):
         if category.get("id") == current_category_id:
             continue
-        items.append((display_category_name(category), f"taskmoveto:{wid}:{company_idx}:{task_idx}:{category_idx}"))
-    page = get_ui_page(company, f"task_move_{company_idx}_{task_idx}")
+        category_ref = callback_item_ref(category) or str(category_idx)
+        items.append((display_category_name(category), f"taskmoveto:{wid}:{company_idx}:{task_ref}:{category_ref}"))
+    page = get_ui_page(company, company_task_move_page_key(company_idx, task, task_idx))
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_CATEGORY)
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data))
     if current_category_id:
-        out_btn = kb_btn("📤 Высунуть", callback_data=f"taskmoveout:{wid}:{company_idx}:{task_idx}", style="primary")
+        out_btn = kb_btn("📤 Высунуть", callback_data=f"taskmoveout:{wid}:{company_idx}:{task_ref}", style="primary")
         if has_prev and has_next:
-            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:prev"))
-            kb.row(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"), kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:next"))
+            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_ref}:prev"))
+            kb.row(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_ref}", style="primary"), kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_ref}:next"))
             return kb
         if has_prev:
-            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:prev"))
-            kb.row(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"))
+            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_ref}:prev"))
+            kb.row(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_ref}", style="primary"))
             return kb
         kb.row(out_btn)
-        row = [kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary")]
+        row = [kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_ref}", style="primary")]
         if has_next:
-            row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:next"))
+            row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_ref}:next"))
         kb.row(*row)
         return kb
-    row = [kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary")]
+    row = [kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_ref}", style="primary")]
     if has_next:
-        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:next"))
+        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_ref}:next"))
     if has_prev:
-        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_idx}:prev"))
+        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tmv:{company_idx}:{task_ref}:prev"))
     kb.row(*row)
     return kb
 
@@ -2047,12 +2246,12 @@ def template_menu_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     template = get_active_template(ws)
     items = []
-    for task_idx, task in enumerate(template.get("tasks", [])):
+    for task in template.get("tasks", []):
         if task.get("category_id"):
             continue
-        items.append((f"{task_deadline_icon(task)} {str(task.get('text') or 'Без названия')}{template_task_deadline_suffix(task)}", f"tpltask:{wid}:{task_idx}"))
-    for category_idx, category in enumerate(template.get("categories", [])):
-        items.append((display_category_name(category), f"tplcat:{wid}:{category_idx}"))
+        items.append((f"{task_deadline_icon(task)} {str(task.get('text') or 'Без названия')}{template_task_deadline_suffix(task)}", f"tpltask:{wid}:{callback_item_ref(task)}"))
+    for category in template.get("categories", []):
+        items.append((display_category_name(category), f"tplcat:{wid}:{callback_item_ref(category)}"))
 
     page = get_ui_page(ws, f"tpl_{template.get('id')}")
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_COMPANY)
@@ -2084,8 +2283,8 @@ def template_menu_kb(wid: str, ws: dict):
 
 def template_settings_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}"))
+    kb.add(kb_btn("✍🏻 Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}", style=False))
     kb.add(kb_btn("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
     kb.add(kb_btn("🧾 Отчетность", callback_data=f"tplreport:{wid}", style=False))
     kb.add(kb_btn("🗑 Удалить шаблон", callback_data=f"tpldelsetask:{wid}"))
@@ -2095,11 +2294,12 @@ def template_settings_kb(wid: str):
 def template_category_menu_kb(wid: str, category_idx: int, category: dict, template: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     task_buttons = []
-    for task_idx, task in enumerate(template.get("tasks", [])):
+    category_ref = callback_item_ref(category) or str(category_idx)
+    for task in template.get("tasks", []):
         if task.get("category_id") == category.get("id"):
-            task_buttons.append((f"{task_deadline_icon(task)} {str(task.get('text') or 'Без названия')}{template_task_deadline_suffix(task)}", f"tpltask:{wid}:{task_idx}"))
+            task_buttons.append((f"{task_deadline_icon(task)} {str(task.get('text') or 'Без названия')}{template_task_deadline_suffix(task)}", f"tpltask:{wid}:{callback_item_ref(task)}"))
 
-    page_key = f"tplcat_{template.get('id') or 'none'}_{category_idx}"
+    page_key = template_category_page_key(template, category, category_idx)
     page = get_ui_page(template, page_key)
     visible, has_prev, has_next = paginate_items(task_buttons, page, PAGE_SIZE_CATEGORY)
 
@@ -2107,80 +2307,89 @@ def template_category_menu_kb(wid: str, category_idx: int, category: dict, templ
         kb.add(kb_btn(title, callback_data=callback_data))
 
     kb.row(
-        kb_btn("➕ Задача", callback_data=f"tpltasknew:{wid}:{category_idx}"),
-        kb_btn("⚙️ Подгруппа", callback_data=f"tplcatset:{wid}:{category_idx}"),
+        kb_btn("➕ Задача", callback_data=f"tpltasknew:{wid}:{category_ref}"),
+        kb_btn("⚙️ Подгруппа", callback_data=f"tplcatset:{wid}:{category_ref}"),
     )
 
     row2 = [kb_btn("⬅️", callback_data=f"tpl:{wid}")]
     if has_next:
-        row2.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tc:{category_idx}:x:next"))
+        row2.append(kb_btn("⬇️", callback_data=f"pg:{wid}:tc:{category_ref}:x:next"))
     elif has_prev:
-        row2.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tc:{category_idx}:x:prev"))
+        row2.append(kb_btn("⬆️", callback_data=f"pg:{wid}:tc:{category_ref}:x:prev"))
     if has_prev and has_next:
-        row2 = [kb_btn("⬅️", callback_data=f"tpl:{wid}"), kb_btn("⬆️", callback_data=f"pg:{wid}:tc:{category_idx}:x:prev"), kb_btn("⬇️", callback_data=f"pg:{wid}:tc:{category_idx}:x:next")]
+        row2 = [kb_btn("⬅️", callback_data=f"tpl:{wid}"), kb_btn("⬆️", callback_data=f"pg:{wid}:tc:{category_ref}:x:prev"), kb_btn("⬇️", callback_data=f"pg:{wid}:tc:{category_ref}:x:next")]
     kb.row(*row2)
     return kb
 
-def template_category_settings_kb(wid: str, category_idx: int):
+def template_category_settings_kb(wid: str, category_idx: int, category: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать", callback_data=f"tplcatren:{wid}:{category_idx}"))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"tplcatemoji:{wid}:{category_idx}"))
-    kb.add(kb_btn("🧬 Копия Подгруппы", callback_data=f"tplcatcopy:{wid}:{category_idx}"))
-    kb.add(kb_btn("🗑 Удалить", callback_data=f"tplcatdelask:{wid}:{category_idx}"))
-    kb.add(kb_btn("🗑 Удалить с задачами", callback_data=f"tplcatdelallask:{wid}:{category_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"tplcat:{wid}:{category_idx}"))
+    category_ref = callback_item_ref(category) or str(category_idx)
+    kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"tplcatren:{wid}:{category_ref}"))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"tplcatemoji:{wid}:{category_ref}", style=False))
+    kb.add(kb_btn("🧬 Копия Подгруппы", callback_data=f"tplcatcopy:{wid}:{category_ref}"))
+    kb.add(kb_btn("🗑 Удалить", callback_data=f"tplcatdelask:{wid}:{category_ref}"))
+    kb.add(kb_btn("🗑 Удалить с задачами", callback_data=f"tplcatdelallask:{wid}:{category_ref}"))
+    kb.add(kb_btn("⬅️", callback_data=f"tplcat:{wid}:{category_ref}"))
     return kb
 
 def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать", callback_data=f"tpltaskren:{wid}:{task_idx}"))
+    task_ref = callback_item_ref(task) or str(task_idx)
+    kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"tpltaskren:{wid}:{task_ref}"))
     if ws.get("template_categories"):
         if task.get("category_id"):
-            kb.add(kb_btn("📥 Перевсунуть", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
+            kb.add(kb_btn("📥 Перевсунуть", callback_data=f"tpltaskmove:{wid}:{task_ref}"))
         else:
-            kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
+            kb.add(kb_btn("📥 Всунуть в подгруппу", callback_data=f"tpltaskmove:{wid}:{task_ref}"))
     if task.get("deadline_seconds"):
-        kb.add(kb_btn("⏰ Дедлайн", callback_data=f"tpltaskdeadlinebox:{wid}:{task_idx}", style="primary"))
+        kb.add(kb_btn("⏰ Дедлайн", callback_data=f"tpltaskdeadlinebox:{wid}:{task_ref}", style="primary"))
     else:
-        kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style=False))
-    kb.add(kb_btn("🗑 Удалить", callback_data=f"tpltaskdel:{wid}:{task_idx}"))
-    back = f"tplcat:{wid}:{find_category_index(ws.get('template_categories', []), task.get('category_id'))}" if task.get("category_id") and find_category_index(ws.get('template_categories', []), task.get('category_id')) is not None else f"tpl:{wid}"
+        kb.add(kb_btn("⏰ Установить дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_ref}", style=False))
+    kb.add(kb_btn("🗑 Удалить", callback_data=f"tpltaskdel:{wid}:{task_ref}"))
+    back = f"tpl:{wid}"
+    if task.get("category_id"):
+        category_idx = find_category_index(ws.get("template_categories", []), task.get("category_id"))
+        if category_idx is not None:
+            category_ref = callback_item_ref(ws["template_categories"][category_idx]) or str(category_idx)
+            back = f"tplcat:{wid}:{category_ref}"
     kb.add(kb_btn("⬅️", callback_data=back))
     return kb
 
 def template_task_move_kb(wid: str, task_idx: int, ws: dict, task: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     current_category_id = task.get("category_id")
+    task_ref = callback_item_ref(task) or str(task_idx)
     items = []
     for category_idx, category in enumerate(ws.get("template_categories", [])):
         if category.get("id") == current_category_id:
             continue
-        items.append((display_category_name(category), f"tpltaskmoveto:{wid}:{task_idx}:{category_idx}"))
-    page = get_ui_page(ws, f"template_task_move_{task_idx}")
+        category_ref = callback_item_ref(category) or str(category_idx)
+        items.append((display_category_name(category), f"tpltaskmoveto:{wid}:{task_ref}:{category_ref}"))
+    page = get_ui_page(ws, template_task_move_page_key(task, task_idx))
     visible, has_prev, has_next = paginate_items(items, page, PAGE_SIZE_CATEGORY)
     for title, callback_data in visible:
         kb.add(kb_btn(title, callback_data=callback_data))
     if current_category_id:
-        out_btn = kb_btn("📤 Высунуть", callback_data=f"tpltaskmoveout:{wid}:{task_idx}", style="primary")
+        out_btn = kb_btn("📤 Высунуть", callback_data=f"tpltaskmoveout:{wid}:{task_ref}", style="primary")
         if has_prev and has_next:
-            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:prev"))
-            kb.row(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"), kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:next"))
+            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_ref}:x:prev"))
+            kb.row(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_ref}", style="primary"), kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_ref}:x:next"))
             return kb
         if has_prev:
-            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:prev"))
-            kb.row(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"))
+            kb.row(out_btn, kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_ref}:x:prev"))
+            kb.row(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_ref}", style="primary"))
             return kb
         kb.row(out_btn)
-        row = [kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary")]
+        row = [kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_ref}", style="primary")]
         if has_next:
-            row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:next"))
+            row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_ref}:x:next"))
         kb.row(*row)
         return kb
-    row = [kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary")]
+    row = [kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_ref}", style="primary")]
     if has_next:
-        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:next"))
+        row.append(kb_btn("⬇️", callback_data=f"pg:{wid}:ttmv:{task_ref}:x:next"))
     if has_prev:
-        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_idx}:x:prev"))
+        row.append(kb_btn("⬆️", callback_data=f"pg:{wid}:ttmv:{task_ref}:x:prev"))
     kb.row(*row)
     return kb
 
@@ -2439,6 +2648,7 @@ async def upsert_ws_menu(data: dict, wid: str, text: str, reply_markup):
             ok = await try_edit_text(ws["chat_id"], current_id, text, reply_markup=reply_markup)
             if ok:
                 RUNTIME_MENU_IDS[wid] = current_id
+                RUNTIME_MENU_PAYLOADS[wid] = (text, reply_markup)
                 return False
 
         async with FILE_LOCK:
@@ -2450,11 +2660,13 @@ async def upsert_ws_menu(data: dict, wid: str, text: str, reply_markup):
             ok = await try_edit_text(ws["chat_id"], fresh_id, text, reply_markup=reply_markup)
             if ok:
                 RUNTIME_MENU_IDS[wid] = fresh_id
+                RUNTIME_MENU_PAYLOADS[wid] = (text, reply_markup)
                 return False
 
         msg = await send_message(ws["chat_id"], text, reply_markup=reply_markup, thread_id=ws["thread_id"])
         ws["menu_msg_id"] = msg.message_id
         RUNTIME_MENU_IDS[wid] = msg.message_id
+        RUNTIME_MENU_PAYLOADS[wid] = (text, reply_markup)
         async with FILE_LOCK:
             fresh = await load_data_unlocked()
             fresh_ws = fresh.get("workspaces", {}).get(wid)
@@ -2464,22 +2676,28 @@ async def upsert_ws_menu(data: dict, wid: str, text: str, reply_markup):
         return True
 
 async def update_pm_menu(user_id: str, data: dict):
-    user = ensure_user(data, user_id)
-    text = pm_main_text(user_id, data)
-    kb = pm_main_kb(user_id, data)
-    if user.get("pm_menu_msg_id"):
+    PM_MENU_LOCKS.setdefault(user_id, asyncio.Lock())
+    async with PM_MENU_LOCKS[user_id]:
+        user = ensure_user(data, user_id)
+        text = pm_main_text(user_id, data)
+        kb = pm_main_kb(user_id, data)
+        if user.get("pm_menu_msg_id"):
+            try:
+                await tg_call(lambda: bot.edit_message_text(text, int(user_id), user["pm_menu_msg_id"], reply_markup=kb, parse_mode="HTML"), retries=1)
+                return
+            except MessageNotModified:
+                return
+            except Exception:
+                user["pm_menu_msg_id"] = None
         try:
-            await tg_call(lambda: bot.edit_message_text(text, int(user_id), user["pm_menu_msg_id"], reply_markup=kb, parse_mode="HTML"), retries=1)
-            return
-        except MessageNotModified:
-            return
+            msg = await send_message(int(user_id), text, reply_markup=kb)
+            user["pm_menu_msg_id"] = msg.message_id
+            async with FILE_LOCK:
+                fresh = await load_data_unlocked()
+                ensure_user(fresh, user_id)["pm_menu_msg_id"] = msg.message_id
+                await save_data_unlocked(fresh)
         except Exception:
-            user["pm_menu_msg_id"] = None
-    try:
-        msg = await send_message(int(user_id), text, reply_markup=kb)
-        user["pm_menu_msg_id"] = msg.message_id
-    except Exception:
-        pass
+            pass
 
 async def edit_pm_workspace_view(data: dict, user_id: str, wid: str, message_id: int | None = None):
     user = ensure_user(data, user_id)
@@ -2543,9 +2761,11 @@ async def sync_company_everywhere(ws: dict, company_idx: int):
         ws["menu_msg_id"] = None
         RUNTIME_MENU_IDS.pop(ws["id"], None)
         await safe_delete_message(ws["chat_id"], old_menu_id)
-        msg = await send_message(ws["chat_id"], "📂 Меню workspace", reply_markup=ws_home_kb(ws["id"], ws), thread_id=ws["thread_id"])
+        menu_text, menu_markup = RUNTIME_MENU_PAYLOADS.get(ws["id"], ("📂 Меню workspace", ws_home_kb(ws["id"], ws)))
+        msg = await send_message(ws["chat_id"], menu_text, reply_markup=menu_markup, thread_id=ws["thread_id"])
         ws["menu_msg_id"] = msg.message_id
         RUNTIME_MENU_IDS[ws["id"]] = msg.message_id
+        RUNTIME_MENU_PAYLOADS[ws["id"]] = (menu_text, menu_markup)
         changed = True
     return changed
 
@@ -2641,24 +2861,38 @@ async def upsert_ws_menu_inline(ws: dict, text: str, reply_markup):
         ok = await try_edit_text(ws["chat_id"], current_id, text, reply_markup=reply_markup)
         if ok:
             RUNTIME_MENU_IDS[wid] = current_id
+            RUNTIME_MENU_PAYLOADS[wid] = (text, reply_markup)
             return False
 
     msg = await send_message(ws["chat_id"], text, reply_markup=reply_markup, thread_id=ws["thread_id"])
     ws["menu_msg_id"] = msg.message_id
     RUNTIME_MENU_IDS[wid] = msg.message_id
+    RUNTIME_MENU_PAYLOADS[wid] = (text, reply_markup)
     return True
 
-async def set_prompt(ws: dict, prompt_text: str, awaiting_payload: dict):
-    awaiting = ws.get("awaiting") or {}
-    prompt_msg_id = awaiting.get("prompt_msg_id")
-    current_menu_id = RUNTIME_MENU_IDS.get(ws.get("id")) or ws.get("menu_msg_id")
-    if prompt_msg_id and prompt_msg_id != current_menu_id:
-        await safe_delete_message(ws["chat_id"], prompt_msg_id)
+def prompt_menu_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("⬅️", callback_data=f"cancel:{ws['id']}"))
-    await upsert_ws_menu_inline(ws, prompt_text, kb)
-    awaiting_payload["prompt_msg_id"] = None
-    ws["awaiting"] = awaiting_payload
+    kb.add(kb_btn("⬅️", callback_data=f"cancel:{wid}"))
+    return kb
+
+async def refresh_prompt_menu(wid: str, prompt_text: str, prompt_token: str):
+    try:
+        fresh = await load_data()
+        ws = get_connected_ws(fresh, wid)
+        if not ws:
+            return
+        awaiting = ws.get("awaiting") or {}
+        if awaiting.get("_prompt_token") != prompt_token:
+            return
+        await upsert_ws_menu(fresh, wid, prompt_text, prompt_menu_kb(wid))
+    except Exception:
+        traceback.print_exc()
+
+async def set_prompt(ws: dict, prompt_text: str, awaiting_payload: dict):
+    payload = dict(awaiting_payload or {})
+    payload["_prompt_token"] = uuid.uuid4().hex
+    ws["awaiting"] = payload
+    asyncio.create_task(refresh_prompt_menu(ws["id"], prompt_text, payload["_prompt_token"]))
 
 async def show_instruction_menu(data: dict, wid: str, text: str, back_cb: str):
     kb = InlineKeyboardMarkup(row_width=1)
@@ -2777,16 +3011,32 @@ async def open_company_target_index_menu_from_callback(cb: types.CallbackQuery, 
 async def open_company_category_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
         return
-    _, wid, company_idx, category_idx = cb.data.split(":")
+    _, wid, company_idx, category_token = cb.data.split(":")
+    company_idx = int(company_idx)
     data = await load_data()
-    await editor(data, wid, int(company_idx), int(category_idx))
+    ws, company = await get_connected_company(data, wid, company_idx)
+    if not company:
+        return
+    category_idx = resolve_item_index_token(company.get("categories", []), category_token)
+    if category_idx is None:
+        await edit_company_menu(data, wid, company_idx)
+        return
+    await editor(data, wid, company_idx, category_idx)
 
 async def open_company_task_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
         return
-    _, wid, company_idx, task_idx = cb.data.split(":")
+    _, wid, company_idx, task_token = cb.data.split(":")
+    company_idx = int(company_idx)
     data = await load_data()
-    await editor(data, wid, int(company_idx), int(task_idx))
+    ws, company = await get_connected_company(data, wid, company_idx)
+    if not company:
+        return
+    task_idx = resolve_item_index_token(company.get("tasks", []), task_token)
+    if task_idx is None:
+        await edit_company_menu(data, wid, company_idx)
+        return
+    await editor(data, wid, company_idx, task_idx)
 
 async def open_template_index_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
@@ -2794,6 +3044,34 @@ async def open_template_index_menu_from_callback(cb: types.CallbackQuery, editor
     _, wid, item_idx = cb.data.split(":")
     data = await load_data()
     await editor(data, wid, int(item_idx))
+
+async def open_template_category_menu_from_callback(cb: types.CallbackQuery, editor):
+    if not await begin_callback(cb):
+        return
+    _, wid, category_token = cb.data.split(":")
+    data = await load_data()
+    ws, _ = get_connected_active_template(data, wid)
+    if not ws:
+        return
+    category_idx = resolve_item_index_token(ws.get("template_categories", []), category_token)
+    if category_idx is None:
+        await edit_template_menu(data, wid)
+        return
+    await editor(data, wid, category_idx)
+
+async def open_template_task_menu_from_callback(cb: types.CallbackQuery, editor):
+    if not await begin_callback(cb):
+        return
+    _, wid, task_token = cb.data.split(":")
+    data = await load_data()
+    ws, _ = get_connected_active_template(data, wid)
+    if not ws:
+        return
+    task_idx = resolve_item_index_token(ws.get("template_tasks", []), task_token)
+    if task_idx is None:
+        await edit_template_menu(data, wid)
+        return
+    await editor(data, wid, task_idx)
 
 async def open_wid_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, awaiting_payload: dict):
     if not await begin_callback(cb):
@@ -2823,53 +3101,93 @@ async def open_company_prompt_from_callback(cb: types.CallbackQuery, prompt_text
 async def open_company_category_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
     if not await begin_callback(cb):
         return
-    _, wid, company_idx, category_idx = cb.data.split(":")
-    company_idx, category_idx = int(company_idx), int(category_idx)
+    _, wid, company_idx, category_token = cb.data.split(":")
+    company_idx = int(company_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = get_connected_ws(data, wid)
         if not ws:
             return
-        await set_prompt(ws, prompt_text, payload_factory(company_idx, category_idx))
+        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        category_idx = resolve_item_index_token(company.get("categories", []), category_token)
+        if category_idx is None:
+            return
+        category = company["categories"][category_idx]
+        payload = payload_factory(company_idx, category_idx)
+        payload.setdefault("category_id", category.get("id"))
+        back_to = payload.get("back_to")
+        if isinstance(back_to, dict) and back_to.get("category_idx") == category_idx and not back_to.get("category_id"):
+            back_to["category_id"] = category.get("id")
+        await set_prompt(ws, prompt_text, payload)
         await save_data_unlocked(data)
 
 async def open_company_task_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
     if not await begin_callback(cb):
         return
-    _, wid, company_idx, task_idx = cb.data.split(":")
-    company_idx, task_idx = int(company_idx), int(task_idx)
+    _, wid, company_idx, task_token = cb.data.split(":")
+    company_idx = int(company_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = get_connected_ws(data, wid)
         if not ws:
             return
-        await set_prompt(ws, prompt_text, payload_factory(ws, company_idx, task_idx))
+        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        task_idx = resolve_item_index_token(company.get("tasks", []), task_token)
+        if task_idx is None:
+            return
+        task = company["tasks"][task_idx]
+        payload = payload_factory(ws, company_idx, task_idx)
+        payload.setdefault("task_id", task.get("id"))
+        back_to = payload.get("back_to")
+        if isinstance(back_to, dict) and back_to.get("task_idx") == task_idx and not back_to.get("task_id"):
+            back_to["task_id"] = task.get("id")
+        await set_prompt(ws, prompt_text, payload)
         await save_data_unlocked(data)
 
 async def open_template_category_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
     if not await begin_callback(cb):
         return
-    _, wid, category_idx = cb.data.split(":")
-    category_idx = int(category_idx)
+    _, wid, category_token = cb.data.split(":")
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = get_connected_ws(data, wid)
         if not ws:
             return
-        await set_prompt(ws, prompt_text, payload_factory(category_idx))
+        category_idx = resolve_item_index_token(ws.get("template_categories", []), category_token)
+        if category_idx is None:
+            return
+        category = ws["template_categories"][category_idx]
+        payload = payload_factory(category_idx)
+        payload.setdefault("category_id", category.get("id"))
+        back_to = payload.get("back_to")
+        if isinstance(back_to, dict) and back_to.get("category_idx") == category_idx and not back_to.get("category_id"):
+            back_to["category_id"] = category.get("id")
+        await set_prompt(ws, prompt_text, payload)
         await save_data_unlocked(data)
 
 async def open_template_task_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
     if not await begin_callback(cb):
         return
-    _, wid, task_idx = cb.data.split(":")
-    task_idx = int(task_idx)
+    _, wid, task_token = cb.data.split(":")
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = get_connected_ws(data, wid)
         if not ws:
             return
-        await set_prompt(ws, prompt_text, payload_factory(ws, task_idx))
+        task_idx = resolve_item_index_token(ws.get("template_tasks", []), task_token)
+        if task_idx is None:
+            return
+        task = ws["template_tasks"][task_idx]
+        payload = payload_factory(ws, task_idx)
+        payload.setdefault("task_id", task.get("id"))
+        back_to = payload.get("back_to")
+        if isinstance(back_to, dict) and back_to.get("task_idx") == task_idx and not back_to.get("task_id"):
+            back_to["task_id"] = task.get("id")
+        await set_prompt(ws, prompt_text, payload)
         await save_data_unlocked(data)
 
 async def open_report_schedule_prompt_from_callback(cb: types.CallbackQuery, kind: str):
@@ -2893,6 +3211,7 @@ async def recreate_ws_home_menu(data: dict, wid: str):
     old_id = ws.get("menu_msg_id")
     ws["menu_msg_id"] = None
     RUNTIME_MENU_IDS.pop(wid, None)
+    RUNTIME_MENU_PAYLOADS.pop(wid, None)
     await safe_delete_message(ws["chat_id"], old_id)
     await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
 
@@ -3059,10 +3378,11 @@ async def edit_task_deadline_menu(data: dict, wid: str, company_idx: int, task_i
     ws, company, task, category = await get_company_task_context(data, wid, company_idx, task_idx)
     if not ws:
         return
+    task_ref = callback_item_ref(task) or str(task_idx)
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_idx}", style=False))
-    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"taskdeadel:{wid}:{company_idx}:{task_idx}", style="danger"))
-    kb.add(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_idx}", style="primary"))
+    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"taskdeadline:{wid}:{company_idx}:{task_ref}", style=False))
+    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"taskdeadel:{wid}:{company_idx}:{task_ref}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"task:{wid}:{company_idx}:{task_ref}", style="primary"))
     await upsert_ws_menu(data, wid, task_menu_title(ws, company, task, category), kb)
 
 async def edit_task_move_menu(data: dict, wid: str, company_idx: int, task_idx: int):
@@ -3093,7 +3413,7 @@ async def edit_template_category_settings_menu(data: dict, wid: str, category_id
     ws, active, category = await get_template_category_context(data, wid, category_idx)
     if not ws:
         return
-    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), rich_display_category_name(category), "⚙️ Подгруппа"), template_category_settings_kb(wid, category_idx))
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), rich_display_category_name(category), "⚙️ Подгруппа"), template_category_settings_kb(wid, category_idx, category))
 
 async def edit_template_settings_menu(data: dict, wid: str):
     ws, active = get_connected_active_template(data, wid)
@@ -3157,10 +3477,11 @@ async def edit_template_task_deadline_menu(data: dict, wid: str, task_idx: int):
     ws, active, task, category = await get_template_task_context(data, wid, task_idx)
     if not ws:
         return
+    task_ref = callback_item_ref(task) or str(task_idx)
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_idx}", style=False))
-    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_idx}", style="danger"))
-    kb.add(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_idx}", style="primary"))
+    kb.add(kb_btn("⏰ Поменять дедлайн", callback_data=f"tpltaskdeadline:{wid}:{task_ref}", style=False))
+    kb.add(kb_btn("🗑 Удалить дедлайн", callback_data=f"tpltaskdeadel:{wid}:{task_ref}", style="danger"))
+    kb.add(kb_btn("⬅️", callback_data=f"tpltask:{wid}:{task_ref}", style="primary"))
     await upsert_ws_menu(data, wid, template_task_title(ws, active, task, category), kb)
 
 async def edit_template_task_move_menu(data: dict, wid: str, task_idx: int):
@@ -3169,19 +3490,21 @@ async def edit_template_task_move_menu(data: dict, wid: str, task_idx: int):
         return
     await upsert_ws_menu(data, wid, f"📥 {task['text']}", template_task_move_kb(wid, task_idx, ws, task))
 
-async def clear_workspace_contents(ws: dict):
-    awaiting = ws.get("awaiting") or {}
-    prompt_msg_id = awaiting.get("prompt_msg_id")
-    if prompt_msg_id and prompt_msg_id != ws.get("menu_msg_id"):
-        await safe_delete_message(ws["chat_id"], prompt_msg_id)
-
+def clear_workspace_contents(ws: dict) -> list[tuple[int, int]]:
+    targets: list[tuple[int, int]] = []
     for company in ws.get("companies", []):
-        await safe_delete_message(ws["chat_id"], company.get("card_msg_id"))
+        card_msg_id = company.get("card_msg_id")
+        if ws.get("chat_id") is not None and card_msg_id:
+            targets.append((ws["chat_id"], card_msg_id))
         for mirror in company.get("mirrors", []):
-            await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
+            mirror_chat_id = mirror.get("chat_id")
+            mirror_msg_id = mirror.get("message_id")
+            if mirror_chat_id is not None and mirror_msg_id:
+                targets.append((mirror_chat_id, mirror_msg_id))
 
     ws["companies"] = []
     ws["awaiting"] = None
+    return targets
 
 def clear_pending_mirror_tokens_for_workspace(data: dict, wid: str):
     for token, payload in list(data.get("mirror_tokens", {}).items()):
@@ -3318,7 +3641,7 @@ async def pm_rename_workspace_prompt(cb: types.CallbackQuery):
         return
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("⬅️", callback_data=f"pmws:{wid}", style="primary"))
-    await safe_edit_text(int(uid), cb.message.message_id, "✏️ Введи новое имя Workspace:", reply_markup=kb)
+    await safe_edit_text(int(uid), cb.message.message_id, "✍🏻 Введи новое имя Workspace:", reply_markup=kb)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsemoji:"))
 async def pm_workspace_emoji_prompt(cb: types.CallbackQuery):
@@ -3345,7 +3668,7 @@ async def pm_workspace_emoji_prompt(cb: types.CallbackQuery):
         return
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("⬅️", callback_data=f"pmws:{wid}", style="primary"))
-    await safe_edit_text(int(uid), cb.message.message_id, "😀 Пришли один смайлик для Workspace:", reply_markup=kb)
+    await safe_edit_text(int(uid), cb.message.message_id, "💅🏻 Пришли один смайлик для Workspace:", reply_markup=kb)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("wsset:"))
 async def open_ws_settings(cb: types.CallbackQuery):
@@ -3369,15 +3692,17 @@ async def ws_clear_confirm(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     wid = cb.data.split(":", 1)[1]
+    cleanup_targets = []
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
-            asyncio.create_task(try_delete_user_message(message))
             return
-        await clear_workspace_contents(ws)
+        cleanup_targets = clear_workspace_contents(ws)
         clear_pending_mirror_tokens_for_workspace(data, wid)
         await save_data_unlocked(data)
+    if cleanup_targets:
+        asyncio.create_task(delete_message_targets(cleanup_targets))
     fresh = await load_data()
     await edit_ws_home_menu(fresh, wid)
 
@@ -3400,15 +3725,18 @@ async def pm_clear_workspace_confirm(cb: types.CallbackQuery):
         return
     uid = str(cb.from_user.id)
     wid = cb.data.split(":", 1)[1]
+    cleanup_targets = []
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws:
             return
-        await clear_workspace_contents(ws)
+        cleanup_targets = clear_workspace_contents(ws)
         clear_pending_mirror_tokens_for_workspace(data, wid)
         ensure_user(data, uid)["pm_menu_msg_id"] = cb.message.message_id
         await save_data_unlocked(data)
+    if cleanup_targets:
+        asyncio.create_task(delete_message_targets(cleanup_targets))
     fresh = await load_data()
     ws = fresh["workspaces"].get(wid)
     if ws and ws.get("is_connected"):
@@ -3434,36 +3762,39 @@ async def pm_delete_workspace(cb: types.CallbackQuery):
         return
     current_uid = str(cb.from_user.id)
     wid = cb.data.split(":", 1)[1]
+    show_root_only = False
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws:
             await save_data_unlocked(data)
-            await safe_edit_text(int(current_uid), cb.message.message_id, pm_main_text(current_uid, data), reply_markup=pm_main_kb(current_uid, data))
-            return
+            show_root_only = True
+        else:
+            ws_name = ws["name"]
+            chat_id = ws["chat_id"]
+            thread_id = ws["thread_id"]
+            menu_msg_id = ws.get("menu_msg_id")
+            ws["menu_msg_id"] = None
+            ws["awaiting"] = None
+            ws["is_connected"] = False
+            clear_pending_mirror_tokens_for_workspace(data, wid)
 
-        ws_name = ws["name"]
-        chat_id = ws["chat_id"]
-        thread_id = ws["thread_id"]
-        menu_msg_id = ws.get("menu_msg_id")
-        prompt_msg_id = (ws.get("awaiting") or {}).get("prompt_msg_id")
-        ws["menu_msg_id"] = None
-        ws["awaiting"] = None
-        ws["is_connected"] = False
-        clear_pending_mirror_tokens_for_workspace(data, wid)
+            affected_users = []
+            for uid, user in data["users"].items():
+                if wid in user.get("workspaces", []):
+                    user["workspaces"].remove(wid)
+                    affected_users.append(uid)
+            ensure_user(data, current_uid)["pm_menu_msg_id"] = cb.message.message_id
+            await save_data_unlocked(data)
 
-        affected_users = []
-        for uid, user in data["users"].items():
-            if wid in user.get("workspaces", []):
-                user["workspaces"].remove(wid)
-                affected_users.append(uid)
-        ensure_user(data, current_uid)["pm_menu_msg_id"] = cb.message.message_id
-        await save_data_unlocked(data)
+    if show_root_only:
+        await safe_edit_text(int(current_uid), cb.message.message_id, pm_main_text(current_uid, data), reply_markup=pm_main_kb(current_uid, data))
+        return
 
+    RUNTIME_MENU_IDS.pop(wid, None)
+    RUNTIME_MENU_PAYLOADS.pop(wid, None)
     await safe_delete_message(chat_id, menu_msg_id)
-    if prompt_msg_id and prompt_msg_id != menu_msg_id:
-        await safe_delete_message(chat_id, prompt_msg_id)
     await safe_edit_text(int(current_uid), cb.message.message_id, pm_main_text(current_uid, data), reply_markup=pm_main_kb(current_uid, data))
     for uid in affected_users:
         if uid != current_uid:
@@ -3486,7 +3817,6 @@ async def cmd_connect(message: types.Message):
     wid = make_ws_id(message.chat.id, thread_id)
     chat_title = message.chat.title or "Workspace"
     old_menu_id = None
-    old_prompt_id = None
     old_company_card_ids = []
 
     async with FILE_LOCK:
@@ -3511,7 +3841,6 @@ async def cmd_connect(message: types.Message):
 
         if existing_ws:
             old_menu_id = existing_ws.get("menu_msg_id")
-            old_prompt_id = (existing_ws.get("awaiting") or {}).get("prompt_msg_id")
             old_company_card_ids = [company.get("card_msg_id") for company in old_companies if company.get("card_msg_id")]
             for company in old_companies:
                 company["card_msg_id"] = None
@@ -3537,7 +3866,6 @@ async def cmd_connect(message: types.Message):
         await save_data_unlocked(data)
 
     await safe_delete_message(message.chat.id, old_menu_id)
-    await safe_delete_message(message.chat.id, old_prompt_id)
     for card_msg_id in old_company_card_ids:
         await safe_delete_message(message.chat.id, card_msg_id)
 
@@ -3638,9 +3966,10 @@ async def mirror_rename_binding_prompt(cb: types.CallbackQuery):
     mirror_idx = int(mirror_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
-        ws, company = await get_connected_company(data, wid, company_idx)
-        if not ws:
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
+        company = ws["companies"][company_idx]
         ws["menu_msg_id"] = cb.message.message_id
         RUNTIME_MENU_IDS[wid] = cb.message.message_id
         mirrors = company.get("mirrors", [])
@@ -3649,7 +3978,7 @@ async def mirror_rename_binding_prompt(cb: types.CallbackQuery):
         mirror = mirrors[mirror_idx]
         await set_prompt(
             ws,
-            "✏️ Введи новое имя связки:",
+            "✍🏻 Введи новое имя связки:",
             {
                 "type": "rename_binding_label",
                 "chat_id": mirror.get("chat_id"),
@@ -3669,9 +3998,10 @@ async def mirror_binding_emoji_prompt(cb: types.CallbackQuery):
     mirror_idx = int(mirror_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
-        ws, company = await get_connected_company(data, wid, company_idx)
-        if not ws:
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
+        company = ws["companies"][company_idx]
         ws["menu_msg_id"] = cb.message.message_id
         RUNTIME_MENU_IDS[wid] = cb.message.message_id
         mirrors = company.get("mirrors", [])
@@ -3680,7 +4010,7 @@ async def mirror_binding_emoji_prompt(cb: types.CallbackQuery):
         mirror = mirrors[mirror_idx]
         await set_prompt(
             ws,
-            "😀 Пришли один смайлик для связки:",
+            "💅🏻 Пришли один смайлик для связки:",
             {
                 "type": "binding_emoji",
                 "chat_id": mirror.get("chat_id"),
@@ -3698,6 +4028,7 @@ async def mirror_on(cb: types.CallbackQuery):
     _, wid, company_idx = cb.data.split(":")
     company_idx = int(company_idx)
     show_import_menu = False
+    company_id = None
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -3705,11 +4036,11 @@ async def mirror_on(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        company_id = company.get("id")
         if missing_report_targets_for_mirrors(company):
             show_import_menu = True
             await save_data_unlocked(data)
         else:
-            company_id = company["id"]
             token = generate_mirror_token()
             data["mirror_tokens"][token] = {
                 "source_wid": wid,
@@ -3720,22 +4051,23 @@ async def mirror_on(cb: types.CallbackQuery):
 
     fresh = await load_data()
     ws2 = fresh["workspaces"].get(wid)
-    if not ws2 or not (0 <= company_idx < len(ws2.get("companies", []))):
+    fresh_company_idx = find_company_index_by_id(ws2, company_id) if ws2 and company_id else None
+    if fresh_company_idx is None:
         return
-    company2 = ws2["companies"][company_idx]
+    company2 = ws2["companies"][fresh_company_idx]
     if show_import_menu:
         await upsert_ws_menu(
             fresh,
             wid,
             workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка", "➕ Добавить связку"),
-            mirror_import_candidates_kb(wid, company_idx, company2),
+            mirror_import_candidates_kb(wid, fresh_company_idx, company2),
         )
         return
     await show_instruction_menu(
         fresh,
         wid,
         binding_instruction_text("📤 Чтобы добавить связку", token),
-        f"mirrors:{wid}:{company_idx}",
+        f"mirrors:{wid}:{fresh_company_idx}",
     )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrornew:"))
@@ -3745,6 +4077,7 @@ async def mirror_new(cb: types.CallbackQuery):
         return
     _, wid, company_idx = cb.data.split(":")
     company_idx = int(company_idx)
+    company_id = None
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -3752,6 +4085,7 @@ async def mirror_new(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        company_id = company.get("id")
         token = generate_mirror_token()
         data["mirror_tokens"][token] = {
             "source_wid": wid,
@@ -3762,12 +4096,13 @@ async def mirror_new(cb: types.CallbackQuery):
 
     fresh = await load_data()
     ws2 = fresh["workspaces"].get(wid)
-    if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
+    fresh_company_idx = find_company_index_by_id(ws2, company_id) if ws2 and company_id else None
+    if fresh_company_idx is not None:
         await show_instruction_menu(
             fresh,
             wid,
             binding_instruction_text("📤 Чтобы добавить связку", token),
-            f"mirrors:{wid}:{company_idx}",
+            f"mirrors:{wid}:{fresh_company_idx}",
         )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrorcopy:"))
@@ -3778,6 +4113,7 @@ async def mirror_copy_existing(cb: types.CallbackQuery):
     _, wid, company_idx, source_idx = cb.data.split(":")
     company_idx = int(company_idx)
     source_idx = int(source_idx)
+    company_id = None
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -3785,6 +4121,7 @@ async def mirror_copy_existing(cb: types.CallbackQuery):
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        company_id = company.get("id")
         candidates = missing_report_targets_for_mirrors(company)
         picked = next((target for idx, target in candidates if idx == source_idx), None)
         if not picked:
@@ -3802,8 +4139,9 @@ async def mirror_copy_existing(cb: types.CallbackQuery):
 
     fresh = await load_data()
     ws2 = fresh["workspaces"].get(wid)
-    if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
-        company2 = ws2["companies"][company_idx]
+    fresh_company_idx = find_company_index_by_id(ws2, company_id) if ws2 and company_id else None
+    if fresh_company_idx is not None:
+        company2 = ws2["companies"][fresh_company_idx]
         published_message_id = await publish_initial_company_mirror(company2, chat_id, thread_id)
         if published_message_id:
             for mirror in company2.get("mirrors", []):
@@ -3813,14 +4151,15 @@ async def mirror_copy_existing(cb: types.CallbackQuery):
             async with FILE_LOCK:
                 data = await load_data_unlocked()
                 source_ws = data.get("workspaces", {}).get(wid)
-                if source_ws and 0 <= company_idx < len(source_ws.get("companies", [])):
-                    live_company = source_ws["companies"][company_idx]
+                live_company_idx = find_company_index_by_id(source_ws, company_id) if source_ws and company_id else None
+                if live_company_idx is not None:
+                    live_company = source_ws["companies"][live_company_idx]
                     for mirror in live_company.get("mirrors", []):
                         if mirror.get("chat_id") == chat_id and (mirror.get("thread_id") or 0) == thread_id:
                             mirror["message_id"] = published_message_id
                             break
                     await save_data_unlocked(data)
-        await upsert_ws_menu(fresh, wid, workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка"), mirrors_menu_kb(wid, company_idx, company2))
+        await upsert_ws_menu(fresh, wid, workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка"), mirrors_menu_kb(wid, fresh_company_idx, company2))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroroff:"))
 async def mirror_off(cb: types.CallbackQuery):
@@ -3835,12 +4174,14 @@ async def mirror_off(cb: types.CallbackQuery):
     mirror_idx = int(mirror_idx)
 
     target = None
+    company_id = None
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        company_id = company.get("id")
         if mirror_idx < 0 or mirror_idx >= len(company.get("mirrors", [])):
             return
         target = company["mirrors"].pop(mirror_idx)
@@ -3850,9 +4191,10 @@ async def mirror_off(cb: types.CallbackQuery):
         await safe_delete_message(target.get("chat_id"), target.get("message_id"))
     fresh = await load_data()
     ws2 = fresh["workspaces"].get(wid)
-    if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
-        company2 = ws2["companies"][company_idx]
-        await upsert_ws_menu(fresh, wid, f"📤 Дублирование списка: {display_company_name(company2)}", mirrors_menu_kb(wid, company_idx, company2))
+    fresh_company_idx = find_company_index_by_id(ws2, company_id) if ws2 and company_id else None
+    if fresh_company_idx is not None:
+        company2 = ws2["companies"][fresh_company_idx]
+        await upsert_ws_menu(fresh, wid, f"📤 Дублирование списка: {display_company_name(company2)}", mirrors_menu_kb(wid, fresh_company_idx, company2))
 
 @dp.message_handler(commands=["mirror"])
 async def cmd_mirror(message: types.Message):
@@ -3921,8 +4263,14 @@ async def cmd_mirror(message: types.Message):
         await save_data_unlocked(data)
 
     fresh = await load_data()
-    ws = fresh["workspaces"][source_wid]
+    ws = fresh["workspaces"].get(source_wid)
+    if not ws:
+        await try_delete_user_message(message)
+        return
     company_idx = find_company_index_by_id(ws, company_id)
+    if company_idx is None:
+        await try_delete_user_message(message)
+        return
     company = ws["companies"][company_idx]
     if token_kind == "mirror":
         if created_new_binding:
@@ -3951,12 +4299,16 @@ async def cmd_mirror(message: types.Message):
     fresh = await load_data()
     if source_wid in fresh.get("workspaces", {}):
         if token_kind == "report_target":
-            await edit_report_targets_menu(fresh, source_wid, company_idx)
+            fresh_ws = fresh["workspaces"].get(source_wid)
+            fresh_company_idx = find_company_index_by_id(fresh_ws, company_id) if fresh_ws else None
+            if fresh_company_idx is not None:
+                await edit_report_targets_menu(fresh, source_wid, fresh_company_idx)
         else:
             ws2 = fresh["workspaces"].get(source_wid)
-            if ws2 and 0 <= company_idx < len(ws2.get("companies", [])):
-                company2 = ws2["companies"][company_idx]
-                await upsert_ws_menu(fresh, source_wid, workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка"), mirrors_menu_kb(source_wid, company_idx, company2))
+            fresh_company_idx = find_company_index_by_id(ws2, company_id) if ws2 else None
+            if fresh_company_idx is not None:
+                company2 = ws2["companies"][fresh_company_idx]
+                await upsert_ws_menu(fresh, source_wid, workspace_path_title(ws2, rich_display_company_name(company2), "📤 Дублирование списка"), mirrors_menu_kb(source_wid, fresh_company_idx, company2))
     if token_kind == "report_target":
         await send_temp_message(ws["chat_id"], f"🧾 Отчеты по списку «{company['title']}» теперь будут выгружаться еще в один тред/чат", source_thread_id, delay=10)
     else:
@@ -4011,7 +4363,10 @@ async def finalize_report_interval(wid: str, company_idx: int, draft_interval: d
         await save_data_unlocked(data)
 
     fresh = await load_data()
-    company = fresh["workspaces"][wid]["companies"][company_idx]
+    ws = fresh["workspaces"].get(wid)
+    if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+        return
+    company = ws["companies"][company_idx]
     target_key = normalized.get("target_key")
     target_idx = 0
     if target_key:
@@ -4098,14 +4453,18 @@ async def report_rename_binding_prompt(cb: types.CallbackQuery):
     target_idx = int(target_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
-        ws, _, target = await get_report_target_context(data, wid, company_idx, target_idx)
-        if not ws or not target:
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        target = get_report_target(company, target_idx)
+        if not target:
             return
         ws["menu_msg_id"] = cb.message.message_id
         RUNTIME_MENU_IDS[wid] = cb.message.message_id
         await set_prompt(
             ws,
-            "✏️ Введи новое имя связки:",
+            "✍🏻 Введи новое имя связки:",
             {
                 "type": "rename_binding_label",
                 "chat_id": target.get("chat_id"),
@@ -4125,14 +4484,18 @@ async def report_binding_emoji_prompt(cb: types.CallbackQuery):
     target_idx = int(target_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
-        ws, _, target = await get_report_target_context(data, wid, company_idx, target_idx)
-        if not ws or not target:
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        target = get_report_target(company, target_idx)
+        if not target:
             return
         ws["menu_msg_id"] = cb.message.message_id
         RUNTIME_MENU_IDS[wid] = cb.message.message_id
         await set_prompt(
             ws,
-            "😀 Пришли один смайлик для связки:",
+            "💅🏻 Пришли один смайлик для связки:",
             {
                 "type": "binding_emoji",
                 "chat_id": target.get("chat_id"),
@@ -4448,6 +4811,7 @@ async def report_bind_on(cb: types.CallbackQuery):
     _, wid, company_idx = cb.data.split(":")
     company_idx = int(company_idx)
     show_import_menu = False
+    company_id = None
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -4455,6 +4819,7 @@ async def report_bind_on(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        company_id = company.get("id")
         if missing_mirrors_for_report_targets(company):
             show_import_menu = True
         else:
@@ -4469,22 +4834,23 @@ async def report_bind_on(cb: types.CallbackQuery):
 
     fresh = await load_data()
     ws2 = fresh["workspaces"].get(wid)
-    if not ws2 or not (0 <= company_idx < len(ws2.get("companies", []))):
+    fresh_company_idx = find_company_index_by_id(ws2, company_id) if ws2 and company_id else None
+    if fresh_company_idx is None:
         return
-    company2 = ws2["companies"][company_idx]
+    company2 = ws2["companies"][fresh_company_idx]
     if show_import_menu:
         await upsert_ws_menu(
             fresh,
             wid,
             workspace_path_title(ws2, rich_display_company_name(company2), "🧾 Отчетность", "📎 Привязка", "➕ Добавить связку"),
-            report_import_candidates_kb(wid, company_idx, company2),
+            report_import_candidates_kb(wid, fresh_company_idx, company2),
         )
         return
     await show_instruction_menu(
         fresh,
         wid,
         binding_instruction_text("🧾 Чтобы добавить привязку для отчетности", token),
-        f"reportbind:{wid}:{company_idx}",
+        f"reportbind:{wid}:{fresh_company_idx}",
     )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindnew:"))
@@ -4494,6 +4860,7 @@ async def report_bind_new(cb: types.CallbackQuery):
         return
     _, wid, company_idx = cb.data.split(":")
     company_idx = int(company_idx)
+    company_id = None
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -4501,6 +4868,7 @@ async def report_bind_new(cb: types.CallbackQuery):
         if not ws or not ws.get("is_connected") or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        company_id = company.get("id")
         token = generate_mirror_token()
         data["mirror_tokens"][token] = {
             "source_wid": wid,
@@ -4511,12 +4879,15 @@ async def report_bind_new(cb: types.CallbackQuery):
         await save_data_unlocked(data)
 
     fresh = await load_data()
-    await show_instruction_menu(
-        fresh,
-        wid,
-        binding_instruction_text("🧾 Чтобы добавить привязку для отчетности", token),
-        f"reportbind:{wid}:{company_idx}",
-    )
+    ws2 = fresh["workspaces"].get(wid)
+    fresh_company_idx = find_company_index_by_id(ws2, company_id) if ws2 and company_id else None
+    if fresh_company_idx is not None:
+        await show_instruction_menu(
+            fresh,
+            wid,
+            binding_instruction_text("🧾 Чтобы добавить привязку для отчетности", token),
+            f"reportbind:{wid}:{fresh_company_idx}",
+        )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindcopy:"))
 async def report_bind_copy_existing(cb: types.CallbackQuery):
@@ -4526,6 +4897,7 @@ async def report_bind_copy_existing(cb: types.CallbackQuery):
     _, wid, company_idx, source_idx = cb.data.split(":")
     company_idx = int(company_idx)
     source_idx = int(source_idx)
+    company_id = None
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
@@ -4533,6 +4905,7 @@ async def report_bind_copy_existing(cb: types.CallbackQuery):
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
+        company_id = company.get("id")
         candidates = missing_mirrors_for_report_targets(company)
         picked = next((mirror for idx, mirror in candidates if idx == source_idx), None)
         if not picked:
@@ -4548,7 +4921,10 @@ async def report_bind_copy_existing(cb: types.CallbackQuery):
         await save_data_unlocked(data)
 
     fresh = await load_data()
-    await edit_report_targets_menu(fresh, wid, company_idx)
+    ws2 = fresh["workspaces"].get(wid)
+    fresh_company_idx = find_company_index_by_id(ws2, company_id) if ws2 and company_id else None
+    if fresh_company_idx is not None:
+        await edit_report_targets_menu(fresh, wid, fresh_company_idx)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindoff:"))
 async def report_bind_off(cb: types.CallbackQuery):
@@ -4740,13 +5116,21 @@ async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: s
     elif view == "cm" and a != "x":
         await edit_company_menu(data, wid, int(a))
     elif view == "ct" and a != "x" and b != "x":
-        await edit_category_menu(data, wid, int(a), int(b))
+        company_idx = int(a)
+        category_idx = resolve_company_category_idx_token(ws, company_idx, b)
+        if category_idx is not None:
+            await edit_category_menu(data, wid, company_idx, category_idx)
+        else:
+            await edit_company_menu(data, wid, company_idx)
     elif view == "rp" and a != "x" and b != "x":
         await edit_report_menu(data, wid, int(a), int(b))
     elif view == "rb" and a != "x":
         await edit_report_targets_menu(data, wid, int(a))
     elif view == "mm" and a != "x":
         company_idx = int(a)
+        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            await edit_ws_home_menu(data, wid)
+            return
         company = ws["companies"][company_idx]
         await upsert_ws_menu(
             data,
@@ -4756,6 +5140,9 @@ async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: s
         )
     elif view == "mic" and a != "x":
         company_idx = int(a)
+        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            await edit_ws_home_menu(data, wid)
+            return
         company = ws["companies"][company_idx]
         await upsert_ws_menu(
             data,
@@ -4765,6 +5152,9 @@ async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: s
         )
     elif view == "ric" and a != "x":
         company_idx = int(a)
+        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            await edit_ws_home_menu(data, wid)
+            return
         company = ws["companies"][company_idx]
         await upsert_ws_menu(
             data,
@@ -4773,15 +5163,28 @@ async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: s
             report_import_candidates_kb(wid, company_idx, company),
         )
     elif view == "tmv" and a != "x" and b != "x":
-        await edit_task_move_menu(data, wid, int(a), int(b))
+        company_idx = int(a)
+        task_idx = resolve_company_task_idx_token(ws, company_idx, b)
+        if task_idx is not None:
+            await edit_task_move_menu(data, wid, company_idx, task_idx)
+        else:
+            await edit_company_menu(data, wid, company_idx)
     elif view == "ttmv" and a != "x":
-        await edit_template_task_move_menu(data, wid, int(a))
+        task_idx = resolve_template_task_idx_token(ws, a)
+        if task_idx is not None:
+            await edit_template_task_move_menu(data, wid, task_idx)
+        else:
+            await edit_template_menu(data, wid)
     elif view == "tpr":
         await edit_template_report_menu(data, wid)
     elif view == "tm":
         await edit_template_menu(data, wid)
     elif view == "tc" and a != "x":
-        await edit_template_category_menu(data, wid, int(a))
+        category_idx = resolve_template_category_idx_token(ws, a)
+        if category_idx is not None:
+            await edit_template_category_menu(data, wid, category_idx)
+        else:
+            await edit_template_menu(data, wid)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pgpm:"))
 async def page_pm(cb: types.CallbackQuery):
@@ -4830,11 +5233,12 @@ async def page_ws(cb: types.CallbackQuery):
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "ct" and a != "x" and b != "x":
             company_idx = int(a)
-            category_idx = int(b)
             if 0 <= company_idx < len(ws.get("companies", [])):
                 company = ws["companies"][company_idx]
-                key = f"cat_{company_idx}_{category_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
+                category_idx = resolve_item_index_token(company.get("categories", []), b)
+                if category_idx is not None:
+                    key = company_category_page_key(company_idx, company["categories"][category_idx], category_idx)
+                    set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "rp" and a != "x" and b != "x":
             company_idx = int(a)
             target_idx = int(b)
@@ -4868,15 +5272,17 @@ async def page_ws(cb: types.CallbackQuery):
                 set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "tmv" and a != "x" and b != "x":
             company_idx = int(a)
-            task_idx = int(b)
             if 0 <= company_idx < len(ws.get("companies", [])):
                 company = ws["companies"][company_idx]
-                key = f"task_move_{company_idx}_{task_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
+                task_idx = resolve_item_index_token(company.get("tasks", []), b)
+                if task_idx is not None:
+                    key = company_task_move_page_key(company_idx, company["tasks"][task_idx], task_idx)
+                    set_ui_page(company, key, get_ui_page(company, key) + delta)
         elif view == "ttmv" and a != "x":
-            task_idx = int(a)
-            key = f"template_task_move_{task_idx}"
-            set_ui_page(ws, key, get_ui_page(ws, key) + delta)
+            task_idx = resolve_template_task_idx_token(ws, a)
+            if task_idx is not None:
+                key = template_task_move_page_key(ws["template_tasks"][task_idx], task_idx)
+                set_ui_page(ws, key, get_ui_page(ws, key) + delta)
         elif view == "tpr":
             active = get_active_template(ws)
             key = f"tpl_report_{active.get('id')}"
@@ -4886,8 +5292,10 @@ async def page_ws(cb: types.CallbackQuery):
             set_ui_page(ws, key, get_ui_page(ws, key) + delta)
         elif view == "tc" and a != "x":
             template = get_active_template(ws)
-            key = f"tplcat_{template.get('id')}_{int(a)}"
-            set_ui_page(template, key, get_ui_page(template, key) + delta)
+            category_idx = resolve_template_category_idx_token(ws, a)
+            if category_idx is not None:
+                key = template_category_page_key(template, ws["template_categories"][category_idx], category_idx)
+                set_ui_page(template, key, get_ui_page(template, key) + delta)
 
         await save_data_unlocked(data)
 
@@ -4944,19 +5352,19 @@ async def open_template_menu(cb: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcat:"))
 async def open_template_category(cb: types.CallbackQuery):
-    await open_template_index_menu_from_callback(cb, edit_template_category_menu)
+    await open_template_category_menu_from_callback(cb, edit_template_category_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatset:"))
 async def open_template_category_settings(cb: types.CallbackQuery):
-    await open_template_index_menu_from_callback(cb, edit_template_category_settings_menu)
+    await open_template_category_menu_from_callback(cb, edit_template_category_settings_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltask:"))
 async def open_template_task(cb: types.CallbackQuery):
-    await open_template_index_menu_from_callback(cb, edit_template_task_menu)
+    await open_template_task_menu_from_callback(cb, edit_template_task_menu)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskmove:"))
 async def open_template_task_move(cb: types.CallbackQuery):
-    await open_template_index_menu_from_callback(cb, edit_template_task_move_menu)
+    await open_template_task_menu_from_callback(cb, edit_template_task_move_menu)
 
 # =========================
 # CANCEL
@@ -4983,13 +5391,41 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
     elif view == "report_targets":
         await edit_report_targets_menu(data, wid, back_to["company_idx"])
     elif view == "category":
-        await edit_category_menu(data, wid, back_to["company_idx"], back_to["category_idx"])
+        company_idx = back_to["company_idx"]
+        ws, company = await get_connected_company(data, wid, company_idx)
+        if company:
+            category_idx = resolve_category_idx_from_payload(company, back_to)
+            if category_idx is not None:
+                await edit_category_menu(data, wid, company_idx, category_idx)
+            else:
+                await edit_company_menu(data, wid, company_idx)
     elif view == "category_settings":
-        await edit_category_settings_menu(data, wid, back_to["company_idx"], back_to["category_idx"])
+        company_idx = back_to["company_idx"]
+        ws, company = await get_connected_company(data, wid, company_idx)
+        if company:
+            category_idx = resolve_category_idx_from_payload(company, back_to)
+            if category_idx is not None:
+                await edit_category_settings_menu(data, wid, company_idx, category_idx)
+            else:
+                await edit_company_menu(data, wid, company_idx)
     elif view == "task":
-        await edit_task_menu(data, wid, back_to["company_idx"], back_to["task_idx"])
+        company_idx = back_to["company_idx"]
+        ws, company = await get_connected_company(data, wid, company_idx)
+        if company:
+            task_idx = resolve_task_idx_from_payload(company, back_to)
+            if task_idx is not None:
+                await edit_task_menu(data, wid, company_idx, task_idx)
+            else:
+                await edit_company_menu(data, wid, company_idx)
     elif view == "task_deadline":
-        await edit_task_deadline_menu(data, wid, back_to["company_idx"], back_to["task_idx"])
+        company_idx = back_to["company_idx"]
+        ws, company = await get_connected_company(data, wid, company_idx)
+        if company:
+            task_idx = resolve_task_idx_from_payload(company, back_to)
+            if task_idx is not None:
+                await edit_task_deadline_menu(data, wid, company_idx, task_idx)
+            else:
+                await edit_company_menu(data, wid, company_idx)
     elif view == "ws_settings":
         await edit_ws_settings_menu(data, wid)
     elif view == "template":
@@ -5005,13 +5441,37 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
     elif view == "template_report_interval_kind":
         await edit_template_report_interval_kind_menu(data, wid, back_to.get("flow", "new"), back_to.get("interval_idx"))
     elif view == "template_category":
-        await edit_template_category_menu(data, wid, back_to["category_idx"])
+        ws = get_connected_ws(data, wid)
+        if ws:
+            category_idx = resolve_template_category_idx_from_payload(ws, back_to)
+            if category_idx is not None:
+                await edit_template_category_menu(data, wid, category_idx)
+            else:
+                await edit_template_menu(data, wid)
     elif view == "template_category_settings":
-        await edit_template_category_settings_menu(data, wid, back_to["category_idx"])
+        ws = get_connected_ws(data, wid)
+        if ws:
+            category_idx = resolve_template_category_idx_from_payload(ws, back_to)
+            if category_idx is not None:
+                await edit_template_category_settings_menu(data, wid, category_idx)
+            else:
+                await edit_template_menu(data, wid)
     elif view == "template_task":
-        await edit_template_task_menu(data, wid, back_to["task_idx"])
+        ws = get_connected_ws(data, wid)
+        if ws:
+            task_idx = resolve_template_task_idx_from_payload(ws, back_to)
+            if task_idx is not None:
+                await edit_template_task_menu(data, wid, task_idx)
+            else:
+                await edit_template_menu(data, wid)
     elif view == "template_task_deadline":
-        await edit_template_task_deadline_menu(data, wid, back_to["task_idx"])
+        ws = get_connected_ws(data, wid)
+        if ws:
+            task_idx = resolve_template_task_idx_from_payload(ws, back_to)
+            if task_idx is not None:
+                await edit_template_task_deadline_menu(data, wid, task_idx)
+            else:
+                await edit_template_menu(data, wid)
     else:
         await edit_ws_home_menu(data, wid)
 
@@ -5027,13 +5487,9 @@ async def cancel_input(cb: types.CallbackQuery):
         if not ws:
             return
         awaiting = ws.get("awaiting") or {}
-        prompt_msg_id = awaiting.get("prompt_msg_id")
-        menu_msg_id = ws.get("menu_msg_id")
         back_to = awaiting.get("back_to", {"view": "ws"})
         ws["awaiting"] = back_to.get("restore_awaiting")
         await save_data_unlocked(data)
-    if prompt_msg_id and prompt_msg_id != menu_msg_id:
-        await safe_delete_message(ws["chat_id"], prompt_msg_id)
     if ws.get("is_connected"):
         fresh = await load_data()
         await show_back_view(fresh, wid, back_to)
@@ -5046,7 +5502,7 @@ async def cancel_input(cb: types.CallbackQuery):
 async def rename_company_prompt(cb: types.CallbackQuery):
     await open_company_prompt_from_callback(
         cb,
-        "✏️ Введи новое название списка:",
+        "✍🏻 Введи новое название списка:",
         lambda company_idx: {"type": "rename_company", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}},
     )
 
@@ -5054,7 +5510,7 @@ async def rename_company_prompt(cb: types.CallbackQuery):
 async def company_emoji_prompt(cb: types.CallbackQuery):
     await open_company_prompt_from_callback(
         cb,
-        "😀 Пришли один смайлик для списка:",
+        "💅🏻 Пришли один смайлик для списка:",
         lambda company_idx: {"type": "company_emoji", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}},
     )
 
@@ -5094,10 +5550,14 @@ async def delete_company(cb: types.CallbackQuery):
             if payload.get("source_wid") == wid and payload.get("company_id") == company_id:
                 data["mirror_tokens"].pop(token, None)
         await save_data_unlocked(data)
-    await safe_delete_message(ws["chat_id"], card_msg_id)
+    cleanup_targets = []
+    if ws.get("chat_id") is not None and card_msg_id:
+        cleanup_targets.append((ws["chat_id"], card_msg_id))
     for mirror in mirrors:
-        if mirror.get("message_id"):
-            await safe_delete_message(mirror.get("chat_id"), mirror.get("message_id"))
+        if mirror.get("chat_id") is not None and mirror.get("message_id"):
+            cleanup_targets.append((mirror.get("chat_id"), mirror.get("message_id")))
+    if cleanup_targets:
+        asyncio.create_task(delete_message_targets(cleanup_targets))
     fresh = await load_data()
     await edit_ws_home_menu(fresh, wid)
 
@@ -5113,7 +5573,7 @@ async def add_category_prompt(cb: types.CallbackQuery):
 async def rename_category_prompt(cb: types.CallbackQuery):
     await open_company_category_prompt_from_callback(
         cb,
-        "✏️ Введи новое название подгруппы:",
+        "✍🏻 Введи новое название подгруппы:",
         lambda company_idx, category_idx: {
             "type": "rename_category",
             "company_idx": company_idx,
@@ -5126,7 +5586,7 @@ async def rename_category_prompt(cb: types.CallbackQuery):
 async def category_emoji_prompt(cb: types.CallbackQuery):
     await open_company_category_prompt_from_callback(
         cb,
-        "😀 Пришли один смайлик для подгруппы:",
+        "💅🏻 Пришли один смайлик для подгруппы:",
         lambda company_idx, category_idx: {
             "type": "category_emoji",
             "company_idx": company_idx,
@@ -5140,16 +5600,24 @@ async def delete_category_with_tasks_ask(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, category_idx = cb.data.split(":")
+    _, wid, company_idx, category_token = cb.data.split(":")
+    company_idx = int(company_idx)
     data = await load_data()
-    ws, company, category = await get_company_category_context(data, wid, int(company_idx), int(category_idx))
-    if not ws:
+    ws = get_connected_ws(data, wid)
+    if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
         return
+    company = ws["companies"][company_idx]
+    category_idx = resolve_item_index_token(company.get("categories", []), category_token)
+    if category_idx is None:
+        await edit_company_menu(data, wid, company_idx)
+        return
+    category = company["categories"][category_idx]
+    category_ref = callback_item_ref(category) or str(category_idx)
     await upsert_ws_menu(
         data,
         wid,
         workspace_path_title(ws, rich_display_company_name(company), rich_display_category_name(category), "🗑 Удалить подгруппу с задачами?"),
-        confirm_kb(f"catdelall:{wid}:{company_idx}:{category_idx}", f"catset:{wid}:{company_idx}:{category_idx}"),
+        confirm_kb(f"catdelall:{wid}:{company_idx}:{category_ref}", f"catset:{wid}:{company_idx}:{category_ref}"),
     )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catdelall:"))
@@ -5157,21 +5625,26 @@ async def delete_category_with_tasks_cb(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, category_idx = cb.data.split(":")
-    company_idx, category_idx = int(company_idx), int(category_idx)
+    _, wid, company_idx, category_token = cb.data.split(":")
+    company_idx = int(company_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        if category_idx < 0 or category_idx >= len(company.get("categories", [])):
+        category_idx = resolve_item_index_token(company.get("categories", []), category_token)
+        if category_idx is None:
             return
         category_id = company["categories"][category_idx]["id"]
         delete_category_with_tasks(company["tasks"], company["categories"], category_id)
         await save_data_unlocked(data)
     fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh or company_idx < 0 or company_idx >= len(ws_fresh.get("companies", [])):
+        return
+    if await sync_company_everywhere(ws_fresh, company_idx):
+        await save_data(fresh)
     await edit_company_menu(fresh, wid, company_idx)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catdelask:"))
@@ -5179,16 +5652,24 @@ async def delete_category_keep_ask(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, category_idx = cb.data.split(":")
+    _, wid, company_idx, category_token = cb.data.split(":")
+    company_idx = int(company_idx)
     data = await load_data()
-    ws, company, category = await get_company_category_context(data, wid, int(company_idx), int(category_idx))
-    if not ws:
+    ws = get_connected_ws(data, wid)
+    if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
         return
+    company = ws["companies"][company_idx]
+    category_idx = resolve_item_index_token(company.get("categories", []), category_token)
+    if category_idx is None:
+        await edit_company_menu(data, wid, company_idx)
+        return
+    category = company["categories"][category_idx]
+    category_ref = callback_item_ref(category) or str(category_idx)
     await upsert_ws_menu(
         data,
         wid,
         workspace_path_title(ws, rich_display_company_name(company), rich_display_category_name(category), "🗑 Удалить подгруппу?"),
-        confirm_kb(f"catdel:{wid}:{company_idx}:{category_idx}", f"catset:{wid}:{company_idx}:{category_idx}"),
+        confirm_kb(f"catdel:{wid}:{company_idx}:{category_ref}", f"catset:{wid}:{company_idx}:{category_ref}"),
     )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catdel:"))
@@ -5196,21 +5677,26 @@ async def delete_category_keep_cb(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, category_idx = cb.data.split(":")
-    company_idx, category_idx = int(company_idx), int(category_idx)
+    _, wid, company_idx, category_token = cb.data.split(":")
+    company_idx = int(company_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        if category_idx < 0 or category_idx >= len(company.get("categories", [])):
+        category_idx = resolve_item_index_token(company.get("categories", []), category_token)
+        if category_idx is None:
             return
         category_id = company["categories"][category_idx]["id"]
         delete_category_keep_tasks(company["tasks"], company["categories"], category_id)
         await save_data_unlocked(data)
     fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh or company_idx < 0 or company_idx >= len(ws_fresh.get("companies", [])):
+        return
+    if await sync_company_everywhere(ws_fresh, company_idx):
+        await save_data(fresh)
     await edit_company_menu(fresh, wid, company_idx)
 
 # =========================
@@ -5222,23 +5708,45 @@ async def add_task_prompt(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, place = cb.data.split(":")
+    _, wid, company_idx, place_token = cb.data.split(":")
     company_idx = int(company_idx)
-    category_idx = None if place == "root" else int(place)
-    back_to = {"view": "company", "company_idx": company_idx} if category_idx is None else {"view": "category", "company_idx": company_idx, "category_idx": category_idx}
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "✏️ Введи текст новой задачи:", {"type": "new_task", "company_idx": company_idx, "category_idx": category_idx, "back_to": back_to})
+        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        category_idx = None
+        category = None
+        if place_token != "root":
+            category_idx = resolve_item_index_token(company.get("categories", []), place_token)
+            if category_idx is None:
+                return
+            category = company["categories"][category_idx]
+        payload = {
+            "type": "new_task",
+            "company_idx": company_idx,
+            "category_idx": category_idx,
+            "back_to": {"view": "company", "company_idx": company_idx},
+        }
+        if category is not None:
+            payload["category_id"] = category.get("id")
+            payload["back_to"] = {
+                "view": "category",
+                "company_idx": company_idx,
+                "category_idx": category_idx,
+                "category_id": category.get("id"),
+            }
+        await set_prompt(ws, "✏️ Введи текст новой задачи:", payload)
         await save_data_unlocked(data)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskren:"))
 async def rename_task_prompt(cb: types.CallbackQuery):
     await open_company_task_prompt_from_callback(
         cb,
-        "✏️ Введи новое название задачи:",
+        "✍🏻 Введи новое название задачи:",
         lambda ws, company_idx, task_idx: {
             "type": "rename_task",
             "company_idx": company_idx,
@@ -5269,30 +5777,43 @@ async def open_task_deadline_box(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, task_idx = cb.data.split(":")
+    _, wid, company_idx, task_token = cb.data.split(":")
+    company_idx = int(company_idx)
     data = await load_data()
-    await edit_task_deadline_menu(data, wid, int(company_idx), int(task_idx))
+    ws = get_connected_ws(data, wid)
+    if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+        return
+    task_idx = resolve_item_index_token(ws["companies"][company_idx].get("tasks", []), task_token)
+    if task_idx is None:
+        await edit_company_menu(data, wid, company_idx)
+        return
+    await edit_task_deadline_menu(data, wid, company_idx, task_idx)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskdeadel:"))
 async def delete_task_deadline(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, task_idx = cb.data.split(":")
-    company_idx, task_idx = int(company_idx), int(task_idx)
+    _, wid, company_idx, task_token = cb.data.split(":")
+    company_idx = int(company_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
+        task_idx = resolve_item_index_token(company.get("tasks", []), task_token)
+        if task_idx is None:
             return
         company["tasks"][task_idx]["deadline_due_at"] = None
         company["tasks"][task_idx]["deadline_started_at"] = None
         await save_data_unlocked(data)
     fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh or company_idx < 0 or company_idx >= len(ws_fresh.get("companies", [])):
+        return
+    if await sync_company_everywhere(ws_fresh, company_idx):
+        await save_data(fresh)
     await edit_task_menu(fresh, wid, company_idx, task_idx)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskdel:"))
@@ -5300,23 +5821,28 @@ async def delete_task(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, task_idx = cb.data.split(":")
-    company_idx, task_idx = int(company_idx), int(task_idx)
+    _, wid, company_idx, task_token = cb.data.split(":")
+    company_idx = int(company_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
+        task_idx = resolve_item_index_token(company.get("tasks", []), task_token)
+        if task_idx is None:
             return
         category_id = company["tasks"][task_idx].get("category_id")
         company["tasks"].pop(task_idx)
         await save_data_unlocked(data)
     fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh or company_idx < 0 or company_idx >= len(ws_fresh.get("companies", [])):
+        return
+    if await sync_company_everywhere(ws_fresh, company_idx):
+        await save_data(fresh)
     if category_id:
-        cat_idx = find_category_index(fresh["workspaces"][wid]["companies"][company_idx].get("categories", []), category_id)
+        cat_idx = find_category_index(ws_fresh["companies"][company_idx].get("categories", []), category_id)
         if cat_idx is not None:
             await edit_category_menu(fresh, wid, company_idx, cat_idx)
             return
@@ -5327,15 +5853,16 @@ async def toggle_task_done(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, task_idx = cb.data.split(":")
-    company_idx, task_idx = int(company_idx), int(task_idx)
+    _, wid, company_idx, task_token = cb.data.split(":")
+    company_idx = int(company_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
+        task_idx = resolve_item_index_token(company.get("tasks", []), task_token)
+        if task_idx is None:
             return
         task = company["tasks"][task_idx]
         if task.get("done"):
@@ -5347,13 +5874,15 @@ async def toggle_task_done(cb: types.CallbackQuery):
         category_id = task.get("category_id")
         await save_data_unlocked(data)
     fresh = await load_data()
-    ws_fresh = fresh["workspaces"][wid]
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh or company_idx < 0 or company_idx >= len(ws_fresh.get("companies", [])):
+        return
     instant_changed = await publish_company_done_reports(ws_fresh, company_idx, task_idx)
-    await sync_company_everywhere(ws_fresh, company_idx)
-    if instant_changed:
+    sync_changed = await sync_company_everywhere(ws_fresh, company_idx)
+    if instant_changed or sync_changed:
         await save_data(fresh)
     if category_id:
-        cat_idx = find_category_index(fresh["workspaces"][wid]["companies"][company_idx].get("categories", []), category_id)
+        cat_idx = find_category_index(ws_fresh["companies"][company_idx].get("categories", []), category_id)
         if cat_idx is not None:
             await edit_category_menu(fresh, wid, company_idx, cat_idx)
             return
@@ -5364,28 +5893,33 @@ async def move_task_to_category(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, task_idx, category_idx = cb.data.split(":")
-    company_idx, task_idx, category_idx = int(company_idx), int(task_idx), int(category_idx)
+    _, wid, company_idx, task_token, category_token = cb.data.split(":")
+    company_idx = int(company_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
+        task_idx = resolve_item_index_token(company.get("tasks", []), task_token)
+        if task_idx is None:
             return
-        if category_idx < 0 or category_idx >= len(company.get("categories", [])):
+        category_idx = resolve_item_index_token(company.get("categories", []), category_token)
+        if category_idx is None:
             return
-        prev_category_id = company["tasks"][task_idx].get("category_id")
-        company["tasks"][task_idx]["category_id"] = company["categories"][category_idx]["id"]
+        new_category_id = company["categories"][category_idx]["id"]
+        company["tasks"][task_idx]["category_id"] = new_category_id
         await save_data_unlocked(data)
     fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
-    if prev_category_id:
-        prev_idx = find_category_index(fresh["workspaces"][wid]["companies"][company_idx].get("categories", []), prev_category_id)
-        if prev_idx is not None:
-            await edit_category_menu(fresh, wid, company_idx, category_idx)
-            return
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh or company_idx < 0 or company_idx >= len(ws_fresh.get("companies", [])):
+        return
+    if await sync_company_everywhere(ws_fresh, company_idx):
+        await save_data(fresh)
+    new_idx = find_category_index(ws_fresh["companies"][company_idx].get("categories", []), new_category_id)
+    if new_idx is not None:
+        await edit_category_menu(fresh, wid, company_idx, new_idx)
+        return
     await edit_company_menu(fresh, wid, company_idx)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskmoveout:"))
@@ -5393,23 +5927,28 @@ async def move_task_out_of_category(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, task_idx = cb.data.split(":")
-    company_idx, task_idx = int(company_idx), int(task_idx)
+    _, wid, company_idx, task_token = cb.data.split(":")
+    company_idx = int(company_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or company_idx < 0 or company_idx >= len(ws.get("companies", [])):
             return
         company = ws["companies"][company_idx]
-        if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
+        task_idx = resolve_item_index_token(company.get("tasks", []), task_token)
+        if task_idx is None:
             return
         prev_category_id = company["tasks"][task_idx].get("category_id")
         company["tasks"][task_idx]["category_id"] = None
         await save_data_unlocked(data)
     fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh or company_idx < 0 or company_idx >= len(ws_fresh.get("companies", [])):
+        return
+    if await sync_company_everywhere(ws_fresh, company_idx):
+        await save_data(fresh)
     if prev_category_id:
-        prev_idx = find_category_index(fresh["workspaces"][wid]["companies"][company_idx].get("categories", []), prev_category_id)
+        prev_idx = find_category_index(ws_fresh["companies"][company_idx].get("categories", []), prev_category_id)
         if prev_idx is not None:
             await edit_category_menu(fresh, wid, company_idx, prev_idx)
             return
@@ -5427,7 +5966,7 @@ async def add_template_category_prompt(cb: types.CallbackQuery):
 async def rename_template_category_prompt(cb: types.CallbackQuery):
     await open_template_category_prompt_from_callback(
         cb,
-        "✏️ Введи новое название подгруппы шаблона:",
+        "✍🏻 Введи новое название подгруппы шаблона:",
         lambda category_idx: {
             "type": "rename_template_category",
             "category_idx": category_idx,
@@ -5439,7 +5978,7 @@ async def rename_template_category_prompt(cb: types.CallbackQuery):
 async def template_category_emoji_prompt(cb: types.CallbackQuery):
     await open_template_category_prompt_from_callback(
         cb,
-        "😀 Пришли один смайлик для подгруппы шаблона:",
+        "💅🏻 Пришли один смайлик для подгруппы шаблона:",
         lambda category_idx: {
             "type": "template_category_emoji",
             "category_idx": category_idx,
@@ -5452,16 +5991,23 @@ async def delete_template_category_all_ask(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, category_idx = cb.data.split(":")
+    _, wid, category_token = cb.data.split(":")
     data = await load_data()
-    ws, active, category = await get_template_category_context(data, wid, int(category_idx))
+    ws = get_connected_ws(data, wid)
     if not ws:
         return
+    category_idx = resolve_item_index_token(ws.get("template_categories", []), category_token)
+    if category_idx is None:
+        await edit_template_menu(data, wid)
+        return
+    active = get_active_template(ws)
+    category = ws["template_categories"][category_idx]
+    category_ref = callback_item_ref(category) or str(category_idx)
     await upsert_ws_menu(
         data,
         wid,
         workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), rich_display_category_name(category), "🗑 Удалить подгруппу с задачами?"),
-        confirm_kb(f"tplcatdelall:{wid}:{category_idx}", f"tplcatset:{wid}:{category_idx}"),
+        confirm_kb(f"tplcatdelall:{wid}:{category_ref}", f"tplcatset:{wid}:{category_ref}"),
     )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatdelall:"))
@@ -5469,12 +6015,14 @@ async def delete_template_category_all(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, category_idx = cb.data.split(":")
-    category_idx = int(category_idx)
+    _, wid, category_token = cb.data.split(":")
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
-        if not ws or category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
+        if not ws:
+            return
+        category_idx = resolve_item_index_token(ws.get("template_categories", []), category_token)
+        if category_idx is None:
             return
         category_id = ws["template_categories"][category_idx]["id"]
         delete_category_with_tasks(ws["template_tasks"], ws["template_categories"], category_id)
@@ -5487,16 +6035,23 @@ async def delete_template_category_keep_ask(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, category_idx = cb.data.split(":")
+    _, wid, category_token = cb.data.split(":")
     data = await load_data()
-    ws, active, category = await get_template_category_context(data, wid, int(category_idx))
+    ws = get_connected_ws(data, wid)
     if not ws:
         return
+    category_idx = resolve_item_index_token(ws.get("template_categories", []), category_token)
+    if category_idx is None:
+        await edit_template_menu(data, wid)
+        return
+    active = get_active_template(ws)
+    category = ws["template_categories"][category_idx]
+    category_ref = callback_item_ref(category) or str(category_idx)
     await upsert_ws_menu(
         data,
         wid,
         workspace_path_title(ws, "⚙️ Шаблоны задач", rich_display_template_name(active), rich_display_category_name(category), "🗑 Удалить подгруппу?"),
-        confirm_kb(f"tplcatdel:{wid}:{category_idx}", f"tplcatset:{wid}:{category_idx}"),
+        confirm_kb(f"tplcatdel:{wid}:{category_ref}", f"tplcatset:{wid}:{category_ref}"),
     )
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcatdel:"))
@@ -5504,12 +6059,14 @@ async def delete_template_category_keep(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, category_idx = cb.data.split(":")
-    category_idx = int(category_idx)
+    _, wid, category_token = cb.data.split(":")
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
-        if not ws or category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
+        if not ws:
+            return
+        category_idx = resolve_item_index_token(ws.get("template_categories", []), category_token)
+        if category_idx is None:
             return
         category_id = ws["template_categories"][category_idx]["id"]
         delete_category_keep_tasks(ws["template_tasks"], ws["template_categories"], category_id)
@@ -5534,22 +6091,39 @@ async def add_template_task_prompt(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, place = cb.data.split(":")
-    category_idx = None if place == "root" else int(place)
-    back_to = {"view": "template"} if category_idx is None else {"view": "template_category", "category_idx": category_idx}
+    _, wid, place_token = cb.data.split(":")
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws or not ws.get("is_connected"):
             return
-        await set_prompt(ws, "✏️ Введи название новой задачи шаблона:", {"type": "new_template_task", "category_idx": category_idx, "back_to": back_to})
+        category_idx = None
+        category = None
+        if place_token != "root":
+            category_idx = resolve_item_index_token(ws.get("template_categories", []), place_token)
+            if category_idx is None:
+                return
+            category = ws["template_categories"][category_idx]
+        payload = {
+            "type": "new_template_task",
+            "category_idx": category_idx,
+            "back_to": {"view": "template"},
+        }
+        if category is not None:
+            payload["category_id"] = category.get("id")
+            payload["back_to"] = {
+                "view": "template_category",
+                "category_idx": category_idx,
+                "category_id": category.get("id"),
+            }
+        await set_prompt(ws, "✏️ Введи название новой задачи шаблона:", payload)
         await save_data_unlocked(data)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskren:"))
 async def rename_template_task_prompt(cb: types.CallbackQuery):
     await open_template_task_prompt_from_callback(
         cb,
-        "✏️ Введи новое название задачи шаблона:",
+        "✍🏻 Введи новое название задачи шаблона:",
         lambda ws, task_idx: {"type": "rename_template_task", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}},
     )
 
@@ -5570,21 +6144,30 @@ async def open_template_task_deadline_box(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, task_idx = cb.data.split(":")
+    _, wid, task_token = cb.data.split(":")
     data = await load_data()
-    await edit_template_task_deadline_menu(data, wid, int(task_idx))
+    ws = get_connected_ws(data, wid)
+    if not ws:
+        return
+    task_idx = resolve_item_index_token(ws.get("template_tasks", []), task_token)
+    if task_idx is None:
+        await edit_template_menu(data, wid)
+        return
+    await edit_template_task_deadline_menu(data, wid, task_idx)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskdeadel:"))
 async def delete_template_task_deadline(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, task_idx = cb.data.split(":")
-    task_idx = int(task_idx)
+    _, wid, task_token = cb.data.split(":")
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
-        if not ws or task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
+        if not ws:
+            return
+        task_idx = resolve_item_index_token(ws.get("template_tasks", []), task_token)
+        if task_idx is None:
             return
         ws["template_tasks"][task_idx]["deadline_seconds"] = None
         await save_data_unlocked(data)
@@ -5596,19 +6179,24 @@ async def delete_template_task(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, task_idx = cb.data.split(":")
-    task_idx = int(task_idx)
+    _, wid, task_token = cb.data.split(":")
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
-        if not ws or task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
+        if not ws:
+            return
+        task_idx = resolve_item_index_token(ws.get("template_tasks", []), task_token)
+        if task_idx is None:
             return
         category_id = ws["template_tasks"][task_idx].get("category_id")
         ws["template_tasks"].pop(task_idx)
         await save_data_unlocked(data)
     fresh = await load_data()
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh:
+        return
     if category_id:
-        cat_idx = find_category_index(fresh["workspaces"][wid].get("template_categories", []), category_id)
+        cat_idx = find_category_index(ws_fresh.get("template_categories", []), category_id)
         if cat_idx is not None:
             await edit_template_category_menu(fresh, wid, cat_idx)
             return
@@ -5619,42 +6207,54 @@ async def move_template_task_to_category(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, task_idx, category_idx = cb.data.split(":")
-    task_idx, category_idx = int(task_idx), int(category_idx)
+    _, wid, task_token, category_token = cb.data.split(":")
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
-        if not ws or task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
+        if not ws:
             return
-        if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
+        task_idx = resolve_item_index_token(ws.get("template_tasks", []), task_token)
+        if task_idx is None:
             return
-        prev_category_id = ws["template_tasks"][task_idx].get("category_id")
-        ws["template_tasks"][task_idx]["category_id"] = ws["template_categories"][category_idx]["id"]
+        category_idx = resolve_item_index_token(ws.get("template_categories", []), category_token)
+        if category_idx is None:
+            return
+        new_category_id = ws["template_categories"][category_idx]["id"]
+        ws["template_tasks"][task_idx]["category_id"] = new_category_id
         await save_data_unlocked(data)
     fresh = await load_data()
-    if prev_category_id:
-        await edit_template_category_menu(fresh, wid, category_idx)
-    else:
-        await edit_template_menu(fresh, wid)
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh:
+        return
+    new_idx = find_category_index(ws_fresh.get("template_categories", []), new_category_id)
+    if new_idx is not None:
+        await edit_template_category_menu(fresh, wid, new_idx)
+        return
+    await edit_template_menu(fresh, wid)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskmoveout:"))
 async def move_template_task_out_of_category(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, task_idx = cb.data.split(":")
-    task_idx = int(task_idx)
+    _, wid, task_token = cb.data.split(":")
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
-        if not ws or task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
+        if not ws:
+            return
+        task_idx = resolve_item_index_token(ws.get("template_tasks", []), task_token)
+        if task_idx is None:
             return
         prev_category_id = ws["template_tasks"][task_idx].get("category_id")
         ws["template_tasks"][task_idx]["category_id"] = None
         await save_data_unlocked(data)
     fresh = await load_data()
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh:
+        return
     if prev_category_id:
-        cat_idx = find_category_index(fresh["workspaces"][wid].get("template_categories", []), prev_category_id)
+        cat_idx = find_category_index(ws_fresh.get("template_categories", []), prev_category_id)
         if cat_idx is not None:
             await edit_template_category_menu(fresh, wid, cat_idx)
             return
@@ -5741,7 +6341,6 @@ async def handle_group_text(message: types.Message):
             asyncio.create_task(try_delete_user_message(message))
             return
 
-        prompt_msg_id = awaiting.get("prompt_msg_id")
         back_to = awaiting.get("back_to", {"view": "ws"})
         report_followup = None
         report_followup_payload = {}
@@ -5807,11 +6406,11 @@ async def handle_group_text(message: types.Message):
             created_company = False
         elif mode == "rename_category":
             company_idx = awaiting["company_idx"]
-            category_idx = awaiting["category_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
                 finish(); await save_data_unlocked(data); return
             company = ws["companies"][company_idx]
-            if category_idx < 0 or category_idx >= len(company.get("categories", [])):
+            category_idx = resolve_category_idx_from_payload(company, awaiting)
+            if category_idx is None:
                 finish(); await save_data_unlocked(data); return
             category = company["categories"][category_idx]
             if category_exists(company.get("categories", []), text, exclude_id=category["id"]):
@@ -5824,23 +6423,24 @@ async def handle_group_text(message: types.Message):
                 await reject_input("Пришли один смайлик, балдабёб!")
                 return
             company_idx = awaiting["company_idx"]
-            category_idx = awaiting["category_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
                 finish(); await save_data_unlocked(data); return
             company = ws["companies"][company_idx]
-            if category_idx < 0 or category_idx >= len(company.get("categories", [])):
+            category_idx = resolve_category_idx_from_payload(company, awaiting)
+            if category_idx is None:
                 finish(); await save_data_unlocked(data); return
             company["categories"][category_idx]["emoji"] = text
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "new_task":
             company_idx = awaiting["company_idx"]
-            category_idx = awaiting.get("category_idx")
             if company_idx < 0 or company_idx >= len(ws["companies"]):
                 finish(); await save_data_unlocked(data); return
             company = ws["companies"][company_idx]
+            category_idx = None
             category_id = None
-            if category_idx is not None:
-                if category_idx < 0 or category_idx >= len(company.get("categories", [])):
+            if awaiting.get("category_id") or awaiting.get("category_idx") is not None:
+                category_idx = resolve_category_idx_from_payload(company, awaiting)
+                if category_idx is None:
                     finish(); await save_data_unlocked(data); return
                 category_id = company["categories"][category_idx]["id"]
             company["tasks"].append({
@@ -5855,11 +6455,11 @@ async def handle_group_text(message: types.Message):
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "rename_task":
             company_idx = awaiting["company_idx"]
-            task_idx = awaiting["task_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
                 finish(); await save_data_unlocked(data); return
             company = ws["companies"][company_idx]
-            if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
+            task_idx = resolve_task_idx_from_payload(company, awaiting)
+            if task_idx is None:
                 finish(); await save_data_unlocked(data); return
             company["tasks"][task_idx]["text"] = text
             entry = find_completion_entry(get_report_history(company), company["tasks"][task_idx].get("done_event_id"))
@@ -5868,11 +6468,11 @@ async def handle_group_text(message: types.Message):
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "task_deadline":
             company_idx = awaiting["company_idx"]
-            task_idx = awaiting["task_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
                 finish(); await save_data_unlocked(data); return
             company = ws["companies"][company_idx]
-            if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
+            task_idx = resolve_task_idx_from_payload(company, awaiting)
+            if task_idx is None:
                 finish(); await save_data_unlocked(data); return
             task = company["tasks"][task_idx]
             started_at, due_at, err = parse_deadline_input(text, task.get("deadline_started_at"))
@@ -6073,8 +6673,8 @@ async def handle_group_text(message: types.Message):
             ws.setdefault("template_categories", []).append({"id": uuid.uuid4().hex, "title": text, "emoji": "📁"})
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "rename_template_category":
-            category_idx = awaiting["category_idx"]
-            if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
+            category_idx = resolve_template_category_idx_from_payload(ws, awaiting)
+            if category_idx is None:
                 finish(); await save_data_unlocked(data); return
             category = ws["template_categories"][category_idx]
             if category_exists(ws.get("template_categories", []), text, exclude_id=category["id"]):
@@ -6086,16 +6686,17 @@ async def handle_group_text(message: types.Message):
             if not is_single_emoji(text):
                 await reject_input("Пришли один смайлик, балдабёб!")
                 return
-            category_idx = awaiting["category_idx"]
-            if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
+            category_idx = resolve_template_category_idx_from_payload(ws, awaiting)
+            if category_idx is None:
                 finish(); await save_data_unlocked(data); return
             ws["template_categories"][category_idx]["emoji"] = text
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "new_template_task":
-            category_idx = awaiting.get("category_idx")
+            category_idx = None
             category_id = None
-            if category_idx is not None:
-                if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
+            if awaiting.get("category_id") or awaiting.get("category_idx") is not None:
+                category_idx = resolve_template_category_idx_from_payload(ws, awaiting)
+                if category_idx is None:
                     finish(); await save_data_unlocked(data); return
                 category_id = ws["template_categories"][category_idx]["id"]
             ws.setdefault("template_tasks", []).append({
@@ -6107,14 +6708,14 @@ async def handle_group_text(message: types.Message):
             })
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "rename_template_task":
-            task_idx = awaiting["task_idx"]
-            if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
+            task_idx = resolve_template_task_idx_from_payload(ws, awaiting)
+            if task_idx is None:
                 finish(); await save_data_unlocked(data); return
             ws["template_tasks"][task_idx]["text"] = text
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "template_task_deadline":
-            task_idx = awaiting["task_idx"]
-            if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
+            task_idx = resolve_template_task_idx_from_payload(ws, awaiting)
+            if task_idx is None:
                 finish(); await save_data_unlocked(data); return
             seconds, err = parse_template_deadline_seconds(text)
             if err:
@@ -6132,11 +6733,11 @@ async def handle_group_text(message: types.Message):
             finish(); await save_data_unlocked(data); created_company = True
         elif mode == "copy_category":
             company_idx = awaiting["company_idx"]
-            category_idx = awaiting["category_idx"]
             if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
                 finish(); await save_data_unlocked(data); return
             company = ws["companies"][company_idx]
-            if category_idx < 0 or category_idx >= len(company.get("categories", [])) or category_exists(company.get("categories", []), text):
+            category_idx = resolve_category_idx_from_payload(company, awaiting)
+            if category_idx is None or category_exists(company.get("categories", []), text):
                 await reject_input("Такая подгруппа уже существует.")
                 return
             copy_category_into_company(company, category_idx, text)
@@ -6174,8 +6775,8 @@ async def handle_group_text(message: types.Message):
             set_active_template(ws, new_tpl["id"])
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "copy_template_category":
-            category_idx = awaiting["category_idx"]
-            if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])) or category_exists(ws.get("template_categories", []), text):
+            category_idx = resolve_template_category_idx_from_payload(ws, awaiting)
+            if category_idx is None or category_exists(ws.get("template_categories", []), text):
                 await reject_input("Такая подгруппа уже существует.")
                 return
             tpl = get_active_template(ws)
@@ -6187,8 +6788,6 @@ async def handle_group_text(message: types.Message):
             asyncio.create_task(try_delete_user_message(message))
             return
 
-    if prompt_msg_id and prompt_msg_id != ws.get("menu_msg_id"):
-        await safe_delete_message(message.chat.id, prompt_msg_id)
     await try_delete_user_message(message)
     fresh = await load_data()
     ws = fresh["workspaces"].get(wid)
@@ -6263,7 +6862,11 @@ async def toggle_company_deadline_format(cb: types.CallbackQuery):
         company["deadline_format"] = "date" if company.get("deadline_format") != "date" else "relative"
         await save_data_unlocked(data)
     fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh or company_idx < 0 or company_idx >= len(ws_fresh.get("companies", [])):
+        return
+    if await sync_company_everywhere(ws_fresh, company_idx):
+        await save_data(fresh)
     await edit_company_settings_menu(fresh, wid, company_idx)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cmpcopy:"))
@@ -6286,15 +6889,36 @@ async def copy_category_prompt(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, category_idx = cb.data.split(":")
+    _, wid, company_idx, category_token = cb.data.split(":")
     company_idx = int(company_idx)
-    category_idx = int(category_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws:
             return
-        await set_prompt(ws, "✏️ Введи имя новой подгруппы-копии:", {"type": "copy_category", "company_idx": company_idx, "category_idx": category_idx, "back_to": {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx}})
+        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
+        company = ws["companies"][company_idx]
+        category_idx = resolve_item_index_token(company.get("categories", []), category_token)
+        if category_idx is None:
+            return
+        category = company["categories"][category_idx]
+        await set_prompt(
+            ws,
+            "✏️ Введи имя новой подгруппы-копии:",
+            {
+                "type": "copy_category",
+                "company_idx": company_idx,
+                "category_idx": category_idx,
+                "category_id": category.get("id"),
+                "back_to": {
+                    "view": "category_settings",
+                    "company_idx": company_idx,
+                    "category_idx": category_idx,
+                    "category_id": category.get("id"),
+                },
+            },
+        )
         await save_data_unlocked(data)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catdeadlinefmt:"))
@@ -6302,22 +6926,28 @@ async def toggle_category_deadline_format(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    _, wid, company_idx, category_idx = cb.data.split(":")
+    _, wid, company_idx, category_token = cb.data.split(":")
     company_idx = int(company_idx)
-    category_idx = int(category_idx)
     async with FILE_LOCK:
         data = await load_data_unlocked()
         ws = data["workspaces"].get(wid)
         if not ws:
             return
+        if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
+            return
         company = ws["companies"][company_idx]
-        if category_idx < 0 or category_idx >= len(company.get("categories", [])):
+        category_idx = resolve_item_index_token(company.get("categories", []), category_token)
+        if category_idx is None:
             return
         category = company["categories"][category_idx]
         category["deadline_format"] = "date" if category.get("deadline_format") != "date" else "relative"
         await save_data_unlocked(data)
     fresh = await load_data()
-    await sync_company_everywhere(fresh["workspaces"][wid], company_idx)
+    ws_fresh = fresh["workspaces"].get(wid)
+    if not ws_fresh or company_idx < 0 or company_idx >= len(ws_fresh.get("companies", [])):
+        return
+    if await sync_company_everywhere(ws_fresh, company_idx):
+        await save_data(fresh)
     await edit_category_settings_menu(fresh, wid, company_idx, category_idx)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplroot:"))
@@ -6350,11 +6980,11 @@ async def add_template_set_prompt(cb: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplrenameset:"))
 async def rename_template_set_prompt(cb: types.CallbackQuery):
-    await open_wid_prompt_from_callback(cb, "✏️ Введи новое название шаблона:", {"type": "rename_template_set", "back_to": {"view": "template_settings"}})
+    await open_wid_prompt_from_callback(cb, "✍🏻 Введи новое название шаблона:", {"type": "rename_template_set", "back_to": {"view": "template_settings"}})
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplemojiset:"))
 async def template_set_emoji_prompt(cb: types.CallbackQuery):
-    await open_wid_prompt_from_callback(cb, "😀 Пришли один смайлик для шаблона:", {"type": "template_set_emoji", "back_to": {"view": "template_settings"}})
+    await open_wid_prompt_from_callback(cb, "💅🏻 Пришли один смайлик для шаблона:", {"type": "template_set_emoji", "back_to": {"view": "template_settings"}})
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcopy:"))
 async def copy_template_set_prompt(cb: types.CallbackQuery):
@@ -6410,79 +7040,76 @@ async def deadline_refresh_worker():
         if report_tick != last_report_tick:
             last_report_tick = report_tick
             try:
-                data = await load_data()
-                changed = False
                 now_value = int(report_tick.timestamp())
-                for ws in data.get("workspaces", {}).values():
+                snapshot = await load_data()
+                report_candidates = []
+                for wid, ws in snapshot.get("workspaces", {}).items():
                     if not ws.get("is_connected"):
                         continue
-                    for idx in range(len(ws.get("companies", []))):
-                        if await publish_company_reports(ws, idx, now_value):
-                            changed = True
-                if changed:
-                    await save_data(data)
+                    for idx, company in enumerate(ws.get("companies", [])):
+                        if any(interval.get("kind") != "on_done" for interval in get_report_intervals(company)):
+                            report_candidates.append((wid, company.get("id"), idx))
+
+                for wid, company_id, fallback_idx in report_candidates:
+                    fresh = await load_data()
+                    ws = fresh.get("workspaces", {}).get(wid)
+                    if not ws or not ws.get("is_connected"):
+                        continue
+                    company_idx = resolve_company_idx_reference(ws, company_id, fallback_idx)
+                    if company_idx is None:
+                        continue
+                    if not await publish_company_reports(ws, company_idx, now_value):
+                        continue
+                    async with FILE_LOCK:
+                        latest = await load_data_unlocked()
+                        latest_ws = latest.get("workspaces", {}).get(wid)
+                        if latest_ws and merge_company_report_runtime_state(latest_ws, ws, company_id, company_idx):
+                            await save_data_unlocked(latest)
             except Exception:
-                pass
+                traceback.print_exc()
 
         if now.minute % 10 == 0 and deadline_tick != last_deadline_tick:
             last_deadline_tick = deadline_tick
             try:
-                data = await load_data()
-                changed = False
-                for ws in data.get("workspaces", {}).values():
+                snapshot = await load_data()
+                deadline_candidates = []
+                for wid, ws in snapshot.get("workspaces", {}).items():
                     if not ws.get("is_connected"):
                         continue
-                    for idx in range(len(ws.get("companies", []))):
-                        company = ws["companies"][idx]
-                        if not any(
+                    for idx, company in enumerate(ws.get("companies", [])):
+                        if any(
                             isinstance(task.get("deadline_due_at"), int) and not task.get("done")
                             for task in company.get("tasks", [])
                         ):
-                            continue
-                        if await sync_company_everywhere(ws, idx):
-                            changed = True
-                if changed:
-                    await save_data(data)
+                            deadline_candidates.append((wid, company.get("id"), idx))
+
+                for wid, company_id, fallback_idx in deadline_candidates:
+                    fresh = await load_data()
+                    ws = fresh.get("workspaces", {}).get(wid)
+                    if not ws or not ws.get("is_connected"):
+                        continue
+                    company_idx = resolve_company_idx_reference(ws, company_id, fallback_idx)
+                    if company_idx is None:
+                        continue
+                    company = ws["companies"][company_idx]
+                    if not any(
+                        isinstance(task.get("deadline_due_at"), int) and not task.get("done")
+                        for task in company.get("tasks", [])
+                    ):
+                        continue
+                    if not await sync_company_everywhere(ws, company_idx):
+                        continue
+                    async with FILE_LOCK:
+                        latest = await load_data_unlocked()
+                        latest_ws = latest.get("workspaces", {}).get(wid)
+                        if latest_ws and merge_company_delivery_state(latest_ws, ws, company_id, company_idx):
+                            await save_data_unlocked(latest)
             except Exception:
-                pass
+                traceback.print_exc()
 
         await asyncio.sleep(5 if now.second >= 55 else max(1, 60 - now.second))
 
-async def drain_startup_updates():
-    offset = None
-    pending_topic_titles: dict[tuple[int, int], tuple[str | None, str, str]] = {}
-
-    for _ in range(20):
-        updates = await bot.get_updates(offset=offset, limit=100, timeout=0)
-        if not updates:
-            break
-        offset = updates[-1].update_id + 1
-        for update in updates:
-            for field_name in ("message", "edited_message", "channel_post", "edited_channel_post"):
-                message = getattr(update, field_name, None)
-                if not message or message.chat.type == "private":
-                    continue
-                thread_id = message.message_thread_id or 0
-                if not thread_id:
-                    continue
-                topic_title = extract_message_topic_title(message)
-                if not topic_title:
-                    continue
-                topic_title_source = "edited" if getattr(message, "forum_topic_edited", None) else "created"
-                pending_topic_titles[(message.chat.id, thread_id)] = (message.chat.title, topic_title, topic_title_source)
-
-    if not pending_topic_titles:
-        return
-
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        for (chat_id, thread_id), (chat_title, topic_title, topic_title_source) in pending_topic_titles.items():
-            remember_binding_place(data, chat_id, thread_id, chat_title, topic_title, topic_title_source)
-            refresh_binding_labels(data, chat_id, thread_id)
-        await save_data_unlocked(data)
-
 async def on_startup_polling(_):
-    await drain_startup_updates()
     asyncio.create_task(deadline_refresh_worker())
 
 # =========================
