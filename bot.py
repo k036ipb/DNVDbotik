@@ -742,8 +742,8 @@ def resolve_binding_titles(data: dict, chat_id: int, thread_id: int, chat_title:
     ws = find_workspace_by_binding(data, chat_id, thread_id) or {}
     entry = get_known_topic_entry(data, chat_id, thread_id) or {}
     return (
-        chat_title or ws.get("chat_title") or entry.get("chat_title"),
-        topic_title or ws.get("topic_title") or entry.get("topic_title"),
+        chat_title or entry.get("chat_title") or ws.get("chat_title"),
+        topic_title or entry.get("topic_title") or ws.get("topic_title"),
     )
 
 def remember_binding_place(data: dict, chat_id: int, thread_id: int, chat_title: str | None = None, topic_title: str | None = None) -> tuple[str | None, str | None]:
