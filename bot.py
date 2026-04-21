@@ -709,7 +709,7 @@ def clean_text(text: str) -> str:
 
 def workspace_full_name(chat_title: str, topic_title: str | None, thread_id: int) -> str:
     if thread_id:
-        return f"{chat_title} - {(topic_title or f'Тред {thread_id}').strip()}"
+        return (topic_title or f"Тред {thread_id}").strip()
     return chat_title
 
 def extract_message_topic_title(message: types.Message) -> str | None:
@@ -782,7 +782,7 @@ def binding_place_label(
     topic_title: str | None = None,
 ) -> str:
     resolved_chat, resolved_topic = resolve_binding_titles(data, chat_id, thread_id, chat_title, topic_title)
-    if resolved_chat:
+    if resolved_chat or thread_id:
         return workspace_full_name(resolved_chat, resolved_topic, thread_id)
     return fallback_label or f"{chat_id}/{thread_id or 0}"
 
