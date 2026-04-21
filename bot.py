@@ -590,12 +590,19 @@ def normalize_data(data: dict) -> dict:
     for key, value in list(data["known_topics"].items()):
         if not isinstance(value, dict):
             continue
+        try:
+            _, raw_thread_id = str(key).rsplit("_", 1)
+            topic_thread_id = int(raw_thread_id)
+        except Exception:
+            topic_thread_id = 0
         entry = {}
         if value.get("chat_title"):
-            entry["chat_title"] = str(value["chat_title"])
-        if value.get("topic_title") and value.get("topic_title_source") == "edited":
-            entry["topic_title"] = str(value["topic_title"])
-            entry["topic_title_source"] = "edited"
+            entry["chat_title"] = sanitize_binding_chat_title(str(value["chat_title"]), str(value.get("topic_title") or ""), topic_thread_id)
+        topic_title = str(value.get("topic_title") or "").strip()
+        topic_title_source = value.get("topic_title_source")
+        if topic_title and topic_title_source in {"created", "edited"}:
+            entry["topic_title"] = topic_title
+            entry["topic_title_source"] = topic_title_source
         if entry:
             normalized_topics[key] = entry
     data["known_topics"] = normalized_topics
@@ -624,6 +631,7 @@ def normalize_data(data: dict) -> dict:
         ws.setdefault("awaiting", None)
         ws.setdefault("is_connected", True)
         ws.setdefault("ui_pages", {})
+        ws["chat_title"] = sanitize_binding_chat_title(ws.get("chat_title"), ws.get("topic_title"), ws.get("thread_id") or 0)
 
         if not isinstance(ws["companies"], list):
             ws["companies"] = []
@@ -707,17 +715,48 @@ def make_ws_id(chat_id: int, thread_id: int | None):
 def clean_text(text: str) -> str:
     return (text or "").strip().lstrip("/").strip()
 
+def sanitize_binding_chat_title(chat_title: str | None, topic_title: str | None, thread_id: int) -> str | None:
+    title = (chat_title or "").strip()
+    if not title:
+        return None
+    if not thread_id:
+        return title
+    if topic_title:
+        suffix = f" - {topic_title.strip()}"
+        if title.endswith(suffix):
+            title = title[:-len(suffix)].rstrip()
+    title = re.sub(r"\s*-\s*Тред\s+\d+\s*$", "", title, flags=re.IGNORECASE).strip()
+    return title or None
+
 def workspace_full_name(chat_title: str, topic_title: str | None, thread_id: int) -> str:
     if thread_id:
-        return (topic_title or f"Тред {thread_id}").strip()
+        return f"{(chat_title or 'Чат').strip()} - {(topic_title or f'Тред {thread_id}').strip()}"
     return chat_title
 
 def extract_message_topic_title(message: types.Message) -> str | None:
+    if getattr(message, "forum_topic_created", None):
+        created_name = getattr(message.forum_topic_created, "name", None)
+        if created_name:
+            return created_name
     if getattr(message, "forum_topic_edited", None):
         new_name = getattr(message.forum_topic_edited, "name", None)
         if new_name:
             return new_name
     return None
+
+def extract_reply_topic_title(message: types.Message) -> tuple[str | None, str | None]:
+    reply = getattr(message, "reply_to_message", None)
+    if not reply:
+        return None, None
+    if getattr(reply, "forum_topic_edited", None):
+        new_name = getattr(reply.forum_topic_edited, "name", None)
+        if new_name:
+            return new_name, "edited"
+    if getattr(reply, "forum_topic_created", None):
+        created_name = getattr(reply.forum_topic_created, "name", None)
+        if created_name:
+            return created_name, "created"
+    return None, None
 
 def resolve_message_topic_title(data: dict, message: types.Message) -> tuple[str | None, str | None]:
     thread_id = message.message_thread_id or 0
@@ -725,10 +764,14 @@ def resolve_message_topic_title(data: dict, message: types.Message) -> tuple[str
         return None, None
     direct_title = extract_message_topic_title(message)
     if direct_title:
-        return direct_title, "edited"
+        source = "edited" if getattr(message, "forum_topic_edited", None) else "created"
+        return direct_title, source
     entry = get_known_topic_entry(data, message.chat.id, thread_id) or {}
-    if entry.get("topic_title_source") == "edited":
-        return entry.get("topic_title"), "edited"
+    if entry.get("topic_title") and entry.get("topic_title_source") in {"created", "edited"}:
+        return entry.get("topic_title"), entry.get("topic_title_source")
+    reply_title, reply_source = extract_reply_topic_title(message)
+    if reply_title:
+        return reply_title, reply_source
     return None, None
 
 def get_known_topic_entry(data: dict, chat_id: int, thread_id: int) -> dict | None:
@@ -744,9 +787,11 @@ def find_workspace_by_binding(data: dict, chat_id: int, thread_id: int) -> dict 
 def resolve_binding_titles(data: dict, chat_id: int, thread_id: int, chat_title: str | None = None, topic_title: str | None = None) -> tuple[str | None, str | None]:
     ws = find_workspace_by_binding(data, chat_id, thread_id) or {}
     entry = get_known_topic_entry(data, chat_id, thread_id) or {}
+    resolved_topic = topic_title if topic_title is not None else entry.get("topic_title")
+    resolved_chat = chat_title or entry.get("chat_title") or ws.get("chat_title")
     return (
-        chat_title or entry.get("chat_title") or ws.get("chat_title"),
-        topic_title if topic_title is not None else entry.get("topic_title"),
+        sanitize_binding_chat_title(resolved_chat, resolved_topic, thread_id),
+        resolved_topic,
     )
 
 def remember_binding_place(data: dict, chat_id: int, thread_id: int, chat_title: str | None = None, topic_title: str | None = None, topic_title_source: str | None = None) -> tuple[str | None, str | None]:
@@ -762,7 +807,7 @@ def remember_binding_place(data: dict, chat_id: int, thread_id: int, chat_title:
         known_topics[key] = entry
 
     if chat_title:
-        entry["chat_title"] = chat_title
+        entry["chat_title"] = sanitize_binding_chat_title(chat_title, topic_title, thread_id)
     if topic_title:
         entry["topic_title"] = topic_title
         if topic_title_source:
@@ -3362,10 +3407,11 @@ async def track_forum_topic_updates(message: types.Message):
     topic_title = extract_message_topic_title(message)
     if not topic_title:
         return
+    topic_title_source = "edited" if getattr(message, "forum_topic_edited", None) else "created"
 
     async with FILE_LOCK:
         data = await load_data_unlocked()
-        remember_binding_place(data, message.chat.id, thread_id, message.chat.title or "Workspace", topic_title, "edited")
+        remember_binding_place(data, message.chat.id, thread_id, message.chat.title or "Workspace", topic_title, topic_title_source)
         refresh_binding_labels(data, message.chat.id, thread_id)
         await save_data_unlocked(data)
 
