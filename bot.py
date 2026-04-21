@@ -603,6 +603,9 @@ def normalize_data(data: dict) -> dict:
         if topic_title and topic_title_source in {"created", "edited"}:
             entry["topic_title"] = topic_title
             entry["topic_title_source"] = topic_title_source
+        custom_label = clean_text(str(value.get("custom_label") or ""))
+        if custom_label:
+            entry["custom_label"] = custom_label
         if entry:
             normalized_topics[key] = entry
     data["known_topics"] = normalized_topics
@@ -613,6 +616,7 @@ def normalize_data(data: dict) -> dict:
             user = data["users"][uid]
         user.setdefault("workspaces", [])
         user.setdefault("pm_menu_msg_id", None)
+        user.setdefault("pm_awaiting", None)
         user.setdefault("ui_pages", {})
 
     for wid, ws in list(data["workspaces"].items()):
@@ -704,6 +708,7 @@ def ensure_user(data, user_id: str):
         {
             "workspaces": [],
             "pm_menu_msg_id": None,
+            "pm_awaiting": None,
             "ui_pages": {},
         },
     )
@@ -778,6 +783,32 @@ def get_known_topic_entry(data: dict, chat_id: int, thread_id: int) -> dict | No
     entry = (data.get("known_topics") or {}).get(make_ws_id(chat_id, thread_id))
     return entry if isinstance(entry, dict) else None
 
+def ensure_known_topic_entry(data: dict, chat_id: int, thread_id: int) -> dict:
+    known_topics = data.setdefault("known_topics", {})
+    if not isinstance(known_topics, dict):
+        known_topics = {}
+        data["known_topics"] = known_topics
+    key = make_ws_id(chat_id, thread_id)
+    entry = known_topics.get(key)
+    if not isinstance(entry, dict):
+        entry = {}
+        known_topics[key] = entry
+    return entry
+
+def get_binding_custom_label(data: dict, chat_id: int, thread_id: int) -> str | None:
+    entry = get_known_topic_entry(data, chat_id, thread_id) or {}
+    label = clean_text(str(entry.get("custom_label") or ""))
+    return label or None
+
+def set_binding_custom_label(data: dict, chat_id: int, thread_id: int, label: str | None) -> str | None:
+    entry = ensure_known_topic_entry(data, chat_id, thread_id)
+    custom_label = clean_text(label or "")
+    if custom_label:
+        entry["custom_label"] = custom_label
+        return custom_label
+    entry.pop("custom_label", None)
+    return None
+
 def find_workspace_by_binding(data: dict, chat_id: int, thread_id: int) -> dict | None:
     for ws in data.get("workspaces", {}).values():
         if ws.get("chat_id") == chat_id and (ws.get("thread_id") or 0) == thread_id:
@@ -795,16 +826,7 @@ def resolve_binding_titles(data: dict, chat_id: int, thread_id: int, chat_title:
     )
 
 def remember_binding_place(data: dict, chat_id: int, thread_id: int, chat_title: str | None = None, topic_title: str | None = None, topic_title_source: str | None = None) -> tuple[str | None, str | None]:
-    known_topics = data.setdefault("known_topics", {})
-    if not isinstance(known_topics, dict):
-        known_topics = {}
-        data["known_topics"] = known_topics
-
-    key = make_ws_id(chat_id, thread_id)
-    entry = known_topics.setdefault(key, {})
-    if not isinstance(entry, dict):
-        entry = {}
-        known_topics[key] = entry
+    entry = ensure_known_topic_entry(data, chat_id, thread_id)
 
     if chat_title:
         entry["chat_title"] = sanitize_binding_chat_title(chat_title, topic_title, thread_id)
@@ -826,6 +848,9 @@ def binding_place_label(
     chat_title: str | None = None,
     topic_title: str | None = None,
 ) -> str:
+    custom_label = get_binding_custom_label(data, chat_id, thread_id)
+    if custom_label:
+        return custom_label
     resolved_chat, resolved_topic = resolve_binding_titles(data, chat_id, thread_id, chat_title, topic_title)
     if resolved_chat or thread_id:
         return workspace_full_name(resolved_chat, resolved_topic, thread_id)
@@ -1686,6 +1711,14 @@ def ws_settings_kb(wid: str):
     kb.add(kb_btn("⬅️", callback_data=f"backws:{wid}"))
     return kb
 
+def pm_workspace_kb(wid: str):
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("✍️ Переименовать Workspace", callback_data=f"pmwsren:{wid}", style=False))
+    kb.add(kb_btn("🧹 Очистить workspace", callback_data=f"pmwsclearask:{wid}"))
+    kb.add(kb_btn("🗑 Удалить workspace", callback_data=f"pmwsdelask:{wid}"))
+    kb.add(kb_btn("⬅️", callback_data="pmrefresh:root", style="primary"))
+    return kb
+
 def ws_home_kb(wid: str, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     items = [(display_company_name(company), f"cmp:{wid}:{idx}") for idx, company in enumerate(ws.get("companies", []))]
@@ -2407,6 +2440,17 @@ async def update_pm_menu(user_id: str, data: dict):
     except Exception:
         pass
 
+async def edit_pm_workspace_view(data: dict, user_id: str, wid: str, message_id: int | None = None):
+    user = ensure_user(data, user_id)
+    target_message_id = message_id or user.get("pm_menu_msg_id")
+    if not target_message_id:
+        return
+    ws = data["workspaces"].get(wid)
+    if not ws or not ws.get("is_connected") or wid not in user.get("workspaces", []):
+        await safe_edit_text(int(user_id), target_message_id, pm_main_text(user_id, data), reply_markup=pm_main_kb(user_id, data))
+        return
+    await safe_edit_text(int(user_id), target_message_id, f"📂 {esc(ws.get('name') or 'Workspace')}", reply_markup=pm_workspace_kb(wid))
+
 async def upsert_company_card(ws: dict, company_idx: int):
     if company_idx < 0 or company_idx >= len(ws["companies"]):
         return False
@@ -2817,6 +2861,22 @@ async def edit_ws_settings_menu(data: dict, wid: str):
         return
     await upsert_ws_menu(data, wid, workspace_path_title(ws, "⚙️ Настройки Workspace"), ws_settings_kb(wid))
 
+async def edit_mirror_item_menu(data: dict, wid: str, company_idx: int, mirror_idx: int):
+    ws, company = await get_connected_company(data, wid, company_idx)
+    if not ws:
+        return
+    mirrors = company.get("mirrors", [])
+    if mirror_idx < 0 or mirror_idx >= len(mirrors):
+        await upsert_ws_menu(data, wid, workspace_path_title(ws, rich_display_company_name(company), "📤 Дублирование списка"), mirrors_menu_kb(wid, company_idx, company))
+        return
+    mirror = mirrors[mirror_idx]
+    label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("✍️ Переименовать Связку", callback_data=f"mirrorren:{wid}:{company_idx}:{mirror_idx}", style=False))
+    kb.add(kb_btn("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
+    kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
+    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "📤 Дублирование списка", label), kb)
+
 async def edit_company_create_menu(data: dict, wid: str):
     ws = get_connected_ws(data, wid)
     if not ws:
@@ -2853,6 +2913,7 @@ async def edit_report_settings_menu(data: dict, wid: str, company_idx: int, targ
         title.append(target.get("label") or f"{target.get('chat_id')}/{target.get('thread_id') or 0}")
     title.append("⚙️ Отчетность")
     kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(kb_btn("✍️ Переименовать Связку", callback_data=f"reportren:{wid}:{company_idx}:{target_idx}", style=False))
     kb.add(kb_btn("🔌 Отвязать", callback_data=f"reportbindoff:{wid}:{company_idx}:{target_idx}", style="danger"))
     kb.add(kb_btn("🧹 Очистить график", callback_data=f"reportclearask:{wid}:{company_idx}:{target_idx}", style="danger"))
     kb.add(kb_btn("⬅️", callback_data=f"reportmenu:{wid}:{company_idx}:{target_idx}", style="primary"))
@@ -3112,7 +3173,9 @@ async def pm_refresh(cb: types.CallbackQuery):
     async with FILE_LOCK:
         data = await load_data_unlocked()
         uid = str(cb.from_user.id)
-        ensure_user(data, uid)["pm_menu_msg_id"] = cb.message.message_id
+        user = ensure_user(data, uid)
+        user["pm_menu_msg_id"] = cb.message.message_id
+        user["pm_awaiting"] = None
         await save_data_unlocked(data)
     await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
 
@@ -3171,18 +3234,42 @@ async def pm_open_workspace(cb: types.CallbackQuery):
     await cb.answer()
     if cb.message.chat.type != "private" or should_ignore_callback(cb):
         return
-    data = await load_data()
     uid = str(cb.from_user.id)
     wid = cb.data.split(":", 1)[1]
-    ws = data["workspaces"].get(wid)
-    if not ws or not ws.get("is_connected") or wid not in data["users"].get(uid, {}).get("workspaces", []):
-        await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, data), reply_markup=pm_main_kb(uid, data))
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        user = ensure_user(data, uid)
+        user["pm_menu_msg_id"] = cb.message.message_id
+        user["pm_awaiting"] = None
+        await save_data_unlocked(data)
+    await edit_pm_workspace_view(data, uid, wid, cb.message.message_id)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("pmwsren:"))
+async def pm_rename_workspace_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if cb.message.chat.type != "private" or should_ignore_callback(cb):
+        return
+    uid = str(cb.from_user.id)
+    wid = cb.data.split(":", 1)[1]
+    show_root = False
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        user = ensure_user(data, uid)
+        user["pm_menu_msg_id"] = cb.message.message_id
+        ws = data["workspaces"].get(wid)
+        if not ws or not ws.get("is_connected") or wid not in user.get("workspaces", []):
+            user["pm_awaiting"] = None
+            show_root = True
+        else:
+            user["pm_awaiting"] = {"type": "rename_workspace_label", "wid": wid}
+        await save_data_unlocked(data)
+    if show_root:
+        fresh = await load_data()
+        await safe_edit_text(int(uid), cb.message.message_id, pm_main_text(uid, fresh), reply_markup=pm_main_kb(uid, fresh))
         return
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("🧹 Очистить workspace", callback_data=f"pmwsclearask:{wid}"))
-    kb.add(kb_btn("🗑 Удалить workspace", callback_data=f"pmwsdelask:{wid}"))
-    kb.add(kb_btn("⬅️", callback_data="pmrefresh:root"))
-    await safe_edit_text(int(uid), cb.message.message_id, f"📂 {esc(ws.get('name') or 'Workspace')}", reply_markup=kb)
+    kb.add(kb_btn("⬅️", callback_data=f"pmws:{wid}", style="primary"))
+    await safe_edit_text(int(uid), cb.message.message_id, "✏️ Введи новое имя Workspace:", reply_markup=kb)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("wsset:"))
 async def open_ws_settings(cb: types.CallbackQuery):
@@ -3447,22 +3534,7 @@ async def open_mirror_item(cb: types.CallbackQuery):
         return
     _, wid, company_idx, mirror_idx = cb.data.split(":")
     data = await load_data()
-    ws = data["workspaces"].get(wid)
-    if not ws:
-        return
-    company_idx = int(company_idx)
-    mirror_idx = int(mirror_idx)
-    if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-        return
-    company = ws["companies"][company_idx]
-    if mirror_idx < 0 or mirror_idx >= len(company.get("mirrors", [])):
-        return
-    mirror = company["mirrors"][mirror_idx]
-    label = mirror.get("label") or f"{mirror.get('chat_id')}/{mirror.get('thread_id') or 0}"
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("🔌 Отвязать список", callback_data=f"mirroroff:{wid}:{company_idx}:{mirror_idx}"))
-    kb.add(kb_btn("⬅️", callback_data=f"mirrors:{wid}:{company_idx}", style="primary"))
-    await upsert_ws_menu(data, wid, workspace_path_title(ws, display_company_name(company), "📤 Дублирование списка", label), kb)
+    await edit_mirror_item_menu(data, wid, int(company_idx), int(mirror_idx))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrorsrefresh:"))
 async def refresh_mirrors_menu(cb: types.CallbackQuery):
@@ -3479,6 +3551,35 @@ async def refresh_mirrors_menu(cb: types.CallbackQuery):
         return
     company = ws["companies"][company_idx]
     await upsert_ws_menu(data, wid, workspace_path_title(ws, rich_display_company_name(company), "📤 Дублирование списка"), mirrors_menu_kb(wid, company_idx, company))
+
+@dp.callback_query_handler(lambda c: c.data.startswith("mirrorren:"))
+async def mirror_rename_binding_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, mirror_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    mirror_idx = int(mirror_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws, company = await get_connected_company(data, wid, company_idx)
+        if not ws:
+            return
+        mirrors = company.get("mirrors", [])
+        if mirror_idx < 0 or mirror_idx >= len(mirrors):
+            return
+        mirror = mirrors[mirror_idx]
+        await set_prompt(
+            ws,
+            "✏️ Введи новое имя связки:",
+            {
+                "type": "rename_binding_label",
+                "chat_id": mirror.get("chat_id"),
+                "thread_id": mirror.get("thread_id") or 0,
+                "back_to": {"view": "mirror_item", "company_idx": company_idx, "mirror_idx": mirror_idx},
+            },
+        )
+        await save_data_unlocked(data)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroron:"))
 async def mirror_on(cb: types.CallbackQuery):
@@ -3877,6 +3978,31 @@ async def open_reports_menu(cb: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("reportsettings:"))
 async def open_report_settings_menu(cb: types.CallbackQuery):
     await open_company_target_menu_from_callback(cb, edit_report_settings_menu)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("reportren:"))
+async def report_rename_binding_prompt(cb: types.CallbackQuery):
+    await cb.answer()
+    if should_ignore_callback(cb):
+        return
+    _, wid, company_idx, target_idx = cb.data.split(":")
+    company_idx = int(company_idx)
+    target_idx = int(target_idx)
+    async with FILE_LOCK:
+        data = await load_data_unlocked()
+        ws, _, target = await get_report_target_context(data, wid, company_idx, target_idx)
+        if not ws or not target:
+            return
+        await set_prompt(
+            ws,
+            "✏️ Введи новое имя связки:",
+            {
+                "type": "rename_binding_label",
+                "chat_id": target.get("chat_id"),
+                "thread_id": target.get("thread_id") or 0,
+                "back_to": {"view": "report_settings", "company_idx": company_idx, "target_idx": target_idx},
+            },
+        )
+        await save_data_unlocked(data)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportmenu:"))
 async def open_report_target_menu(cb: types.CallbackQuery):
@@ -4704,8 +4830,12 @@ async def show_back_view(data: dict, wid: str, back_to: dict):
         await edit_company_menu(data, wid, back_to["company_idx"])
     elif view == "company_settings":
         await edit_company_settings_menu(data, wid, back_to["company_idx"])
+    elif view == "mirror_item":
+        await edit_mirror_item_menu(data, wid, back_to["company_idx"], back_to["mirror_idx"])
     elif view == "report":
         await edit_report_menu(data, wid, back_to["company_idx"], back_to["target_idx"])
+    elif view == "report_settings":
+        await edit_report_settings_menu(data, wid, back_to["company_idx"], back_to["target_idx"])
     elif view == "report_item":
         await edit_report_interval_menu(data, wid, back_to["company_idx"], back_to["target_idx"], back_to["interval_idx"])
     elif view == "report_interval_kind":
@@ -5402,6 +5532,43 @@ async def handle_group_text(message: types.Message):
         return
 
     if message.chat.type == "private":
+        pm_rename_wid = None
+        pm_message_id = None
+        pm_uid = str(message.from_user.id)
+        async with FILE_LOCK:
+            data = await load_data_unlocked()
+            user = ensure_user(data, pm_uid)
+            pm_awaiting = user.get("pm_awaiting") or {}
+            if pm_awaiting:
+                text = clean_text(message.text)
+                if not text:
+                    await save_data_unlocked(data)
+                    asyncio.create_task(try_delete_user_message(message))
+                    return
+                if pm_awaiting.get("type") == "rename_workspace_label":
+                    wid = pm_awaiting.get("wid")
+                    ws = data["workspaces"].get(wid)
+                    user["pm_awaiting"] = None
+                    if ws and ws.get("is_connected") and wid in user.get("workspaces", []):
+                        set_binding_custom_label(data, ws["chat_id"], ws.get("thread_id") or 0, text)
+                        refresh_binding_labels(data, ws["chat_id"], ws.get("thread_id") or 0)
+                    await save_data_unlocked(data)
+                    pm_rename_wid = wid
+                    pm_message_id = user.get("pm_menu_msg_id")
+                else:
+                    await save_data_unlocked(data)
+                    asyncio.create_task(try_delete_user_message(message))
+                    return
+        if pm_rename_wid is not None:
+            asyncio.create_task(try_delete_user_message(message))
+            fresh = await load_data()
+            if pm_message_id:
+                await edit_pm_workspace_view(fresh, pm_uid, pm_rename_wid, pm_message_id)
+            else:
+                await update_pm_menu(pm_uid, fresh)
+            return
+
+    if message.chat.type == "private":
         wid = f"pm_{message.from_user.id}"
     else:
         wid = make_ws_id(message.chat.id, message.message_thread_id or 0)
@@ -5561,6 +5728,14 @@ async def handle_group_text(message: types.Message):
                 return
             task["deadline_started_at"] = started_at
             task["deadline_due_at"] = due_at
+            finish(); await save_data_unlocked(data); created_company = False
+        elif mode == "rename_binding_label":
+            chat_id = awaiting.get("chat_id")
+            thread_id = awaiting.get("thread_id") or 0
+            if chat_id is None:
+                finish(); await save_data_unlocked(data); return
+            set_binding_custom_label(data, chat_id, thread_id, text)
+            refresh_binding_labels(data, chat_id, thread_id)
             finish(); await save_data_unlocked(data); created_company = False
         elif mode == "report_schedule_time":
             company_idx = awaiting["company_idx"]
