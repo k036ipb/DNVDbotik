@@ -63,25 +63,36 @@ async def safe_delete_message(chat_id: int, message_id: int | None):
     except Exception:
         pass
 
-async def try_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None) -> bool:
+async def try_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None, disable_web_page_preview: bool = False) -> bool:
     try:
-        await tg_call(lambda: bot.edit_message_text(text, chat_id, message_id, reply_markup=reply_markup, parse_mode="HTML"), retries=1)
+        await tg_call(
+            lambda: bot.edit_message_text(
+                text,
+                chat_id,
+                message_id,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+                disable_web_page_preview=disable_web_page_preview,
+            ),
+            retries=1,
+        )
         return True
     except MessageNotModified:
         return True
     except Exception:
         return False
 
-async def safe_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None):
-    await try_edit_text(chat_id, message_id, text, reply_markup=reply_markup)
+async def safe_edit_text(chat_id: int, message_id: int, text: str, reply_markup=None, disable_web_page_preview: bool = False):
+    await try_edit_text(chat_id, message_id, text, reply_markup=reply_markup, disable_web_page_preview=disable_web_page_preview)
 
-async def send_message(chat_id: int, text: str, reply_markup=None, thread_id: int = 0):
+async def send_message(chat_id: int, text: str, reply_markup=None, thread_id: int = 0, disable_web_page_preview: bool = False):
     return await tg_call(
         lambda: bot.send_message(
             chat_id,
             text,
             reply_markup=reply_markup,
             parse_mode="HTML",
+            disable_web_page_preview=disable_web_page_preview,
             **({"message_thread_id": thread_id} if thread_id else {}),
         ),
         retries=1,
@@ -170,6 +181,10 @@ BINDING_RITUAL_LINES = (
     "Лишись девственности.",
     "Скинь домашку.",
     "Покажи сиськи.",
+    "Wake up, Neo.",
+    "Удалить папку system32.",
+    "Profit!",
+    ("ГДЗ от Путина", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
 )
 
 def is_single_emoji(text: str) -> bool:
@@ -500,10 +515,9 @@ def rich_display_template_name(template: dict) -> str:
     return f"<u>{esc(template.get('emoji') or '📁')}{esc(template.get('title') or 'Шаблон')}</u>"
 
 def rich_task_text(task_text: str, done: bool = False) -> str:
-    inner = f"<b><i>{esc(task_text)}</i></b>"
     if done:
-        return f"<s>{inner}</s>"
-    return inner
+        return f"<s><i>{esc(task_text)}</i></s>"
+    return f"<b><i>{esc(task_text)}</i></b>"
 
 def template_exists(templates: list[dict], title: str, exclude_id: str | None = None) -> bool:
     target = (title or '').casefold()
@@ -1036,7 +1050,7 @@ def display_task_deadline_suffix(task: dict, deadline_format: str = "relative") 
 
 def task_deadline_icon(task: dict) -> str:
     if task.get("done"):
-        return "👌"
+        return "🤙"
     due_at = task.get("deadline_due_at")
     started_at = task.get("deadline_started_at")
     if not due_at or not started_at:
@@ -1082,7 +1096,7 @@ def build_progress_bar(done_count: int, total_count: int) -> str:
 
     cells = cells[:10] + ["🌑"] * max(0, 10 - len(cells[:10]))
     percent = 0.0 if total_count <= 0 else (done_count / total_count) * 100
-    return f"<b>[ </b>{''.join(cells)}<b> ]</b> <b>{percent:.1f} %</b>"
+    return f"<b>[ </b>{''.join(cells)} <b>{percent:.1f} % ]</b>"
 
 def company_card_text(company: dict) -> str:
     lines = [f"{rich_display_company_name(company)}:"]
@@ -1211,11 +1225,33 @@ def missing_mirrors_for_report_targets(company: dict) -> list[tuple[int, dict]]:
 def binding_instruction_text(title: str, token: str) -> str:
     return (
         f"{title}:\n"
-        "1) Добавь меня в нужную конфу;\n"
-        "2) Перейди в нужный тред;\n"
-        "3) Отправь команду:\n"
-        f"/mirror {token}\n"
-        f"4) {random.choice(BINDING_RITUAL_LINES)}"
+        f"{instruction_step_html(1, 'Добавь меня в нужную конфу;')}\n"
+        f"{instruction_step_html(2, 'Перейди в нужный тред;')}\n"
+        f"{instruction_step_html(3, 'Отправь команду:')}\n"
+        f"<code>/mirror {esc(token)}</code>\n"
+        f"{instruction_step_html(4, random_instruction_variant_html(), is_html=True)}"
+    )
+
+def random_instruction_variant_html() -> str:
+    variant = random.choice(BINDING_RITUAL_LINES)
+    if isinstance(variant, tuple):
+        label, url = variant
+        return f'<a href="{esc(url)}">{esc(label)}</a>.'
+    return esc(variant)
+
+def instruction_step_html(number: int, content: str, is_html: bool = False) -> str:
+    body = content if is_html else esc(content)
+    return f"<b>{number})</b> <i>{body}</i>"
+
+def workspace_connect_instruction_text() -> str:
+    return (
+        "📌 Как подключить workspace:\n"
+        f"{instruction_step_html(1, 'Добавь меня в нужную группу;')}\n"
+        f"{instruction_step_html(2, 'Перейди в нужный тред;')}\n"
+        f"{instruction_step_html(3, 'Отправь команду:')}\n"
+        "<code>/connect</code>\n"
+        f"{instruction_step_html(4, 'Дождись появления меню;')}\n"
+        f"{instruction_step_html(5, random_instruction_variant_html(), is_html=True)}"
     )
 
 def find_completion_entry(history: list[dict], entry_id: str | None) -> dict | None:
@@ -2051,9 +2087,9 @@ def category_settings_kb(wid: str, company_idx: int, category_idx: int, category
 def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     if task.get("done"):
-        kb.add(kb_btn("⏺️ Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
+        kb.add(kb_btn("🤙 Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
     else:
-        kb.add(kb_btn("✅ Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
+        kb.add(kb_btn("🤞 Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
     kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
 
     if company.get("categories"):
@@ -2529,7 +2565,7 @@ def confirm_kb(confirm_cb: str, back_cb: str):
 # VIEW HELPERS
 # =========================
 
-async def upsert_ws_menu(data: dict, wid: str, text: str, reply_markup):
+async def upsert_ws_menu(data: dict, wid: str, text: str, reply_markup, disable_web_page_preview: bool = False):
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return False
@@ -2539,7 +2575,13 @@ async def upsert_ws_menu(data: dict, wid: str, text: str, reply_markup):
         current_id = RUNTIME_MENU_IDS.get(wid) or ws.get("menu_msg_id")
         if current_id:
             ws["menu_msg_id"] = current_id
-            ok = await try_edit_text(ws["chat_id"], current_id, text, reply_markup=reply_markup)
+            ok = await try_edit_text(
+                ws["chat_id"],
+                current_id,
+                text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_web_page_preview,
+            )
             if ok:
                 RUNTIME_MENU_IDS[wid] = current_id
                 return False
@@ -2550,12 +2592,24 @@ async def upsert_ws_menu(data: dict, wid: str, text: str, reply_markup):
         fresh_id = fresh_ws.get("menu_msg_id") if fresh_ws else None
         if fresh_id and fresh_id != current_id:
             ws["menu_msg_id"] = fresh_id
-            ok = await try_edit_text(ws["chat_id"], fresh_id, text, reply_markup=reply_markup)
+            ok = await try_edit_text(
+                ws["chat_id"],
+                fresh_id,
+                text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_web_page_preview,
+            )
             if ok:
                 RUNTIME_MENU_IDS[wid] = fresh_id
                 return False
 
-        msg = await send_message(ws["chat_id"], text, reply_markup=reply_markup, thread_id=ws["thread_id"])
+        msg = await send_message(
+            ws["chat_id"],
+            text,
+            reply_markup=reply_markup,
+            thread_id=ws["thread_id"],
+            disable_web_page_preview=disable_web_page_preview,
+        )
         ws["menu_msg_id"] = msg.message_id
         RUNTIME_MENU_IDS[wid] = msg.message_id
         async with FILE_LOCK:
@@ -2614,6 +2668,8 @@ async def upsert_company_card(ws: dict, company_idx: int):
         if ok:
             return False
     msg = await send_message(ws["chat_id"], text, thread_id=ws["thread_id"])
+    if card_msg_id and card_msg_id != msg.message_id:
+        await safe_delete_message(ws["chat_id"], card_msg_id)
     company["card_msg_id"] = msg.message_id
     return True
 
@@ -2627,6 +2683,8 @@ async def upsert_company_mirror(mirror: dict, company: dict):
         if ok:
             return False
     msg = await send_message(mirror["chat_id"], text, thread_id=mirror.get("thread_id") or 0)
+    if msg_id and msg_id != msg.message_id:
+        await safe_delete_message(mirror["chat_id"], msg_id)
     mirror["message_id"] = msg.message_id
     return True
 
@@ -2768,7 +2826,7 @@ async def set_prompt(ws: dict, prompt_text: str, awaiting_payload: dict):
 async def show_instruction_menu(data: dict, wid: str, text: str, back_cb: str):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("⬅️", callback_data=back_cb, style="primary"))
-    await upsert_ws_menu(data, wid, text, kb)
+    await upsert_ws_menu(data, wid, text, kb, disable_web_page_preview=True)
 
 def get_connected_ws(data: dict, wid: str) -> dict | None:
     ws = data["workspaces"].get(wid)
@@ -3342,8 +3400,9 @@ async def pm_help(cb: types.CallbackQuery):
     await safe_edit_text(
         int(uid),
         cb.message.message_id,
-        "📌 Как подключить workspace:\n1) Добавь меня в нужную группу;\n2) Перейди в нужный тред;\n3) Отправь команду /connect;\n4) Дождись появления меню;\n5) Profit!",
+        workspace_connect_instruction_text(),
         reply_markup=InlineKeyboardMarkup(row_width=1).add(kb_btn("⬅️", callback_data="pmrefresh:root", style="primary")),
+        disable_web_page_preview=True,
     )
 
 @dp.callback_query_handler(lambda c: c.data == "pmpersonal:root")
