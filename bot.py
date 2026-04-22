@@ -821,6 +821,9 @@ def workspace_title_label(ws: dict) -> str:
         return f"👤 {esc(base)}"
     return esc(ws.get("name") or "Workspace")
 
+def workspace_home_title(ws: dict) -> str:
+    return f"{workspace_title_label(ws)}:"
+
 def extract_message_topic_title(message: types.Message) -> str | None:
     if getattr(message, "forum_topic_created", None):
         created_name = getattr(message.forum_topic_created, "name", None)
@@ -1050,7 +1053,7 @@ def display_task_deadline_suffix(task: dict, deadline_format: str = "relative") 
 
 def task_deadline_icon(task: dict) -> str:
     if task.get("done"):
-        return "🤙"
+        return "🦾"
     due_at = task.get("deadline_due_at")
     started_at = task.get("deadline_started_at")
     if not due_at or not started_at:
@@ -1225,9 +1228,9 @@ def missing_mirrors_for_report_targets(company: dict) -> list[tuple[int, dict]]:
 def binding_instruction_text(title: str, token: str) -> str:
     return (
         f"{title}:\n"
-        f"{instruction_step_html(1, 'Добавь меня в нужную конфу;')}\n"
-        f"{instruction_step_html(2, 'Перейди в нужный тред;')}\n"
-        f"{instruction_step_html(3, 'Отправь команду:')}\n"
+        f"{instruction_step_html(1, 'Добавить меня в нужную конфу;')}\n"
+        f"{instruction_step_html(2, 'Перейти в нужный тред;')}\n"
+        f"{instruction_step_html(3, 'Отправить команду:')}\n"
         f"<code>/mirror {esc(token)}</code>\n"
         f"{instruction_step_html(4, random_instruction_variant_html(), is_html=True)}"
     )
@@ -1241,16 +1244,16 @@ def random_instruction_variant_html() -> str:
 
 def instruction_step_html(number: int, content: str, is_html: bool = False) -> str:
     body = content if is_html else esc(content)
-    return f"<b>{number})</b> <i>{body}</i>"
+    return f"<b><i>{number})</i></b> <i>{body}</i>"
 
 def workspace_connect_instruction_text() -> str:
     return (
         "📌 Как подключить workspace:\n"
-        f"{instruction_step_html(1, 'Добавь меня в нужную группу;')}\n"
-        f"{instruction_step_html(2, 'Перейди в нужный тред;')}\n"
-        f"{instruction_step_html(3, 'Отправь команду:')}\n"
+        f"{instruction_step_html(1, 'Добавить меня в нужную группу;')}\n"
+        f"{instruction_step_html(2, 'Перейти в нужный тред;')}\n"
+        f"{instruction_step_html(3, 'Отправить команду:')}\n"
         "<code>/connect</code>\n"
-        f"{instruction_step_html(4, 'Дождись появления меню;')}\n"
+        f"{instruction_step_html(4, 'Дождаться появления меню;')}\n"
         f"{instruction_step_html(5, random_instruction_variant_html(), is_html=True)}"
     )
 
@@ -1419,7 +1422,7 @@ def build_report_message(company: dict, start_at: int, end_at: int) -> str:
         "",
     ]
     for entry in collect_report_entries(company, start_at, end_at):
-        lines.append(f"✅ {esc(entry.get('task_text') or 'Задача')}")
+        lines.append(f"🦾 {esc(entry.get('task_text') or 'Задача')}")
     lines.append("")
     lines.append(build_progress_bar(sum(1 for task in company.get("tasks", []) if task.get("done")), len(company.get("tasks", []))))
     return "\n".join(lines)
@@ -1431,7 +1434,7 @@ def build_task_completion_report_message(company: dict, task: dict) -> str:
         f'Отчёт по "{esc(title)}"',
         "сразу после выполнения:",
         "",
-        f"✅ {esc(task_text)}",
+        f"🦾 {esc(task_text)}",
         "",
         build_progress_bar(sum(1 for item in company.get("tasks", []) if item.get("done")), len(company.get("tasks", []))),
     ]
@@ -2087,9 +2090,9 @@ def category_settings_kb(wid: str, company_idx: int, category_idx: int, category
 def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
     if task.get("done"):
-        kb.add(kb_btn("🤙 Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
+        kb.add(kb_btn("🤞 Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
     else:
-        kb.add(kb_btn("🤞 Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
+        kb.add(kb_btn("🦾 Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
     kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
 
     if company.get("categories"):
@@ -2706,7 +2709,7 @@ async def sync_company_everywhere(ws: dict, company_idx: int):
         ws["menu_msg_id"] = None
         RUNTIME_MENU_IDS.pop(ws["id"], None)
         await safe_delete_message(ws["chat_id"], old_menu_id)
-        msg = await send_message(ws["chat_id"], "📂 Меню workspace", reply_markup=ws_home_kb(ws["id"], ws), thread_id=ws["thread_id"])
+        msg = await send_message(ws["chat_id"], workspace_home_title(ws), reply_markup=ws_home_kb(ws["id"], ws), thread_id=ws["thread_id"])
         ws["menu_msg_id"] = msg.message_id
         RUNTIME_MENU_IDS[ws["id"]] = msg.message_id
         changed = True
@@ -3057,13 +3060,13 @@ async def recreate_ws_home_menu(data: dict, wid: str):
     ws["menu_msg_id"] = None
     RUNTIME_MENU_IDS.pop(wid, None)
     await safe_delete_message(ws["chat_id"], old_id)
-    await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
+    await upsert_ws_menu(data, wid, workspace_home_title(ws), ws_home_kb(wid, ws))
 
 async def edit_ws_home_menu(data: dict, wid: str):
     ws = get_connected_ws(data, wid)
     if not ws:
         return
-    await upsert_ws_menu(data, wid, "📂 Меню workspace", ws_home_kb(wid, ws))
+    await upsert_ws_menu(data, wid, workspace_home_title(ws), ws_home_kb(wid, ws))
 
 async def edit_ws_settings_menu(data: dict, wid: str):
     ws = get_connected_ws(data, wid)
