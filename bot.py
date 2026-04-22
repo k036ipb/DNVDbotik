@@ -3,6 +3,7 @@ import json
 import math
 import asyncio
 import time
+import random
 import uuid
 import copy
 import re
@@ -132,6 +133,44 @@ def default_data():
 
 EMOJI_VARIATION_CHARS = {"\ufe0f", "\u200d"}
 DEFAULT_BINDING_EMOJI = "📬"
+BINDING_RITUAL_LINES = (
+    "Фывдани.",
+    "ПОКЛОНЕНИЕ! ПОКАЯНИЕ!",
+    "Утопи меня! УТОПИИ МЕНЯЯЯ! Как ненужное, бесполезное...",
+    "Пусть молчат люди, пусть говорят стволы",
+    "Пойдем-ка покурим-ка.",
+    "А НУ-КА ВСТАТЬ!!!",
+    "Сладко дунуть.",
+    "Позвонить маме.",
+    "Покормить кота.",
+    "Полить цветы.",
+    "Огурцы 5 шт.",
+    "О слепите мне маску от доносчивых глаз.",
+    "Влезть в кредиты и спится.",
+    "Darude - Sandstorm.",
+    "ПОКЛОНЕНИЕ! ПОКАЯНИЕ!",
+    "Внимание! Объявлена опасность БПЛА воздушном пространстве Шарарама.",
+    "Начальнику второго отделения прибыть в 314-й кабинет.",
+    "Явиться в военкомат.",
+    "Избить БОМЖа.",
+    "Получить гражданство Израиля.",
+    "Вступить в состав Российской Федерации.",
+    "Помочь маме и погулять с собакой.",
+    "Голосуй, или проиграешь.",
+    "Maria, you've gotta see her.",
+    "В.С.Ё!",
+    "Защищайся! Защищайся!",
+    "Обоссать гоя.",
+    "Заплатить налоги.",
+    "Принять ислам.",
+    "Оставь мне докурить бычок.",
+    "Анжуманя.",
+    "Найди решение гипотезы Римана.",
+    "Сложи оружие и выходи с поднятыми руками.",
+    "Лишись девственности.",
+    "Скинь домашку.",
+    "Покажи сиськи.",
+)
 
 def is_single_emoji(text: str) -> bool:
     text = (text or "").strip()
@@ -262,14 +301,11 @@ def ensure_report_interval(interval):
         normalized["day"] = day
         normalized["hour"] = hour
         normalized["minute"] = minute
-    else:
-        if kind == "on_done":
-            pass
-        else:
-            scheduled_at = interval.get("scheduled_at")
-            if not isinstance(scheduled_at, int):
-                return None
-            normalized["scheduled_at"] = scheduled_at
+    elif kind != "on_done":
+        scheduled_at = interval.get("scheduled_at")
+        if not isinstance(scheduled_at, int):
+            return None
+        normalized["scheduled_at"] = scheduled_at
 
     normalized["accumulation"] = ensure_report_accumulation(interval.get("accumulation"), kind)
     target_key = interval.get("target_key")
@@ -455,10 +491,10 @@ def esc(value) -> str:
     return html.escape(str(value or ""))
 
 def rich_display_company_name(company: dict) -> str:
-    return f"<u>{esc(company.get('emoji') or '📁')}{esc(company.get('title') or 'Список')}</u>"
+    return f"{esc(company.get('emoji') or '📁')}{esc(company.get('title') or 'Список')}"
 
 def rich_display_category_name(category: dict) -> str:
-    return f"<u>{esc(category.get('emoji') or '📁')}{esc(category.get('title') or 'Подгруппа')}</u>"
+    return f"{esc(category.get('emoji') or '📁')}{esc(category.get('title') or 'Подгруппа')}"
 
 def rich_display_template_name(template: dict) -> str:
     return f"<u>{esc(template.get('emoji') or '📁')}{esc(template.get('title') or 'Шаблон')}</u>"
@@ -751,6 +787,26 @@ def workspace_full_name(chat_title: str, topic_title: str | None, thread_id: int
         return f"{(chat_title or 'Чат').strip()} - {(topic_title or f'Тред {thread_id}').strip()}"
     return chat_title
 
+def is_personal_workspace(ws: dict | None) -> bool:
+    if not isinstance(ws, dict):
+        return False
+    return str(ws.get("id") or "").startswith("pm_")
+
+def strip_leading_label_emoji(label: str | None) -> str:
+    raw = clean_binding_label_text(label or "")
+    if not raw:
+        return ""
+    head, sep, tail = raw.partition(" ")
+    if sep and is_single_emoji(head):
+        return tail.strip()
+    return raw
+
+def workspace_title_label(ws: dict) -> str:
+    if is_personal_workspace(ws):
+        base = strip_leading_label_emoji(str(ws.get("name") or "")) or "Личный workspace"
+        return f"👤 {esc(base)}"
+    return esc(ws.get("name") or "Workspace")
+
 def extract_message_topic_title(message: types.Message) -> str | None:
     if getattr(message, "forum_topic_created", None):
         created_name = getattr(message.forum_topic_created, "name", None)
@@ -926,7 +982,7 @@ def display_category_name(category: dict) -> str:
     return f"{category.get('emoji') or '📁'}{category.get('title') or 'Подгруппа'}"
 
 def workspace_path_title(ws: dict, *parts: str) -> str:
-    lines = [f"📂 {esc(ws.get('name') or 'Workspace')}:"]
+    lines = [f"{workspace_title_label(ws)}:"]
     indent = "    "
     for part in parts:
         if part:
@@ -980,23 +1036,26 @@ def display_task_deadline_suffix(task: dict, deadline_format: str = "relative") 
 
 def task_deadline_icon(task: dict) -> str:
     if task.get("done"):
-        return "✅"
+        return "👌"
     due_at = task.get("deadline_due_at")
     started_at = task.get("deadline_started_at")
     if not due_at or not started_at:
-        return "⏺️"
+        return "🤞"
+    now_value = now_ts()
+    if now_value >= due_at:
+        return "🖕🏿"
     total = max(due_at - started_at, 1)
-    remaining = due_at - now_ts()
-    if remaining <= 0:
-        return "💔"
-    remaining_part = remaining / total
-    if remaining_part >= 0.85:
-        return "🩵"
-    if remaining_part >= 0.5:
-        return "💛"
-    if remaining_part >= 0.25:
-        return "🧡"
-    return "❤️"
+    elapsed = min(max(now_value - started_at, 0), total)
+    elapsed_part = elapsed / total
+    if elapsed_part <= 0.2:
+        return "🤞🏻"
+    if elapsed_part <= 0.4:
+        return "🤞🏼"
+    if elapsed_part <= 0.6:
+        return "🤞🏽"
+    if elapsed_part <= 0.8:
+        return "🤞🏾"
+    return "🤞🏿"
 
 def build_progress_bar(done_count: int, total_count: int) -> str:
     if total_count <= 0:
@@ -1023,7 +1082,7 @@ def build_progress_bar(done_count: int, total_count: int) -> str:
 
     cells = cells[:10] + ["🌑"] * max(0, 10 - len(cells[:10]))
     percent = 0.0 if total_count <= 0 else (done_count / total_count) * 100
-    return f"{''.join(cells)} <b>{percent:.1f} %</b>"
+    return f"<b>[ </b>{''.join(cells)}<b> ]</b> <b>{percent:.1f} %</b>"
 
 def company_card_text(company: dict) -> str:
     lines = [f"{rich_display_company_name(company)}:"]
@@ -1036,7 +1095,6 @@ def company_card_text(company: dict) -> str:
         task.get("created_at") or 0,
     )
     lines.append(build_progress_bar(sum(1 for task in all_tasks if task.get("done")), len(all_tasks)))
-    lines.append("")
 
     uncategorized = [t for t in all_tasks if not t.get("category_id")]
     if uncategorized:
@@ -1051,7 +1109,6 @@ def company_card_text(company: dict) -> str:
         cat_tasks = [t for t in all_tasks if t.get("category_id") == category["id"]]
         lines.append(f"    {rich_display_category_name(category)}:")
         lines.append(f"    {build_progress_bar(sum(1 for task in cat_tasks if task.get('done')), len(cat_tasks))}")
-        lines.append("")
         if cat_tasks:
             for task in sorted(cat_tasks, key=sort_key):
                 icon = task_deadline_icon(task)
@@ -1158,7 +1215,7 @@ def binding_instruction_text(title: str, token: str) -> str:
         "2) Перейди в нужный тред;\n"
         "3) Отправь команду:\n"
         f"/mirror {token}\n"
-        "4) Пердани."
+        f"4) {random.choice(BINDING_RITUAL_LINES)}"
     )
 
 def find_completion_entry(history: list[dict], entry_id: str | None) -> dict | None:
@@ -1645,6 +1702,52 @@ def parse_template_deadline_seconds(text: str) -> tuple[int | None, str | None]:
         return None, "Пришли срок, например: 3 дня, 7ч20м, 45 минут."
     return seconds, None
 
+def apply_report_schedule_input(draft_interval: dict, text: str) -> str | None:
+    kind = draft_interval.get("kind")
+    if kind == "once":
+        scheduled_at = parse_flexible_datetime(text)
+        if scheduled_at is None or scheduled_at <= now_ts():
+            return "Дату введи корректно, барсурка стахановская"
+        draft_interval["scheduled_at"] = scheduled_at
+        return None
+    if kind == "monthly":
+        parsed = parse_month_day_time(text)
+        if parsed is None:
+            return "Пришли число и время, например: 30 20:44"
+        day, hour, minute = parsed
+        draft_interval["day"] = day
+        draft_interval["hour"] = hour
+        draft_interval["minute"] = minute
+        return None
+    parsed = parse_flexible_time(text)
+    if parsed is None:
+        return "Пришли время, например: 21:30"
+    hour, minute = parsed
+    draft_interval["hour"] = hour
+    draft_interval["minute"] = minute
+    return None
+
+def apply_report_accumulation_input(draft_interval: dict, text: str) -> str | None:
+    kind = draft_interval.get("kind")
+    if kind == "once":
+        start_at = parse_flexible_datetime(text)
+        if start_at is None or start_at >= (draft_interval.get("scheduled_at") or 0):
+            return "Пришли точную дату и время раньше даты отчета."
+        draft_interval["accumulation"] = {"mode": "specific", "type": "datetime", "start_at": start_at}
+        return None
+    if kind == "monthly":
+        parsed = parse_month_day_time(text)
+        if parsed is None:
+            return "Пришли число и время, например: 15 08:30"
+        day, hour, minute = parsed
+        draft_interval["accumulation"] = {"mode": "specific", "type": "month_day", "day": day, "hour": hour, "minute": minute}
+        return None
+    start_at = parse_flexible_datetime(text)
+    if start_at is None or start_at >= report_preview_occurrence(draft_interval):
+        return "Пришли точную дату и время раньше даты отчета."
+    draft_interval["accumulation"] = {"mode": "specific", "type": "datetime", "start_at": start_at}
+    return None
+
 # =========================
 # KEYBOARDS
 # =========================
@@ -1893,8 +1996,8 @@ def company_menu_kb(wid: str, company_idx: int, company: dict):
 
 def company_settings_kb(wid: str, company_idx: int, company: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать список", callback_data=f"cmpren:{wid}:{company_idx}"))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
+    kb.add(kb_btn("✍🏻 Переименовать список", callback_data=f"cmpren:{wid}:{company_idx}"))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"cmpemoji:{wid}:{company_idx}"))
     format_label = "дата" if company.get("deadline_format") == "date" else "время"
     kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"cmpdeadlinefmt:{wid}:{company_idx}"))
     kb.add(kb_btn("🧬 Копия списка", callback_data=f"cmpcopy:{wid}:{company_idx}"))
@@ -1935,8 +2038,8 @@ def category_menu_kb(wid: str, company_idx: int, category_idx: int, category: di
 
 def category_settings_kb(wid: str, company_idx: int, category_idx: int, category: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать", callback_data=f"catren:{wid}:{company_idx}:{category_idx}"))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"catren:{wid}:{company_idx}:{category_idx}"))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"catemoji:{wid}:{company_idx}:{category_idx}"))
     kb.add(kb_btn("🧬 Копия подгруппы", callback_data=f"catcopy:{wid}:{company_idx}:{category_idx}"))
     format_label = "дата" if category.get("deadline_format") == "date" else "время"
     kb.add(kb_btn(f"🕒 Формат дедлайнов: {format_label}", callback_data=f"catdeadlinefmt:{wid}:{company_idx}:{category_idx}"))
@@ -1951,7 +2054,7 @@ def task_menu_kb(wid: str, company_idx: int, task_idx: int, task: dict, company:
         kb.add(kb_btn("⏺️ Отменить выполнение", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
     else:
         kb.add(kb_btn("✅ Отметить выполненной", callback_data=f"taskdone:{wid}:{company_idx}:{task_idx}"))
-    kb.add(kb_btn("✍️ Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
+    kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"taskren:{wid}:{company_idx}:{task_idx}"))
 
     if company.get("categories"):
         if task.get("category_id"):
@@ -2084,8 +2187,8 @@ def template_menu_kb(wid: str, ws: dict):
 
 def template_settings_kb(wid: str):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}"))
+    kb.add(kb_btn("✍🏻 Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}"))
     kb.add(kb_btn("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
     kb.add(kb_btn("🧾 Отчетность", callback_data=f"tplreport:{wid}", style=False))
     kb.add(kb_btn("🗑 Удалить шаблон", callback_data=f"tpldelsetask:{wid}"))
@@ -2123,8 +2226,8 @@ def template_category_menu_kb(wid: str, category_idx: int, category: dict, templ
 
 def template_category_settings_kb(wid: str, category_idx: int):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать", callback_data=f"tplcatren:{wid}:{category_idx}"))
-    kb.add(kb_btn("😀 Переприсвоить смайлик", callback_data=f"tplcatemoji:{wid}:{category_idx}"))
+    kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"tplcatren:{wid}:{category_idx}"))
+    kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"tplcatemoji:{wid}:{category_idx}"))
     kb.add(kb_btn("🧬 Копия Подгруппы", callback_data=f"tplcatcopy:{wid}:{category_idx}"))
     kb.add(kb_btn("🗑 Удалить", callback_data=f"tplcatdelask:{wid}:{category_idx}"))
     kb.add(kb_btn("🗑 Удалить с задачами", callback_data=f"tplcatdelallask:{wid}:{category_idx}"))
@@ -2133,7 +2236,7 @@ def template_category_settings_kb(wid: str, category_idx: int):
 
 def template_task_menu_kb(wid: str, task_idx: int, task: dict, ws: dict):
     kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(kb_btn("✍️ Переименовать", callback_data=f"tpltaskren:{wid}:{task_idx}"))
+    kb.add(kb_btn("✍🏻 Переименовать", callback_data=f"tpltaskren:{wid}:{task_idx}"))
     if ws.get("template_categories"):
         if task.get("category_id"):
             kb.add(kb_btn("📥 Перевсунуть", callback_data=f"tpltaskmove:{wid}:{task_idx}"))
@@ -2496,7 +2599,9 @@ async def edit_pm_workspace_view(data: dict, user_id: str, wid: str, message_id:
         ws.get("thread_id") or 0,
         fallback_label="Workspace",
     )
-    await safe_edit_text(int(user_id), target_message_id, f"📂 {esc(title)}", reply_markup=pm_workspace_kb(wid))
+    view_ws = dict(ws)
+    view_ws["name"] = title
+    await safe_edit_text(int(user_id), target_message_id, workspace_title_label(view_ws), reply_markup=pm_workspace_kb(wid))
 
 async def upsert_company_card(ws: dict, company_idx: int):
     if company_idx < 0 or company_idx >= len(ws["companies"]):
@@ -3233,7 +3338,6 @@ async def pm_help(cb: types.CallbackQuery):
     await cb.answer()
     if cb.message.chat.type != "private" or should_ignore_callback(cb):
         return
-    data = await load_data()
     uid = str(cb.from_user.id)
     await safe_edit_text(
         int(uid),
@@ -3318,7 +3422,7 @@ async def pm_rename_workspace_prompt(cb: types.CallbackQuery):
         return
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("⬅️", callback_data=f"pmws:{wid}", style="primary"))
-    await safe_edit_text(int(uid), cb.message.message_id, "✏️ Введи новое имя Workspace:", reply_markup=kb)
+    await safe_edit_text(int(uid), cb.message.message_id, "✍🏻 Введи новое имя Workspace:", reply_markup=kb)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsemoji:"))
 async def pm_workspace_emoji_prompt(cb: types.CallbackQuery):
@@ -3345,7 +3449,7 @@ async def pm_workspace_emoji_prompt(cb: types.CallbackQuery):
         return
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(kb_btn("⬅️", callback_data=f"pmws:{wid}", style="primary"))
-    await safe_edit_text(int(uid), cb.message.message_id, "😀 Пришли один смайлик для Workspace:", reply_markup=kb)
+    await safe_edit_text(int(uid), cb.message.message_id, "💅🏻 Пришли один смайлик для Workspace:", reply_markup=kb)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("wsset:"))
 async def open_ws_settings(cb: types.CallbackQuery):
@@ -3391,7 +3495,7 @@ async def pm_clear_workspace_ask(cb: types.CallbackQuery):
     ws = data["workspaces"].get(wid)
     if not ws:
         return
-    await safe_edit_text(int(cb.from_user.id), cb.message.message_id, f"📂 {esc(ws.get('name') or 'Workspace')}\n\nОчистить workspace?", reply_markup=confirm_kb(f"pmwsclear:{wid}", f"pmws:{wid}"))
+    await safe_edit_text(int(cb.from_user.id), cb.message.message_id, f"{workspace_title_label(ws)}\n\nОчистить workspace?", reply_markup=confirm_kb(f"pmwsclear:{wid}", f"pmws:{wid}"))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pmwsclear:"))
 async def pm_clear_workspace_confirm(cb: types.CallbackQuery):
@@ -3649,7 +3753,7 @@ async def mirror_rename_binding_prompt(cb: types.CallbackQuery):
         mirror = mirrors[mirror_idx]
         await set_prompt(
             ws,
-            "✏️ Введи новое имя связки:",
+            "✍🏻 Введи новое имя связки:",
             {
                 "type": "rename_binding_label",
                 "chat_id": mirror.get("chat_id"),
@@ -3680,7 +3784,7 @@ async def mirror_binding_emoji_prompt(cb: types.CallbackQuery):
         mirror = mirrors[mirror_idx]
         await set_prompt(
             ws,
-            "😀 Пришли один смайлик для связки:",
+            "💅🏻 Пришли один смайлик для связки:",
             {
                 "type": "binding_emoji",
                 "chat_id": mirror.get("chat_id"),
@@ -4105,7 +4209,7 @@ async def report_rename_binding_prompt(cb: types.CallbackQuery):
         RUNTIME_MENU_IDS[wid] = cb.message.message_id
         await set_prompt(
             ws,
-            "✏️ Введи новое имя связки:",
+            "✍🏻 Введи новое имя связки:",
             {
                 "type": "rename_binding_label",
                 "chat_id": target.get("chat_id"),
@@ -4132,7 +4236,7 @@ async def report_binding_emoji_prompt(cb: types.CallbackQuery):
         RUNTIME_MENU_IDS[wid] = cb.message.message_id
         await set_prompt(
             ws,
-            "😀 Пришли один смайлик для связки:",
+            "💅🏻 Пришли один смайлик для связки:",
             {
                 "type": "binding_emoji",
                 "chat_id": target.get("chat_id"),
@@ -5046,7 +5150,7 @@ async def cancel_input(cb: types.CallbackQuery):
 async def rename_company_prompt(cb: types.CallbackQuery):
     await open_company_prompt_from_callback(
         cb,
-        "✏️ Введи новое название списка:",
+        "✍🏻 Введи новое название списка:",
         lambda company_idx: {"type": "rename_company", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}},
     )
 
@@ -5054,7 +5158,7 @@ async def rename_company_prompt(cb: types.CallbackQuery):
 async def company_emoji_prompt(cb: types.CallbackQuery):
     await open_company_prompt_from_callback(
         cb,
-        "😀 Пришли один смайлик для списка:",
+        "💅🏻 Пришли один смайлик для списка:",
         lambda company_idx: {"type": "company_emoji", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}},
     )
 
@@ -5113,7 +5217,7 @@ async def add_category_prompt(cb: types.CallbackQuery):
 async def rename_category_prompt(cb: types.CallbackQuery):
     await open_company_category_prompt_from_callback(
         cb,
-        "✏️ Введи новое название подгруппы:",
+        "✍🏻 Введи новое название подгруппы:",
         lambda company_idx, category_idx: {
             "type": "rename_category",
             "company_idx": company_idx,
@@ -5126,7 +5230,7 @@ async def rename_category_prompt(cb: types.CallbackQuery):
 async def category_emoji_prompt(cb: types.CallbackQuery):
     await open_company_category_prompt_from_callback(
         cb,
-        "😀 Пришли один смайлик для подгруппы:",
+        "💅🏻 Пришли один смайлик для подгруппы:",
         lambda company_idx, category_idx: {
             "type": "category_emoji",
             "company_idx": company_idx,
@@ -5238,7 +5342,7 @@ async def add_task_prompt(cb: types.CallbackQuery):
 async def rename_task_prompt(cb: types.CallbackQuery):
     await open_company_task_prompt_from_callback(
         cb,
-        "✏️ Введи новое название задачи:",
+        "✍🏻 Введи новое название задачи:",
         lambda ws, company_idx, task_idx: {
             "type": "rename_task",
             "company_idx": company_idx,
@@ -5427,7 +5531,7 @@ async def add_template_category_prompt(cb: types.CallbackQuery):
 async def rename_template_category_prompt(cb: types.CallbackQuery):
     await open_template_category_prompt_from_callback(
         cb,
-        "✏️ Введи новое название подгруппы шаблона:",
+        "✍🏻 Введи новое название подгруппы шаблона:",
         lambda category_idx: {
             "type": "rename_template_category",
             "category_idx": category_idx,
@@ -5439,7 +5543,7 @@ async def rename_template_category_prompt(cb: types.CallbackQuery):
 async def template_category_emoji_prompt(cb: types.CallbackQuery):
     await open_template_category_prompt_from_callback(
         cb,
-        "😀 Пришли один смайлик для подгруппы шаблона:",
+        "💅🏻 Пришли один смайлик для подгруппы шаблона:",
         lambda category_idx: {
             "type": "template_category_emoji",
             "category_idx": category_idx,
@@ -5549,7 +5653,7 @@ async def add_template_task_prompt(cb: types.CallbackQuery):
 async def rename_template_task_prompt(cb: types.CallbackQuery):
     await open_template_task_prompt_from_callback(
         cb,
-        "✏️ Введи новое название задачи шаблона:",
+        "✍🏻 Введи новое название задачи шаблона:",
         lambda ws, task_idx: {"type": "rename_template_task", "task_idx": task_idx, "back_to": {"view": "template_task", "task_idx": task_idx}},
     )
 
@@ -5754,6 +5858,10 @@ async def handle_group_text(message: types.Message):
             asyncio.create_task(send_temp_message(ws["chat_id"], error_text, ws["thread_id"], delay=6))
             asyncio.create_task(try_delete_user_message(message))
 
+        async def finish_and_save():
+            finish()
+            await save_data_unlocked(data)
+
         if mode == "new_company":
             if company_exists(ws, text):
                 await reject_input("Такой список уже существует.")
@@ -5761,64 +5869,53 @@ async def handle_group_text(message: types.Message):
             company = make_company(text, awaiting.get("use_template", False), ws, awaiting.get("template_id"))
             ws["companies"].append(company)
             new_company_idx = len(ws["companies"]) - 1
-            finish()
-            await save_data_unlocked(data)
+            await finish_and_save()
             created_company_idx = new_company_idx
-            created_company = True
         elif mode == "rename_company":
             company_idx = awaiting["company_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
-                finish()
-                await save_data_unlocked(data)
+                await finish_and_save()
                 return
             if company_exists(ws, text, exclude_idx=company_idx):
                 await reject_input("Такой список уже существует.")
                 return
             ws["companies"][company_idx]["title"] = text
-            finish()
-            await save_data_unlocked(data)
-            created_company = False
+            await finish_and_save()
         elif mode == "company_emoji":
             if not is_single_emoji(text):
                 await reject_input("Пришли один смайлик, балдабёб!")
                 return
             company_idx = awaiting["company_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
-                finish()
-                await save_data_unlocked(data)
+                await finish_and_save()
                 return
             ws["companies"][company_idx]["emoji"] = text
-            finish()
-            await save_data_unlocked(data)
-            created_company = False
+            await finish_and_save()
         elif mode == "new_category":
             company_idx = awaiting["company_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
-                finish()
-                await save_data_unlocked(data)
+                await finish_and_save()
                 return
             company = ws["companies"][company_idx]
             if category_exists(company.get("categories", []), text):
                 await reject_input("Такая подгруппа уже существует.")
                 return
             company.setdefault("categories", []).append({"id": uuid.uuid4().hex, "title": text, "emoji": "📁"})
-            finish()
-            await save_data_unlocked(data)
-            created_company = False
+            await finish_and_save()
         elif mode == "rename_category":
             company_idx = awaiting["company_idx"]
             category_idx = awaiting["category_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             company = ws["companies"][company_idx]
             if category_idx < 0 or category_idx >= len(company.get("categories", [])):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             category = company["categories"][category_idx]
             if category_exists(company.get("categories", []), text, exclude_id=category["id"]):
                 await reject_input("Такая подгруппа уже существует.")
                 return
             category["title"] = text
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "category_emoji":
             if not is_single_emoji(text):
                 await reject_input("Пришли один смайлик, балдабёб!")
@@ -5826,22 +5923,22 @@ async def handle_group_text(message: types.Message):
             company_idx = awaiting["company_idx"]
             category_idx = awaiting["category_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             company = ws["companies"][company_idx]
             if category_idx < 0 or category_idx >= len(company.get("categories", [])):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             company["categories"][category_idx]["emoji"] = text
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "new_task":
             company_idx = awaiting["company_idx"]
             category_idx = awaiting.get("category_idx")
             if company_idx < 0 or company_idx >= len(ws["companies"]):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             company = ws["companies"][company_idx]
             category_id = None
             if category_idx is not None:
                 if category_idx < 0 or category_idx >= len(company.get("categories", [])):
-                    finish(); await save_data_unlocked(data); return
+                    await finish_and_save(); return
                 category_id = company["categories"][category_idx]["id"]
             company["tasks"].append({
                 "id": uuid.uuid4().hex,
@@ -5852,28 +5949,28 @@ async def handle_group_text(message: types.Message):
                 "deadline_due_at": None,
                 "deadline_started_at": None,
             })
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "rename_task":
             company_idx = awaiting["company_idx"]
             task_idx = awaiting["task_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             company = ws["companies"][company_idx]
             if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             company["tasks"][task_idx]["text"] = text
             entry = find_completion_entry(get_report_history(company), company["tasks"][task_idx].get("done_event_id"))
             if entry and entry.get("canceled_at") is None:
                 entry["task_text"] = company["tasks"][task_idx].get("text") or ""
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "task_deadline":
             company_idx = awaiting["company_idx"]
             task_idx = awaiting["task_idx"]
             if company_idx < 0 or company_idx >= len(ws["companies"]):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             company = ws["companies"][company_idx]
             if task_idx < 0 or task_idx >= len(company.get("tasks", [])):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             task = company["tasks"][task_idx]
             started_at, due_at, err = parse_deadline_input(text, task.get("deadline_started_at"))
             if err:
@@ -5881,26 +5978,26 @@ async def handle_group_text(message: types.Message):
                 return
             task["deadline_started_at"] = started_at
             task["deadline_due_at"] = due_at
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "rename_binding_label":
             chat_id = awaiting.get("chat_id")
             thread_id = awaiting.get("thread_id") or 0
             if chat_id is None:
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             set_binding_custom_label(data, chat_id, thread_id, text)
             refresh_binding_labels(data, chat_id, thread_id)
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "binding_emoji":
             chat_id = awaiting.get("chat_id")
             thread_id = awaiting.get("thread_id") or 0
             if chat_id is None:
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             if not is_single_emoji(text):
                 await reject_input("Пришли один смайлик, балдабёб!")
                 return
             set_binding_emoji(data, chat_id, thread_id, text)
             refresh_binding_labels(data, chat_id, thread_id)
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "report_schedule_time":
             company_idx = awaiting["company_idx"]
             target_idx = awaiting.get("target_idx")
@@ -5909,36 +6006,15 @@ async def handle_group_text(message: types.Message):
             flow = awaiting.get("flow")
             interval_idx = awaiting.get("interval_idx")
             if company_idx < 0 or company_idx >= len(ws["companies"]) or kind not in {"weekly", "daily", "monthly", "once"}:
-                finish(); await save_data_unlocked(data); return
-            if kind == "once":
-                scheduled_at = parse_flexible_datetime(text)
-                if scheduled_at is None or scheduled_at <= now_ts():
-                    await reject_input("Дату введи корректно, барсурка стахановская")
-                    return
-                draft_interval["scheduled_at"] = scheduled_at
-            elif kind == "monthly":
-                parsed = parse_month_day_time(text)
-                if parsed is None:
-                    await reject_input("Пришли число и время, например: 30 20:44")
-                    return
-                day, hour, minute = parsed
-                draft_interval["day"] = day
-                draft_interval["hour"] = hour
-                draft_interval["minute"] = minute
-            else:
-                parsed = parse_flexible_time(text)
-                if parsed is None:
-                    await reject_input("Пришли время, например: 21:30")
-                    return
-                hour, minute = parsed
-                draft_interval["hour"] = hour
-                draft_interval["minute"] = minute
+                await finish_and_save(); return
+            error_text = apply_report_schedule_input(draft_interval, text)
+            if error_text:
+                await reject_input(error_text)
+                return
 
             normalized_draft = ensure_report_interval(draft_interval) or draft_interval
             if flow == "edit" and interval_idx is not None:
-                finish()
-                await save_data_unlocked(data)
-                created_company = False
+                await finish_and_save()
                 report_followup = "report_finalize"
                 report_followup_payload = {
                     "company_idx": company_idx,
@@ -5956,37 +6032,19 @@ async def handle_group_text(message: types.Message):
                     "draft_interval": normalized_draft,
                 }
                 await save_data_unlocked(data)
-                created_company = False
                 report_followup = "report_accumulation"
         elif mode == "report_accumulation_value":
             company_idx = awaiting["company_idx"]
             draft_interval = clone_report_interval(awaiting.get("draft_interval") or {})
             kind = draft_interval.get("kind")
             if company_idx < 0 or company_idx >= len(ws["companies"]) or kind not in {"weekly", "daily", "monthly", "once"}:
-                finish(); await save_data_unlocked(data); return
-            if kind == "once":
-                start_at = parse_flexible_datetime(text)
-                if start_at is None or start_at >= (draft_interval.get("scheduled_at") or 0):
-                    await reject_input("Пришли точную дату и время раньше даты отчета.")
-                    return
-                draft_interval["accumulation"] = {"mode": "specific", "type": "datetime", "start_at": start_at}
-            elif kind == "monthly":
-                parsed = parse_month_day_time(text)
-                if parsed is None:
-                    await reject_input("Пришли число и время, например: 15 08:30")
-                    return
-                day, hour, minute = parsed
-                draft_interval["accumulation"] = {"mode": "specific", "type": "month_day", "day": day, "hour": hour, "minute": minute}
-            else:
-                start_at = parse_flexible_datetime(text)
-                if start_at is None or start_at >= report_preview_occurrence(draft_interval):
-                    await reject_input("Пришли точную дату и время раньше даты отчета.")
-                    return
-                draft_interval["accumulation"] = {"mode": "specific", "type": "datetime", "start_at": start_at}
+                await finish_and_save(); return
+            error_text = apply_report_accumulation_input(draft_interval, text)
+            if error_text:
+                await reject_input(error_text)
+                return
 
-            finish()
-            await save_data_unlocked(data)
-            created_company = False
+            await finish_and_save()
             report_followup = "report_finalize"
             report_followup_payload = {
                 "company_idx": company_idx,
@@ -6000,30 +6058,15 @@ async def handle_group_text(message: types.Message):
             flow = awaiting.get("flow")
             interval_idx = awaiting.get("interval_idx")
             if kind not in {"weekly", "daily", "monthly"}:
-                finish(); await save_data_unlocked(data); return
-            if kind == "monthly":
-                parsed = parse_month_day_time(text)
-                if parsed is None:
-                    await reject_input("Пришли число и время, например: 30 20:44")
-                    return
-                day, hour, minute = parsed
-                draft_interval["day"] = day
-                draft_interval["hour"] = hour
-                draft_interval["minute"] = minute
-            else:
-                parsed = parse_flexible_time(text)
-                if parsed is None:
-                    await reject_input("Пришли время, например: 21:30")
-                    return
-                hour, minute = parsed
-                draft_interval["hour"] = hour
-                draft_interval["minute"] = minute
+                await finish_and_save(); return
+            error_text = apply_report_schedule_input(draft_interval, text)
+            if error_text:
+                await reject_input(error_text)
+                return
 
             normalized_draft = ensure_report_interval(draft_interval) or draft_interval
             if flow == "edit" and interval_idx is not None:
-                finish()
-                await save_data_unlocked(data)
-                created_company = False
+                await finish_and_save()
                 report_followup = "template_report_finalize"
                 report_followup_payload = {
                     "interval_idx": interval_idx,
@@ -6038,28 +6081,15 @@ async def handle_group_text(message: types.Message):
                     "draft_interval": normalized_draft,
                 }
                 await save_data_unlocked(data)
-                created_company = False
                 report_followup = "template_report_accumulation"
         elif mode == "template_report_accumulation_value":
             draft_interval = clone_report_interval(awaiting.get("draft_interval") or {})
-            kind = draft_interval.get("kind")
-            if kind == "monthly":
-                parsed = parse_month_day_time(text)
-                if parsed is None:
-                    await reject_input("Пришли число и время, например: 15 08:30")
-                    return
-                day, hour, minute = parsed
-                draft_interval["accumulation"] = {"mode": "specific", "type": "month_day", "day": day, "hour": hour, "minute": minute}
-            else:
-                start_at = parse_flexible_datetime(text)
-                if start_at is None or start_at >= report_preview_occurrence(draft_interval):
-                    await reject_input("Пришли точную дату и время раньше даты отчета.")
-                    return
-                draft_interval["accumulation"] = {"mode": "specific", "type": "datetime", "start_at": start_at}
+            error_text = apply_report_accumulation_input(draft_interval, text)
+            if error_text:
+                await reject_input(error_text)
+                return
 
-            finish()
-            await save_data_unlocked(data)
-            created_company = False
+            await finish_and_save()
             report_followup = "template_report_finalize"
             report_followup_payload = {
                 "interval_idx": awaiting.get("interval_idx"),
@@ -6071,32 +6101,32 @@ async def handle_group_text(message: types.Message):
                 await reject_input("Такая подгруппа уже существует.")
                 return
             ws.setdefault("template_categories", []).append({"id": uuid.uuid4().hex, "title": text, "emoji": "📁"})
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "rename_template_category":
             category_idx = awaiting["category_idx"]
             if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             category = ws["template_categories"][category_idx]
             if category_exists(ws.get("template_categories", []), text, exclude_id=category["id"]):
                 await reject_input("Такая подгруппа уже существует.")
                 return
             category["title"] = text
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "template_category_emoji":
             if not is_single_emoji(text):
                 await reject_input("Пришли один смайлик, балдабёб!")
                 return
             category_idx = awaiting["category_idx"]
             if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             ws["template_categories"][category_idx]["emoji"] = text
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "new_template_task":
             category_idx = awaiting.get("category_idx")
             category_id = None
             if category_idx is not None:
                 if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])):
-                    finish(); await save_data_unlocked(data); return
+                    await finish_and_save(); return
                 category_id = ws["template_categories"][category_idx]["id"]
             ws.setdefault("template_tasks", []).append({
                 "id": uuid.uuid4().hex,
@@ -6105,23 +6135,23 @@ async def handle_group_text(message: types.Message):
                 "created_at": now_ts(),
                 "deadline_seconds": None,
             })
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "rename_template_task":
             task_idx = awaiting["task_idx"]
             if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             ws["template_tasks"][task_idx]["text"] = text
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "template_task_deadline":
             task_idx = awaiting["task_idx"]
             if task_idx < 0 or task_idx >= len(ws.get("template_tasks", [])):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             seconds, err = parse_template_deadline_seconds(text)
             if err:
                 await reject_input(err)
                 return
             ws["template_tasks"][task_idx]["deadline_seconds"] = seconds
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "copy_company":
             source_idx = awaiting["company_idx"]
             if source_idx < 0 or source_idx >= len(ws.get("companies", [])) or company_exists(ws, text):
@@ -6129,18 +6159,18 @@ async def handle_group_text(message: types.Message):
                 return
             ws["companies"].append(copy_company_payload(ws["companies"][source_idx], text))
             created_company_idx = len(ws["companies"]) - 1
-            finish(); await save_data_unlocked(data); created_company = True
+            await finish_and_save()
         elif mode == "copy_category":
             company_idx = awaiting["company_idx"]
             category_idx = awaiting["category_idx"]
             if company_idx < 0 or company_idx >= len(ws.get("companies", [])):
-                finish(); await save_data_unlocked(data); return
+                await finish_and_save(); return
             company = ws["companies"][company_idx]
             if category_idx < 0 or category_idx >= len(company.get("categories", [])) or category_exists(company.get("categories", []), text):
                 await reject_input("Такая подгруппа уже существует.")
                 return
             copy_category_into_company(company, category_idx, text)
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "new_template_set":
             if template_exists(ws.get("templates", []), text):
                 await reject_input("Такой шаблон уже существует.")
@@ -6148,14 +6178,14 @@ async def handle_group_text(message: types.Message):
             tpl = make_template(text)
             ws.setdefault("templates", []).append(tpl)
             set_active_template(ws, tpl["id"])
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "rename_template_set":
             tpl = get_active_template(ws)
             if template_exists(ws.get("templates", []), text, exclude_id=tpl["id"]):
                 await reject_input("Такой шаблон уже существует.")
                 return
             tpl["title"] = text
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "template_set_emoji":
             if not is_single_emoji(text):
                 await reject_input("Пришли один смайлик, балдабёб!")
@@ -6163,7 +6193,7 @@ async def handle_group_text(message: types.Message):
             tpl = get_active_template(ws)
             tpl["emoji"] = text
             set_active_template(ws, tpl["id"])
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "copy_template_set":
             tpl = get_active_template(ws)
             if template_exists(ws.get("templates", []), text):
@@ -6172,7 +6202,7 @@ async def handle_group_text(message: types.Message):
             new_tpl = copy_template_payload(tpl, text)
             ws.setdefault("templates", []).append(new_tpl)
             set_active_template(ws, new_tpl["id"])
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         elif mode == "copy_template_category":
             category_idx = awaiting["category_idx"]
             if category_idx < 0 or category_idx >= len(ws.get("template_categories", [])) or category_exists(ws.get("template_categories", []), text):
@@ -6181,7 +6211,7 @@ async def handle_group_text(message: types.Message):
             tpl = get_active_template(ws)
             copy_template_category(tpl, category_idx, text)
             set_active_template(ws, tpl["id"])
-            finish(); await save_data_unlocked(data); created_company = False
+            await finish_and_save()
         else:
             await save_data_unlocked(data)
             asyncio.create_task(try_delete_user_message(message))
@@ -6350,11 +6380,11 @@ async def add_template_set_prompt(cb: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplrenameset:"))
 async def rename_template_set_prompt(cb: types.CallbackQuery):
-    await open_wid_prompt_from_callback(cb, "✏️ Введи новое название шаблона:", {"type": "rename_template_set", "back_to": {"view": "template_settings"}})
+    await open_wid_prompt_from_callback(cb, "✍🏻 Введи новое название шаблона:", {"type": "rename_template_set", "back_to": {"view": "template_settings"}})
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplemojiset:"))
 async def template_set_emoji_prompt(cb: types.CallbackQuery):
-    await open_wid_prompt_from_callback(cb, "😀 Пришли один смайлик для шаблона:", {"type": "template_set_emoji", "back_to": {"view": "template_settings"}})
+    await open_wid_prompt_from_callback(cb, "💅🏻 Пришли один смайлик для шаблона:", {"type": "template_set_emoji", "back_to": {"view": "template_settings"}})
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplcopy:"))
 async def copy_template_set_prompt(cb: types.CallbackQuery):
