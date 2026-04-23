@@ -745,6 +745,11 @@ async def save_data(data):
     async with FILE_LOCK:
         await save_data_unlocked(data)
 
+async def load_data_for_view():
+    if DATA_CACHE is not None:
+        return DATA_CACHE
+    return await load_data()
+
 def ensure_user(data, user_id: str):
     data["users"].setdefault(
         user_id,
@@ -2676,49 +2681,49 @@ async def open_wid_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
         return
     wid = cb.data.split(":", 1)[1]
-    data = await load_data()
+    data = await load_data_for_view()
     await editor(data, wid)
 
 async def open_company_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
         return
     _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await editor(data, wid, int(company_idx))
 
 async def open_company_target_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
         return
     _, wid, company_idx, target_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await editor(data, wid, int(company_idx), int(target_idx))
 
 async def open_company_target_index_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
         return
     _, wid, company_idx, target_idx, item_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await editor(data, wid, int(company_idx), int(target_idx), int(item_idx))
 
 async def open_company_category_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
         return
     _, wid, company_idx, category_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await editor(data, wid, int(company_idx), int(category_idx))
 
 async def open_company_task_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
         return
     _, wid, company_idx, task_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await editor(data, wid, int(company_idx), int(task_idx))
 
 async def open_template_index_menu_from_callback(cb: types.CallbackQuery, editor):
     if not await begin_callback(cb):
         return
     _, wid, item_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await editor(data, wid, int(item_idx))
 
 async def open_wid_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, awaiting_payload: dict):
@@ -3281,7 +3286,7 @@ async def ws_clear_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     wid = cb.data.split(":", 1)[1]
-    data = await load_data()
+    data = await load_data_for_view()
     ws = data["workspaces"].get(wid)
     if not ws or not ws.get("is_connected"):
         return
@@ -3309,7 +3314,7 @@ async def pm_clear_workspace_ask(cb: types.CallbackQuery):
     if cb.message.chat.type != "private" or should_ignore_callback(cb):
         return
     wid = cb.data.split(":", 1)[1]
-    data = await load_data()
+    data = await load_data_for_view()
     ws = data["workspaces"].get(wid)
     if not ws:
         return
@@ -3342,7 +3347,7 @@ async def pm_delete_workspace_ask(cb: types.CallbackQuery):
     if cb.message.chat.type != "private" or should_ignore_callback(cb):
         return
     wid = cb.data.split(":", 1)[1]
-    data = await load_data()
+    data = await load_data_for_view()
     uid = str(cb.from_user.id)
     ws = data["workspaces"].get(wid)
     title = f"Удалить workspace «{esc(ws.get('name') or 'Workspace')}»?" if ws else "Удалить workspace?"
@@ -3512,7 +3517,7 @@ async def open_mirrors_menu(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     ws = data["workspaces"].get(wid)
     if not ws:
         return
@@ -3528,7 +3533,7 @@ async def open_mirror_item(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx, mirror_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await edit_mirror_item_menu(data, wid, int(company_idx), int(mirror_idx))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirrorsrefresh:"))
@@ -3537,7 +3542,7 @@ async def refresh_mirrors_menu(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     ws = data["workspaces"].get(wid)
     if not ws:
         return
@@ -4264,7 +4269,7 @@ async def report_delete_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx, target_idx, interval_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await upsert_ws_menu(
         data,
         wid,
@@ -4304,7 +4309,7 @@ async def report_clear_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx, target_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await upsert_ws_menu(
         data,
         wid,
@@ -4342,7 +4347,7 @@ async def open_report_bindings_menu(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await edit_report_targets_menu(data, wid, int(company_idx))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindrefresh:"))
@@ -4351,7 +4356,7 @@ async def refresh_report_bindings_menu(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await edit_report_targets_menu(data, wid, int(company_idx))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportbindon:"))
@@ -4569,7 +4574,7 @@ async def template_report_delete_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, interval_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await upsert_ws_menu(data, wid, "Удалить Интервал Отчета?", confirm_kb(f"tplreportdel:{wid}:{interval_idx}", f"tplreportitem:{wid}:{interval_idx}"))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportdel:"))
@@ -4597,7 +4602,7 @@ async def template_report_clear_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     wid = cb.data.split(":", 1)[1]
-    data = await load_data()
+    data = await load_data_for_view()
     await upsert_ws_menu(data, wid, "Очистить весь график отчетности?", confirm_kb(f"tplreportclear:{wid}", f"tplreportsettings:{wid}"))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tplreportclear:"))
@@ -4626,7 +4631,7 @@ async def back_to_ws(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     wid = cb.data.split(":", 1)[1]
-    data = await load_data()
+    data = await load_data_for_view()
     await edit_ws_home_menu(data, wid)
 
 async def refresh_paged_view(data: dict, user_id: str, wid: str, view: str, a: str = "x", b: str = "x"):
@@ -4695,14 +4700,14 @@ async def page_pm(cb: types.CallbackQuery):
     await cb.answer()
     if should_ignore_callback(cb):
         return
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        uid = str(cb.from_user.id)
-        user = ensure_user(data, uid)
-        if cb.message:
-            user["pm_menu_msg_id"] = cb.message.message_id
-        delta = -1 if cb.data.endswith(":prev") else 1
-        set_ui_page(user, "pm_root", get_ui_page(user, "pm_root") + delta)
+    data = await load_data_for_view()
+    uid = str(cb.from_user.id)
+    user = ensure_user(data, uid)
+    if cb.message:
+        user["pm_menu_msg_id"] = cb.message.message_id
+    delta = -1 if cb.data.endswith(":prev") else 1
+    set_ui_page(user, "pm_root", get_ui_page(user, "pm_root") + delta)
+    remember_data_cache(data)
     await update_pm_menu(uid, data)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("pg:"))
@@ -4716,84 +4721,84 @@ async def page_ws(cb: types.CallbackQuery):
     _, wid, view, a, b, direction = parts
     delta = -1 if direction == "prev" else 1
 
-    async with FILE_LOCK:
-        data = await load_data_unlocked()
-        ws = data["workspaces"].get(wid)
-        if not ws:
-            return
+    data = await load_data_for_view()
+    ws = data["workspaces"].get(wid)
+    if not ws:
+        return
 
-        if view == "wh":
-            set_ui_page(ws, "ws_home", get_ui_page(ws, "ws_home") + delta)
-        elif view == "cc":
-            set_ui_page(ws, "cmp_create", get_ui_page(ws, "cmp_create") + delta)
-        elif view == "tr":
-            set_ui_page(ws, "tpl_root", get_ui_page(ws, "tpl_root") + delta)
-        elif view == "cm" and a != "x":
-            company_idx = int(a)
-            if 0 <= company_idx < len(ws.get("companies", [])):
-                company = ws["companies"][company_idx]
-                key = f"cmp_{company_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
-        elif view == "ct" and a != "x" and b != "x":
-            company_idx = int(a)
-            category_idx = int(b)
-            if 0 <= company_idx < len(ws.get("companies", [])):
-                company = ws["companies"][company_idx]
-                key = f"cat_{company_idx}_{category_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
-        elif view == "rp" and a != "x" and b != "x":
-            company_idx = int(a)
-            target_idx = int(b)
-            if 0 <= company_idx < len(ws.get("companies", [])):
-                company = ws["companies"][company_idx]
-                key = f"report_{company_idx}_{target_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
-        elif view == "rb" and a != "x":
-            company_idx = int(a)
-            if 0 <= company_idx < len(ws.get("companies", [])):
-                company = ws["companies"][company_idx]
-                key = f"report_targets_{company_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
-        elif view == "mm" and a != "x":
-            company_idx = int(a)
-            if 0 <= company_idx < len(ws.get("companies", [])):
-                company = ws["companies"][company_idx]
-                key = f"mirrors_{company_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
-        elif view == "mic" and a != "x":
-            company_idx = int(a)
-            if 0 <= company_idx < len(ws.get("companies", [])):
-                company = ws["companies"][company_idx]
-                key = f"mirror_import_{company_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
-        elif view == "ric" and a != "x":
-            company_idx = int(a)
-            if 0 <= company_idx < len(ws.get("companies", [])):
-                company = ws["companies"][company_idx]
-                key = f"report_import_{company_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
-        elif view == "tmv" and a != "x" and b != "x":
-            company_idx = int(a)
-            task_idx = int(b)
-            if 0 <= company_idx < len(ws.get("companies", [])):
-                company = ws["companies"][company_idx]
-                key = f"task_move_{company_idx}_{task_idx}"
-                set_ui_page(company, key, get_ui_page(company, key) + delta)
-        elif view == "ttmv" and a != "x":
-            task_idx = int(a)
-            key = f"template_task_move_{task_idx}"
-            set_ui_page(ws, key, get_ui_page(ws, key) + delta)
-        elif view == "tpr":
-            active = get_active_template(ws)
-            key = f"tpl_report_{active.get('id')}"
-            set_ui_page(active, key, get_ui_page(active, key) + delta)
-        elif view == "tm":
-            key = f"tpl_{get_active_template(ws).get('id')}"
-            set_ui_page(ws, key, get_ui_page(ws, key) + delta)
-        elif view == "tc" and a != "x":
-            template = get_active_template(ws)
-            key = f"tplcat_{template.get('id')}_{int(a)}"
-            set_ui_page(template, key, get_ui_page(template, key) + delta)
+    if view == "wh":
+        set_ui_page(ws, "ws_home", get_ui_page(ws, "ws_home") + delta)
+    elif view == "cc":
+        set_ui_page(ws, "cmp_create", get_ui_page(ws, "cmp_create") + delta)
+    elif view == "tr":
+        set_ui_page(ws, "tpl_root", get_ui_page(ws, "tpl_root") + delta)
+    elif view == "cm" and a != "x":
+        company_idx = int(a)
+        if 0 <= company_idx < len(ws.get("companies", [])):
+            company = ws["companies"][company_idx]
+            key = f"cmp_{company_idx}"
+            set_ui_page(company, key, get_ui_page(company, key) + delta)
+    elif view == "ct" and a != "x" and b != "x":
+        company_idx = int(a)
+        category_idx = int(b)
+        if 0 <= company_idx < len(ws.get("companies", [])):
+            company = ws["companies"][company_idx]
+            key = f"cat_{company_idx}_{category_idx}"
+            set_ui_page(company, key, get_ui_page(company, key) + delta)
+    elif view == "rp" and a != "x" and b != "x":
+        company_idx = int(a)
+        target_idx = int(b)
+        if 0 <= company_idx < len(ws.get("companies", [])):
+            company = ws["companies"][company_idx]
+            key = f"report_{company_idx}_{target_idx}"
+            set_ui_page(company, key, get_ui_page(company, key) + delta)
+    elif view == "rb" and a != "x":
+        company_idx = int(a)
+        if 0 <= company_idx < len(ws.get("companies", [])):
+            company = ws["companies"][company_idx]
+            key = f"report_targets_{company_idx}"
+            set_ui_page(company, key, get_ui_page(company, key) + delta)
+    elif view == "mm" and a != "x":
+        company_idx = int(a)
+        if 0 <= company_idx < len(ws.get("companies", [])):
+            company = ws["companies"][company_idx]
+            key = f"mirrors_{company_idx}"
+            set_ui_page(company, key, get_ui_page(company, key) + delta)
+    elif view == "mic" and a != "x":
+        company_idx = int(a)
+        if 0 <= company_idx < len(ws.get("companies", [])):
+            company = ws["companies"][company_idx]
+            key = f"mirror_import_{company_idx}"
+            set_ui_page(company, key, get_ui_page(company, key) + delta)
+    elif view == "ric" and a != "x":
+        company_idx = int(a)
+        if 0 <= company_idx < len(ws.get("companies", [])):
+            company = ws["companies"][company_idx]
+            key = f"report_import_{company_idx}"
+            set_ui_page(company, key, get_ui_page(company, key) + delta)
+    elif view == "tmv" and a != "x" and b != "x":
+        company_idx = int(a)
+        task_idx = int(b)
+        if 0 <= company_idx < len(ws.get("companies", [])):
+            company = ws["companies"][company_idx]
+            key = f"task_move_{company_idx}_{task_idx}"
+            set_ui_page(company, key, get_ui_page(company, key) + delta)
+    elif view == "ttmv" and a != "x":
+        task_idx = int(a)
+        key = f"template_task_move_{task_idx}"
+        set_ui_page(ws, key, get_ui_page(ws, key) + delta)
+    elif view == "tpr":
+        active = get_active_template(ws)
+        key = f"tpl_report_{active.get('id')}"
+        set_ui_page(active, key, get_ui_page(active, key) + delta)
+    elif view == "tm":
+        key = f"tpl_{get_active_template(ws).get('id')}"
+        set_ui_page(ws, key, get_ui_page(ws, key) + delta)
+    elif view == "tc" and a != "x":
+        template = get_active_template(ws)
+        key = f"tplcat_{template.get('id')}_{int(a)}"
+        set_ui_page(template, key, get_ui_page(template, key) + delta)
+    remember_data_cache(data)
 
     await refresh_paged_view(data, str(cb.from_user.id), wid, view, a, b)
 
@@ -4935,9 +4940,10 @@ async def cancel_input(cb: types.CallbackQuery):
         awaiting = ws.get("awaiting") or {}
         back_to = awaiting.get("back_to", {"view": "ws"})
         ws["awaiting"] = back_to.get("restore_awaiting")
-        await save_data_unlocked(data)
+        remember_data_cache(data)
     if ws.get("is_connected"):
         await show_back_view(data, wid, back_to)
+    await save_data(data)
 
 # =========================
 # COMPANY / CATEGORY ACTIONS
@@ -4965,7 +4971,7 @@ async def delete_company_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     ws = data["workspaces"].get(wid)
     if not ws:
         return
@@ -5041,7 +5047,7 @@ async def delete_category_with_tasks_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx, category_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     ws, company, category = await get_company_category_context(data, wid, int(company_idx), int(category_idx))
     if not ws:
         return
@@ -5079,7 +5085,7 @@ async def delete_category_keep_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx, category_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     ws, company, category = await get_company_category_context(data, wid, int(company_idx), int(category_idx))
     if not ws:
         return
@@ -5170,7 +5176,7 @@ async def open_task_deadline_box(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, company_idx, task_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await edit_task_deadline_menu(data, wid, int(company_idx), int(task_idx))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskdeadel:"))
@@ -5356,7 +5362,7 @@ async def delete_template_category_all_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, category_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     ws, active, category = await get_template_category_context(data, wid, int(category_idx))
     if not ws:
         return
@@ -5390,7 +5396,7 @@ async def delete_template_category_keep_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, category_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     ws, active, category = await get_template_category_context(data, wid, int(category_idx))
     if not ws:
         return
@@ -5474,7 +5480,7 @@ async def open_template_task_deadline_box(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     _, wid, task_idx = cb.data.split(":")
-    data = await load_data()
+    data = await load_data_for_view()
     await edit_template_task_deadline_menu(data, wid, int(task_idx))
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskdeadel:"))
@@ -6327,7 +6333,7 @@ async def delete_template_set_ask(cb: types.CallbackQuery):
     if should_ignore_callback(cb):
         return
     wid = cb.data.split(":", 1)[1]
-    data = await load_data()
+    data = await load_data_for_view()
     ws, active = get_connected_active_template(data, wid)
     if not ws:
         return
