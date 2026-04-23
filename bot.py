@@ -6453,4 +6453,4 @@ async def on_startup_polling(_):
 # =========================
 
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=False, on_startup=on_startup_polling)
+    executor.start_polling(dp, skip_updates=False, on_startup=on_startup_polling, timeout=30, relax=1.0)
