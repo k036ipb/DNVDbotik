@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import math
 import asyncio
@@ -49,6 +49,22 @@ from reporting_core import (
     resolve_report_period,
     upsert_report_interval,
 )
+
+def load_env_file(path: str = ".env"):
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8-sig") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+load_env_file()
 
 TOKEN = os.getenv("API_TOKEN")
 if not TOKEN:
@@ -716,6 +732,10 @@ async def save_data_unlocked(data):
         data = default_data()
     DATA_CACHE = data
     await asyncio.to_thread(_write_data_file, data)
+
+def remember_data_cache(data):
+    global DATA_CACHE
+    DATA_CACHE = data
 
 async def load_data():
     async with FILE_LOCK:
@@ -1757,7 +1777,7 @@ def template_settings_kb(wid: str):
     kb.add(kb_btn("✍🏻 Переименовать шаблон", callback_data=f"tplrenameset:{wid}"))
     kb.add(kb_btn("💅🏻 Переприсвоить смайлик", callback_data=f"tplemojiset:{wid}"))
     kb.add(kb_btn("🧬 Копия шаблона", callback_data=f"tplcopy:{wid}"))
-    kb.add(kb_btn("🧾 Отчетность", callback_data=f"tplreport:{wid}", style=False))
+    kb.add(kb_btn("🧾 Отчетность", callback_data=f"tplreport:{wid}", style="primary"))
     kb.add(kb_btn("🗑 Удалить шаблон", callback_data=f"tpldelsetask:{wid}"))
     kb.add(kb_btn("⬅️", callback_data=f"tpl:{wid}"))
     return kb
@@ -2559,7 +2579,12 @@ def set_prompt_state(ws: dict, awaiting_payload: dict):
     ws["awaiting"] = awaiting_payload
 
 async def show_prompt_menu(data: dict, ws: dict, prompt_text: str):
-    await upsert_ws_menu(data, ws["id"], prompt_text, prompt_menu_kb(ws["id"]))
+    return await upsert_ws_menu(data, ws["id"], prompt_text, prompt_menu_kb(ws["id"]))
+
+async def show_prompt_menu_and_save(data: dict, ws: dict, prompt_text: str):
+    saved_by_menu_recreate = await show_prompt_menu(data, ws, prompt_text)
+    if not saved_by_menu_recreate:
+        await save_data(data)
 
 async def show_instruction_menu(data: dict, wid: str, text: str, back_cb: str):
     kb = InlineKeyboardMarkup(row_width=1)
@@ -2706,8 +2731,8 @@ async def open_wid_prompt_from_callback(cb: types.CallbackQuery, prompt_text: st
         if not ws:
             return
         set_prompt_state(ws, awaiting_payload)
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 async def open_company_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
     if not await begin_callback(cb):
@@ -2720,8 +2745,8 @@ async def open_company_prompt_from_callback(cb: types.CallbackQuery, prompt_text
         if not ws:
             return
         set_prompt_state(ws, payload_factory(company_idx))
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 async def open_company_category_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
     if not await begin_callback(cb):
@@ -2734,8 +2759,8 @@ async def open_company_category_prompt_from_callback(cb: types.CallbackQuery, pr
         if not ws:
             return
         set_prompt_state(ws, payload_factory(company_idx, category_idx))
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 async def open_company_task_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
     if not await begin_callback(cb):
@@ -2748,8 +2773,8 @@ async def open_company_task_prompt_from_callback(cb: types.CallbackQuery, prompt
         if not ws:
             return
         set_prompt_state(ws, payload_factory(ws, company_idx, task_idx))
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 async def open_template_category_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
     if not await begin_callback(cb):
@@ -2762,8 +2787,8 @@ async def open_template_category_prompt_from_callback(cb: types.CallbackQuery, p
         if not ws:
             return
         set_prompt_state(ws, payload_factory(category_idx))
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 async def open_template_task_prompt_from_callback(cb: types.CallbackQuery, prompt_text: str, payload_factory):
     if not await begin_callback(cb):
@@ -2776,8 +2801,8 @@ async def open_template_task_prompt_from_callback(cb: types.CallbackQuery, promp
         if not ws:
             return
         set_prompt_state(ws, payload_factory(ws, task_idx))
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 async def open_report_schedule_prompt_from_callback(cb: types.CallbackQuery, kind: str):
     if not await begin_callback(cb):
@@ -3551,8 +3576,8 @@ async def mirror_rename_binding_prompt(cb: types.CallbackQuery):
                 "back_to": {"view": "mirror_item", "company_idx": company_idx, "mirror_idx": mirror_idx},
             },
         )
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroremoji:"))
 async def mirror_binding_emoji_prompt(cb: types.CallbackQuery):
@@ -3583,8 +3608,8 @@ async def mirror_binding_emoji_prompt(cb: types.CallbackQuery):
                 "back_to": {"view": "mirror_item", "company_idx": company_idx, "mirror_idx": mirror_idx},
             },
         )
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("mirroron:"))
 async def mirror_on(cb: types.CallbackQuery):
@@ -3888,8 +3913,8 @@ async def open_report_schedule_prompt(wid: str, company_idx: int, target_idx: in
                 "back_to": {"view": "report_interval_kind", "company_idx": company_idx, "target_idx": target_idx, "interval_idx": interval_idx, "flow": flow},
             },
         )
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 async def finalize_report_interval(wid: str, company_idx: int, draft_interval: dict, flow: str, interval_idx: int | None):
     normalized = ensure_report_interval(draft_interval)
@@ -3961,8 +3986,8 @@ async def open_template_report_schedule_prompt(
                 "back_to": {"view": "template_report_interval_kind", "interval_idx": interval_idx, "flow": flow},
             },
         )
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 async def open_template_report_schedule_prompt_from_callback(cb: types.CallbackQuery, kind: str):
     if not await begin_callback(cb):
@@ -4009,8 +4034,8 @@ async def report_rename_binding_prompt(cb: types.CallbackQuery):
                 "back_to": {"view": "report_settings", "company_idx": company_idx, "target_idx": target_idx},
             },
         )
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportemoji:"))
 async def report_binding_emoji_prompt(cb: types.CallbackQuery):
@@ -4037,8 +4062,8 @@ async def report_binding_emoji_prompt(cb: types.CallbackQuery):
                 "back_to": {"view": "report_settings", "company_idx": company_idx, "target_idx": target_idx},
             },
         )
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("reportmenu:"))
 async def open_report_target_menu(cb: types.CallbackQuery):
@@ -4224,9 +4249,9 @@ async def report_accumulation_choice(cb: types.CallbackQuery):
                     },
                 },
             )
-            await save_data_unlocked(data)
+            remember_data_cache(data)
     if mode == "specific":
-        await show_prompt_menu(data, ws, prompt_text)
+        await show_prompt_menu_and_save(data, ws, prompt_text)
         return
     if is_template:
         await finalize_template_report_interval(wid, draft_interval, flow, interval_idx)
@@ -4792,8 +4817,8 @@ async def create_company_prompt(cb: types.CallbackQuery):
             return
         prompt_text = "✏️ Напиши название списка:"
         set_prompt_state(ws, {"type": "new_company", "use_template": mode == "tpl", "template_id": template_id, "back_to": {"view": "ws"}})
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("cmp:"))
 async def open_company(cb: types.CallbackQuery):
@@ -5106,8 +5131,8 @@ async def add_task_prompt(cb: types.CallbackQuery):
             return
         prompt_text = "✏️ Введи текст новой задачи:"
         set_prompt_state(ws, {"type": "new_task", "company_idx": company_idx, "category_idx": category_idx, "back_to": back_to})
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("taskren:"))
 async def rename_task_prompt(cb: types.CallbackQuery):
@@ -5420,8 +5445,8 @@ async def add_template_task_prompt(cb: types.CallbackQuery):
             return
         prompt_text = "✏️ Введи название новой задачи шаблона:"
         set_prompt_state(ws, {"type": "new_template_task", "category_idx": category_idx, "back_to": back_to})
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("tpltaskren:"))
 async def rename_template_task_prompt(cb: types.CallbackQuery):
@@ -6214,8 +6239,8 @@ async def copy_company_prompt(cb: types.CallbackQuery):
             return
         prompt_text = "✏️ Введи имя новой списка-копии:"
         set_prompt_state(ws, {"type": "copy_company", "company_idx": company_idx, "back_to": {"view": "company_settings", "company_idx": company_idx}})
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catcopy:"))
 async def copy_category_prompt(cb: types.CallbackQuery):
@@ -6232,8 +6257,8 @@ async def copy_category_prompt(cb: types.CallbackQuery):
             return
         prompt_text = "✏️ Введи имя новой подгруппы-копии:"
         set_prompt_state(ws, {"type": "copy_category", "company_idx": company_idx, "category_idx": category_idx, "back_to": {"view": "category_settings", "company_idx": company_idx, "category_idx": category_idx}})
-        await save_data_unlocked(data)
-    await show_prompt_menu(data, ws, prompt_text)
+        remember_data_cache(data)
+    await show_prompt_menu_and_save(data, ws, prompt_text)
 
 @dp.callback_query_handler(lambda c: c.data.startswith("catdeadlinefmt:"))
 async def toggle_category_deadline_format(cb: types.CallbackQuery):
@@ -6429,4 +6454,3 @@ async def on_startup_polling(_):
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=False, on_startup=on_startup_polling)
-
